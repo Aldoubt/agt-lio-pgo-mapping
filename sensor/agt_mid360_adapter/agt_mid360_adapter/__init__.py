@@ -1,4 +1,1 @@
-"""MID360 input adaptation boundary.
-
-Commit 1 contains no sensor adapter implementation.
-"""
+"""Package marker for the MID360 C++ CustomMsg adapter."""

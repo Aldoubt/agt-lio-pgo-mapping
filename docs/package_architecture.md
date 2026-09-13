@@ -18,7 +18,7 @@ agt_mapping_bringup
 | `agt_mapping_core` | `ament_python` | Session configuration, lifecycle coordination and backend-neutral pipeline state. |
 | `agt_mapping_bringup` | `ament_python` | Composition launch package; will eventually expose `mapping_v0.launch.py`. |
 | `agt_mapping_artifacts` | `ament_python` | Artifact schema validation, provenance and integrity helpers. |
-| `agt_mid360_adapter` | `ament_python` | MID360 input normalization and calibration validation boundary. |
+| `agt_mid360_adapter` | `ament_cmake` | MID360 `CustomMsg` to PointCloud2 adapter; it preserves header time/frame and maps reflectivity to intensity. |
 | `agt_mapping_exporter` | `ament_python` | Map/trajectory/patch export orchestration and package-level output validation. |
 
 The `.repos` file pins external FAST-LIO2, PGO and HBA together in `fast_lio2_mapping`, plus Batch-LIO separately. These are future external dependencies, not packages included in the Commit 1 build graph.
