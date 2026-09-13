@@ -1,3 +1,5 @@
 # agt_mapping_artifacts
 
-Reserved home for map artifact schema validation, provenance and checksums. Commit 1 contains no export implementation.
+Provides Mapping Artifact v0.1 manifest, metadata and SHA-256 checksum utilities.
+
+The writer records whether a backend pose is truly optimized. It never labels a frontend pose or an empty placeholder cloud as an optimized dense map.

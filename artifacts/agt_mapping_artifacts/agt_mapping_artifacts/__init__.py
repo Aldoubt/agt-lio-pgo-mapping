@@ -1,4 +1,5 @@
-"""Mapping artifact schema and provenance package.
+"""Mapping artifact schema, manifest and checksum utilities."""
 
-Commit 1 contains no artifact processing implementation.
-"""
+from .artifact_writer import ArtifactWriter, write_checksums
+
+__all__ = ['ArtifactWriter', 'write_checksums']
