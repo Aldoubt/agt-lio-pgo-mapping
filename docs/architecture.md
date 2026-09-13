@@ -28,10 +28,10 @@
 │    |  /mapping/frontend/{odometry,cloud,path}                    │
 │    v                                                             │
 │  Keyframe generation                                             │
-│    |  cloud snapshot + timestamp + T_local_mapping_body          │
+│    |  /mapping/backend/keyframes                                 │
 │    v                                                             │
 │  Pose Graph Optimization                                         │
-│    |  loop constraints + optimized T_map_mapping_body            │
+│    |  /mapping/backend/map_pose + status                         │
 │    v                                                             │
 │  Dense map reconstruction                                       │
 │    |  transform/fuse keyframe patches; optional offline HBA      │
@@ -56,6 +56,7 @@
 - Raw LiDAR and IMU are acquisition evidence. Filters for dynamic objects must be explicit branches and must not silently change the front-end input.
 - LIO publishes local state only. PGO uses time-aligned body clouds and odometry to select keyframes and estimate global optimized poses.
 - `agt_mapping_frontend_api` fixes the backend-neutral output contract: Odometry, PointCloud2 and Path below `/mapping/frontend` by default. `agt_fastlio_backend` only relays existing FAST-LIO2 outputs; it does not own or modify FAST-LIO2.
+- `agt_mapping_backend_api` fixes the optimizer boundary. `agt_pgo_backend` receives frontend cloud/odometry, publishes keyframe, map-pose and status streams, and exposes an artifact-export trigger. The PGO executable remains an optional external `.repos` dependency.
 - HBA is optional offline refinement over exported `patches/` and trajectory; its output must identify its parent PGO artifact and must not overwrite it.
 - Dense fusion uses only the optimized pose associated with each keyframe. A map must retain the source patches and trajectory required to reproduce the fusion.
 - Navigation-only derivatives such as PGM, OctoMap, costmaps and relocalization indexes are downstream products. They cannot replace the source `map.pcd`.

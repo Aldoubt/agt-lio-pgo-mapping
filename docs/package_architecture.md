@@ -7,6 +7,7 @@ agt_mapping_bringup
   ├── agt_mapping_core
   ├── agt_mid360_adapter
   ├── agt_fastlio_backend ──> agt_mapping_frontend_api
+  ├── agt_pgo_backend ──────> agt_mapping_backend_api
   ├── agt_mapping_exporter
   └── agt_mapping_artifacts
             │
@@ -22,6 +23,8 @@ agt_mapping_bringup
 | `agt_mid360_adapter` | `ament_cmake` | MID360 `CustomMsg` to PointCloud2 adapter; it preserves header time/frame and maps reflectivity to intensity. |
 | `agt_mapping_frontend_api` | `ament_cmake` | Backend-neutral frontend output topic contract for odometry, body cloud and path. |
 | `agt_fastlio_backend` | `ament_cmake` | Relays external FAST-LIO2 odometry, body cloud and path into the frontend contract without changing messages. |
+| `agt_mapping_backend_api` | `ament_cmake` | Backend topic and artifact-trigger contract for frontend cloud/odometry and optimized mapping state. |
+| `agt_pgo_backend` | `ament_cmake` | PGO bridge, deterministic keyframe stream and external PGO launch boundary; no PGO source is vendored. |
 | `agt_mapping_exporter` | `ament_python` | Map/trajectory/patch export orchestration and package-level output validation. |
 
 The `.repos` file pins external FAST-LIO2, PGO and HBA together in `fast_lio2_mapping`, plus Batch-LIO separately. These are future external dependencies, not packages included in the Commit 1 build graph.
