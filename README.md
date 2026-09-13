@@ -66,4 +66,4 @@ Keyframes + PGO
 Optimized PCD map artifact
 ```
 
-详细接口、地图格式、架构和研究扩展点见 [`docs/`](docs/)。本仓库产生版本化地图资产；`agt_navigation_v3` 负责审核并在机器人运行时使用这些资产。
+详细接口、地图格式、架构和研究扩展点见 [`docs/`](docs/)，交付验收记录见 [docs/delivery_acceptance.md](docs/delivery_acceptance.md)。本仓库产生版本化地图资产；`agt_navigation_v3` 负责审核并在机器人运行时使用这些资产。
