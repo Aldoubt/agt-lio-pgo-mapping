@@ -1,0 +1,151 @@
+# Migration manifest -- planning state only.
+# No entry in this file authorizes a copy. All entries require human approval.
+# `copy: false` and `modify: false` describe the state created by this task.
+manifest_version: 1
+status: awaiting_human_confirmation
+source:
+  repository: agt_navigation_v3
+  path: /home/yangxuan/ros2_ws/src/agt_navigation_v3
+destination:
+  repository: agt_mapping_framework
+  path: /home/yangxuan/ros2_ws/src/agt_mapping_framework
+policy:
+  current_action: documentation_only
+  copy_code_now: false
+  modify_source_now: false
+  generated_file_patterns:
+    - "**/build/**"
+    - "**/install/**"
+    - "**/__pycache__/**"
+    - "**/.pytest_cache/**"
+    - "**/*.pyc"
+  generated_files:
+    copy: false
+    modify: false
+    reason: Generated caches and build products are not migration source.
+
+# Each rule is a per-file rule: every tracked file matching source_glob has the
+# stated decision. Later, more-specific rules take precedence over earlier ones.
+file_rules:
+  - source_glob: "mapping/agt_mapping_bringup/**"
+    destination_path: "core/agt_mapping_bringup/"
+    copy: false
+    modify: false
+    reason: "Candidate mapping orchestration, MID360/FAST-LIO2/PGO/HBA configs and mapping scripts; defer until topic/frame/artifact contracts are approved."
+  - source_glob: "mapping/agt_mapping_session/**"
+    destination_path: "core/agt_mapping_core/"
+    copy: false
+    modify: false
+    reason: "Candidate session lifecycle code; it currently does not invoke a backend or export pipeline and needs interface design before migration."
+  - source_glob: "mapping/agt_mapping_backend_adapter/**"
+    destination_path: "core/agt_mapping_backend_api/"
+    copy: false
+    modify: false
+    reason: "Candidate backend abstraction; current source lacks package metadata and requires formalization after approval."
+  - source_glob: "sensor/agt_livox_tools/**"
+    destination_path: "sensor/agt_livox_format_bridge/"
+    copy: false
+    modify: false
+    reason: "Candidate MID360/Livox format bridge; preserve as source reference until driver version and message contract are pinned."
+  - source_glob: "cleaning/agt_pointcloud_preprocessor/**"
+    destination_path: "processing/agt_cloud_filtering/"
+    copy: false
+    modify: false
+    reason: "Candidate downstream point-cloud and dynamic-sector filtering; must remain downstream of raw LIO inputs."
+  - source_glob: "cleaning/agt_terrain_map_generator/include/agt_terrain_map_generator/{map_cleaning,preprocess,trajectory}/**"
+    destination_path: "processing/agt_terrain_mapping/"
+    copy: false
+    modify: false
+    reason: "Candidate reusable static-confidence, persistence, preprocessing and trajectory utilities; exact split requires review."
+  - source_glob: "cleaning/agt_terrain_map_generator/{src,test,plugins}/**"
+    destination_path: "processing/agt_terrain_mapping/"
+    copy: false
+    modify: false
+    reason: "Candidate terrain implementation and tests; requires separation of generic algorithm from Bunker/Nav2 policy."
+  - source_glob: "cleaning/agt_terrain_map_generator/{CMakeLists.txt,package.xml,README.md,config/**,launch/**,tools/**}"
+    destination_path: "processing/agt_terrain_mapping/"
+    copy: false
+    modify: false
+    reason: "Build, configuration and tooling reference for the candidate terrain package; destination layout is not approved."
+  - source_glob: "cleaning/agt_map_converter/**"
+    destination_path: "exporters/agt_navigation_grid_exporter/"
+    copy: false
+    modify: false
+    reason: "Optional PCD-to-PGM exporter; Nav2-specific output remains an adapter, not mapping-core code."
+  - source_glob: "interfaces/agt_robot_interfaces/{action/GenerateMapPackage.action,msg/MapPackage.msg,msg/MapStatus.msg,msg/MapEditSession.msg,srv/ValidateMap.srv}"
+    destination_path: "interfaces/agt_mapping_interfaces/"
+    copy: false
+    modify: false
+    reason: "Candidate map-artifact interfaces; require a backward-compatible independent interface package before any move."
+  - source_glob: "map_data_manager/agt_map_manager/**"
+    destination_path: null
+    copy: false
+    modify: false
+    reason: "Retain in navigation: approval, registry, activation and HMI edit sessions are deployment concerns, not mapping-core concerns."
+  - source_glob: "navigation/state_estimation/agt_fastlio_adapter/**"
+    destination_path: null
+    copy: false
+    modify: false
+    reason: "Retain in navigation: adapter publishes navigation canonical local odometry; framework will expose a backend-neutral contract instead."
+  - source_glob: "navigation/state_estimation/agt_batch_lio_adapter/**"
+    destination_path: null
+    copy: false
+    modify: false
+    reason: "Retain in navigation: adapter publishes navigation canonical local odometry; Batch-LIO backend integration is separately designed."
+  - source_glob: "navigation/**"
+    destination_path: null
+    copy: false
+    modify: false
+    reason: "Retain in navigation unless a more-specific interface rule applies; localization, Nav2 and mission code are outside mapping scope."
+  - source_glob: "bringup/**"
+    destination_path: null
+    copy: false
+    modify: false
+    reason: "Retain in navigation; system/HMI/simulation composition must consume the framework as an external dependency."
+  - source_glob: "sensor/agt_rtk_manager/**"
+    destination_path: null
+    copy: false
+    modify: false
+    reason: "Retain in navigation; RTK/INS runtime management is outside the initial mapping framework boundary."
+  - source_glob: "sensor/agt_capability_camera/**"
+    destination_path: null
+    copy: false
+    modify: false
+    reason: "Retain in navigation; camera capability is unrelated to LiDAR mapping extraction."
+  - source_glob: "tests/**"
+    destination_path: null
+    copy: false
+    modify: false
+    reason: "Retain until individual tests are classified against the new framework contracts."
+  - source_glob: "docs/**"
+    destination_path: null
+    copy: false
+    modify: false
+    reason: "Retain authoritative navigation documentation; architecture evidence is summarized separately in this repository."
+  - source_glob: "**"
+    destination_path: null
+    copy: false
+    modify: false
+    reason: "Default deny: no source file is copied or modified without a reviewed, more-specific migration decision."
+
+external_dependencies:
+  - name: fastlio2
+    copy: false
+    modify: false
+    reason: "External algorithm dependency; pin repository URL and commit in a future .repos file."
+  - name: pgo
+    copy: false
+    modify: false
+    reason: "External algorithm dependency; use its public ROS and artifact interfaces."
+  - name: hba
+    copy: false
+    modify: false
+    reason: "External offline refinement dependency; consume exported patches and poses."
+  - name: batch_lio
+    copy: false
+    modify: false
+    reason: "External alternate LIO backend; do not vendor source."
+  - name: livox_ros_driver2
+    copy: false
+    modify: false
+    reason: "Hardware driver dependency; pin version rather than copy source."

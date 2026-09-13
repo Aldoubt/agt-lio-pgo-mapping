@@ -1,0 +1,102 @@
+# Baseline v0.1 migration plan. This is a reviewed-scope proposal, not an execution log.
+manifest_version: 1
+baseline: v0.1
+status: awaiting_human_confirmation
+source:
+  repository: agt_navigation_v3
+  path: /home/yangxuan/ros2_ws/src/agt_navigation_v3
+destination:
+  repository: agt_mapping_framework
+  path: /home/yangxuan/ros2_ws/src/agt_mapping_framework
+policy:
+  migration_authorized: false
+  copy_now: false
+  modify_source_now: false
+  rule: "Entries marked planned_copy are required only after human confirmation."
+
+required_migration:
+  - component: mid360_adapter
+    source_files:
+      - sensor/agt_livox_tools/CMakeLists.txt
+      - sensor/agt_livox_tools/package.xml
+      - sensor/agt_livox_tools/src/livox_format_bridge.cpp
+      - sensor/agt_livox_tools/launch/livox_format_bridge.launch.py
+      - sensor/agt_livox_tools/config/custom_to_pointcloud2.yaml
+      - sensor/agt_livox_tools/config/pointcloud2_to_custom.yaml
+    destination: sensor/agt_mid360_adapter/
+    planned_copy: true
+    copy_now: false
+    modify_now: false
+    reason: "Required to normalize MID360 input without pulling navigation runtime packages."
+  - component: fastlio2_launch_and_config
+    source_files:
+      - mapping/agt_mapping_bringup/CMakeLists.txt
+      - mapping/agt_mapping_bringup/package.xml
+      - mapping/agt_mapping_bringup/launch/mapping_mode.launch.py
+      - mapping/agt_mapping_bringup/config/fastlio2_mid360.yaml
+      - mapping/agt_mapping_bringup/config/pgo_mid360.yaml
+      - mapping/agt_mapping_bringup/scripts/mid360_imu_preflight.py
+    destination: backends/agt_fastlio2_bringup/
+    planned_copy: true
+    copy_now: false
+    modify_now: false
+    reason: "Required baseline frontend configuration; launch composition will later be split from optional OctoMap/navigation behavior."
+  - component: pgo_interface
+    source_files:
+      - mapping/agt_mapping_bringup/launch/mapping_mode.launch.py
+      - mapping/agt_mapping_bringup/config/pgo_mid360.yaml
+      - mapping/agt_mapping_bringup/launch/hba_refine.launch.py
+    external_dependencies:
+      - pgo
+      - interface/srv/SaveMaps
+    destination: backends/agt_pgo_bringup/
+    planned_copy: true
+    copy_now: false
+    modify_now: false
+    reason: "Required to bind body cloud and LIO odometry to PGO and invoke its map-save interface; PGO source remains external."
+  - component: map_artifact_exporter
+    source_files:
+      - mapping/agt_mapping_bringup/scripts/save_mapping_debug.sh
+      - mapping/agt_mapping_bringup/README.md
+    destination: exporters/agt_map_artifact_exporter/
+    planned_copy: true
+    copy_now: false
+    modify_now: false
+    reason: "Reference only for PGO save invocation and expected output; a framework-native exporter and validator must be designed before implementation."
+  - component: artifact_metadata
+    source_files:
+      - mapping/agt_mapping_bringup/config/mapping_mode.yaml
+      - interfaces/agt_robot_interfaces/action/GenerateMapPackage.action
+      - interfaces/agt_robot_interfaces/msg/MapPackage.msg
+    destination: interfaces/agt_mapping_interfaces/
+    planned_copy: true
+    copy_now: false
+    modify_now: false
+    reason: "Provides source semantics for independent artifact metadata; navigation/HMI fields must not be copied into the new interface unchanged."
+
+explicit_exclusions:
+  - scope: navigation/**
+    reason: "Nav2, localization and runtime navigation are outside Baseline v0.1."
+  - scope: bringup/**
+    reason: "Robot/system/HMI/simulation orchestration is outside Baseline v0.1."
+  - scope: sensor/agt_rtk_manager/**
+    reason: "RTK is not required for the minimal MID360 rosbag pipeline."
+  - scope: sensor/agt_capability_camera/**
+    reason: "Camera capability is unrelated to the baseline mapping path."
+  - scope: map_data_manager/**
+    reason: "Map approval, activation and deployment remain navigation-system responsibilities."
+  - scope: cleaning/agt_map_converter/**
+    reason: "PCD-to-PGM/Nav2 conversion is a later optional derived exporter."
+  - scope: cleaning/agt_terrain_map_generator/**
+    reason: "Terrain/traversability research is deferred beyond the minimum baseline."
+  - scope: cleaning/agt_pointcloud_preprocessor/**
+    reason: "Dynamic filtering is deferred; v0.1 preserves raw frontend input."
+  - scope: external/{fast_lio2_mapping,batch_lio,livox_ros_driver2}/**
+    reason: "External sources are version-pinned dependencies, never copied by this migration."
+
+generated_file_exclusions:
+  - "**/build/**"
+  - "**/install/**"
+  - "**/__pycache__/**"
+  - "**/.pytest_cache/**"
+  - "**/*.pyc"
