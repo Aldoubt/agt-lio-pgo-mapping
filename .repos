@@ -2,13 +2,13 @@ repositories:
   fast_lio2_mapping:
     type: git
     url: https://github.com/Aldoubt/fast-lio2.git
-    version: 8f5cad5b0d20ef74c34f83dbcb72ef42a4fbb108
+    version: 7f664a66ae7b3b683dddf7f5322c1ea55a3c8141
     # Provides the pinned FAST-LIO2, PGO and HBA component sources.
     # agt_pgo_backend launches package `pgo` from this external repository.
   livox_ros_driver2:
     type: git
     url: https://github.com/Livox-SDK/livox_ros_driver2.git
-    version: 4a1def929e5b59c7a8122d19fce6efba581ce9f7
+    version: 13eb05e4e6dd7a765b934d0c5fd6236676a57b49
     # Provides livox_ros_driver2/msg/CustomMsg used by MID360 bags and the
     # adapter/FAST-LIO2 interface. This is the official upstream driver.
   batch_lio:
