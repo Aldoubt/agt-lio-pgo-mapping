@@ -1,0 +1,10 @@
+repositories:
+  fast_lio2_mapping:
+    type: git
+    url: https://github.com/Aldoubt/fast-lio2.git
+    version: 9c793b52aed652dd7609523691f8bfe413ff4dbe
+    # Provides the pinned FAST-LIO2, PGO and HBA component sources.
+  batch_lio:
+    type: git
+    url: https://github.com/Aldoubt/Batch-LIO.git
+    version: 7ceb27610cf5997819d4af33319aac67ec7b6ed8

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agt_mapping_bringup</name>
+  <version>0.1.0</version>
+  <description>Composition launch boundary for AGT mapping framework pipelines.</description>
+  <maintainer email="xuanyang.robotics@gmail.com">AGT Mapping Team</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>agt_mapping_core</exec_depend>
+  <exec_depend>agt_mid360_adapter</exec_depend>
+  <exec_depend>agt_mapping_artifacts</exec_depend>
+  <exec_depend>agt_mapping_exporter</exec_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

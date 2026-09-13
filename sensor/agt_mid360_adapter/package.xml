@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agt_mid360_adapter</name>
+  <version>0.1.0</version>
+  <description>MID360 LiDAR and IMU adaptation boundary for mapping pipelines.</description>
+  <maintainer email="xuanyang.robotics@gmail.com">AGT Mapping Team</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>agt_mapping_interfaces</exec_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>
