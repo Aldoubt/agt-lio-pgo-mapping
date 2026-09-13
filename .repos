@@ -2,7 +2,7 @@ repositories:
   fast_lio2_mapping:
     type: git
     url: https://github.com/Aldoubt/fast-lio2.git
-    version: 9c793b52aed652dd7609523691f8bfe413ff4dbe
+    version: 8f5cad5b0d20ef74c34f83dbcb72ef42a4fbb108
     # Provides the pinned FAST-LIO2, PGO and HBA component sources.
     # agt_pgo_backend launches package `pgo` from this external repository.
   batch_lio:

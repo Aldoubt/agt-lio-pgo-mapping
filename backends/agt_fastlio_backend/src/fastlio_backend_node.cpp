@@ -21,7 +21,10 @@ public:
     const auto output = agt_mapping_frontend_api::makeFrontendTopics(output_namespace);
 
     odom_publisher_ = create_publisher<nav_msgs::msg::Odometry>(output.odometry, rclcpp::QoS(20));
-    cloud_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(output.cloud, rclcpp::SensorDataQoS());
+    // The external PGO subscriber uses the ROS 2 default (reliable) QoS.  Keep
+    // the framework boundary reliable so PGO can consume the relayed cloud;
+    // the input subscription remains SensorDataQoS for FAST-LIO2 compatibility.
+    cloud_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(output.cloud, rclcpp::QoS(20));
     path_publisher_ = create_publisher<nav_msgs::msg::Path>(output.path, rclcpp::QoS(10));
     odom_subscription_ = create_subscription<nav_msgs::msg::Odometry>(odom_input, rclcpp::QoS(50),
       [this](nav_msgs::msg::Odometry::ConstSharedPtr message) { odom_publisher_->publish(relayOdometry(*message)); });

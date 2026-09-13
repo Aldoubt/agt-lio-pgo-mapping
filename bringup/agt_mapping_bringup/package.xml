@@ -13,5 +13,11 @@
   <exec_depend>agt_mid360_adapter</exec_depend>
   <exec_depend>agt_mapping_artifacts</exec_depend>
   <exec_depend>agt_mapping_exporter</exec_depend>
+  <exec_depend>agt_fastlio_backend</exec_depend>
+  <exec_depend>agt_pgo_backend</exec_depend>
+  <exec_depend>fastlio2</exec_depend>
+  <exec_depend>pgo</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>rviz_default_plugins</exec_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

@@ -34,8 +34,11 @@ public:
       agt_mapping_backend_api::kStatus, rclcpp::QoS(10));
     cloud_subscription_ = create_subscription<sensor_msgs::msg::PointCloud2>(
       cloud_topic, rclcpp::SensorDataQoS(), [](sensor_msgs::msg::PointCloud2::ConstSharedPtr) {});
+    max_frontend_staleness_s_ = declare_parameter<double>("max_frontend_staleness_s", 1.0);
     odometry_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
       odometry_topic, rclcpp::QoS(50), [this](nav_msgs::msg::Odometry::ConstSharedPtr odometry) {
+        last_frontend_stamp_ = rclcpp::Time(odometry->header.stamp);
+        has_frontend_ = true;
         map_pose_publisher_->publish(bridge_.mapPose(*odometry));
         if (bridge_.acceptOdometry(*odometry)) {
           publishStatus("frontend_keyframe_pending_pgo_optimization");
@@ -47,6 +50,12 @@ public:
       agt_mapping_backend_api::kArtifactTrigger,
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
         std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        if (!has_frontend_ || (get_clock()->now() - last_frontend_stamp_).seconds() > max_frontend_staleness_s_) {
+          response->success = false;
+          response->message = "frontend odometry is stale; refusing artifact export";
+          publishStatus("frontend_stale_artifact_export_rejected");
+          return;
+        }
         if (!save_maps_client_->wait_for_service(std::chrono::seconds(2))) {
           response->success = false;
           response->message = "external PGO save service unavailable";
@@ -114,6 +123,9 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr export_service_;
   rclcpp::Client<interface::srv::SaveMaps>::SharedPtr save_maps_client_;
   std::string pgo_output_dir_;
+  rclcpp::Time last_frontend_stamp_{0, 0, RCL_ROS_TIME};
+  double max_frontend_staleness_s_{};
+  bool has_frontend_{false};
 };
 
 }  // namespace agt_pgo_backend

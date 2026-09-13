@@ -1,0 +1,76 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.45
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 40
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: FAST-LIO2 World Cloud
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /fastlio2/world_cloud
+      Size (Pixels): 2
+      Style: Points
+      Color Transformer: Intensity
+      Decay Time: 20
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: Frontend Trajectory
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mapping/frontend/path
+      Color: 0; 255; 0
+      Line Style: Lines
+      Line Width: 0.05
+    - Class: rviz_default_plugins/Odometry
+      Enabled: true
+      Name: Frontend Odometry
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mapping/frontend/odometry
+      Color: 255; 200; 0
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: lidar
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 40
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 0.55
+      Yaw: 0.8
