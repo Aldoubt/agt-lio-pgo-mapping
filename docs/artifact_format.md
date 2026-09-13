@@ -33,4 +33,4 @@ and describes the exported pose as frontend-derived. A consumer must reject such
 
 The v0.1 backend contract carries keyframe poses but not keyframe cloud payloads. Therefore `map.pcd` and per-keyframe `patches/*.pcd` are valid zero-point PCD placeholders, with `dense_map.available: false` and `patches.available: false` in metadata. This is intentional structural evidence, not a PGO fused map and not an input to localization or Nav2.
 
-Future dense reconstruction must consume explicit keyframe clouds, set `optimized: true` only after verified PGO correction, and preserve the same checksummed artifact layout.
+When external PGO `SaveMaps` succeeds, the bridge publishes keyframes with a timestamp, optimized pose and `patches/<id>.pcd` cloud reference, and emits status containing `backend: PGO` and `optimized: true`. Only then does the exporter copy the PGO-generated `map.pcd`, trajectory and patches into the checksummed artifact layout.

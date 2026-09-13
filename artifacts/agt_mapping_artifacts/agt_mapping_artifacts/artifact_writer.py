@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -89,5 +90,25 @@ class ArtifactWriter:
         checksums = write_checksums(self.root)
         manifest = {'format_version': 1, 'artifact_root': 'map_package', 'checksums': checksums}
         (self.root / 'manifest.yaml').write_text(yaml.safe_dump(manifest, sort_keys=True), encoding='utf-8')
+        write_checksums(self.root)
+        return self.root
+
+    def write_optimized_pgo(self, source: str | Path, calibration: dict[str, Any] | None = None) -> Path:
+        source = Path(source)
+        if self.root.exists() and any(self.root.iterdir()):
+            raise FileExistsError(f'artifact destination is not empty: {self.root}')
+        self.root.mkdir(parents=True, exist_ok=True)
+        for name in ('map.pcd', 'poses.txt', 'poses_timed.txt'):
+            shutil.copy2(source / name, self.root / name)
+        shutil.copytree(source / 'patches', self.root / 'patches')
+        calibration_data = calibration or {'format_version': 1, 'calibration_status': 'unavailable'}
+        (self.root / 'calibration.yaml').write_text(yaml.safe_dump(calibration_data, sort_keys=True), encoding='utf-8')
+        metadata = {'format_version': 1, 'artifact_kind': 'mapping_artifact',
+                    'backend': 'PGO', 'backend_status': {'optimized': True},
+                    'pose_semantics': {'optimized_map_pose': 'T_map_mapping_body; external PGO optimized output'},
+                    'dense_map': {'available': True, 'source': str(source)}}
+        (self.root / 'metadata.yaml').write_text(yaml.safe_dump(metadata, sort_keys=True), encoding='utf-8')
+        checksums = write_checksums(self.root)
+        (self.root / 'manifest.yaml').write_text(yaml.safe_dump({'format_version': 1, 'checksums': checksums}, sort_keys=True), encoding='utf-8')
         write_checksums(self.root)
         return self.root
