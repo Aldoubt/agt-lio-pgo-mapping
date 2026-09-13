@@ -1,24 +1,11 @@
 # MID360 PGO Runtime Setup
 
-External FAST-LIO2, PGO and their `interface` service package are pinned in `.repos`; import/build them beside this repository rather than copying their source. Do not run `vcs import` again when those repositories already exist in `src/`, because that creates duplicate ROS package names.
-
-```bash
-cd ~/ros2_ws/src/external
-vcs import < ../agt_mapping_framework/.repos
-cd ~/ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build --base-paths src/agt_mapping_framework src/external/fast_lio2_mapping \
-  --packages-up-to agt_mapping_bringup
-source install/setup.bash
-```
+Use [`scripts/bootstrap.sh`](../scripts/bootstrap.sh) from the repository root. It is the supported installation path: it imports the exact revisions in `.repos`, installs ROS dependencies and builds only the packages needed by the baseline. Do not import the same `.repos` into another directory in the workspace, because duplicate ROS package names cannot be built by colcon.
 
 Run the MID360 bag regression:
 
 ```bash
-ros2 launch agt_mapping_bringup mapping_v0.launch.py \
-  bag_path:=/home/yangxuan/ros2_ws/src/rosbag/bunker_mid360_mapping_20260901_205036 \
-  output_dir:=/data/agt_mapping_runs/mid360_20260901_205036 \
-  start_rviz:=true
+./scripts/run_mid360_mapping.sh /path/to/mid360_mapping_bag /data/agt_mapping_runs/mid360_run
 ```
 
 RViz opens with the FAST-LIO2 world-frame cloud, frontend trajectory and odometry. It is a live LIO visualization, not a claim that the PGO map is already optimized. Keep the launch running until the export request has completed.

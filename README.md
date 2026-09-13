@@ -1,54 +1,69 @@
-# AGT Mapping Framework
+# AGT LIO–PGO Mapping
 
-面向三维 LiDAR 建图研究与工程验证的 ROS 2 框架。该仓库为博士生与工程团队提供一个可复现、可替换后端、可追溯产物的研究边界：研究可以专注于 LIO、优化、动态过滤和地图表达，而不与底盘控制、Nav2 运行时或巡检业务逻辑耦合。
+ROS 2 Humble 的三维 LiDAR 建图基线：**Livox MID-360 → FAST-LIO2 → PGO → 可校验 PCD 地图包**。
 
-当前仅完成仓库初始化、架构与迁移规划；**没有迁移、复制或修改任何建图实现源码**。所有未来迁移须先经过 `migration_manifest.yaml` 的人工确认。
+它面向建图研究协作，不包含 Nav2、定位运行时、HMI、RTK 或底盘控制。FAST-LIO2、PGO、HBA 和 Batch-LIO 保持为锁定版本的外部依赖；本仓库只实现稳定的传感器、前后端和地图产物接口。
 
-## 项目定位
+> MID-360 是 Livox 雷达。当前基线已通过 `bunker_mid360_mapping_20260901_205036` 的真实 rosbag 回归。
 
-- 提供从 MID360 LiDAR/IMU 采集到三维地图产物的完整建图流水线。
-- 为 FAST-LIO2、Batch-LIO、PGO 和 HBA 建立可替换、可评估的后端边界。
-- 将地图产物、标定、参数和处理历史固化为可复现的实验记录。
-- 为动态目标剔除、语义过滤、可通行性和增量更新等研究提供独立试验位置。
+## 一键开始
 
-## 当前实现能力
+前提：Ubuntu 22.04、ROS 2 Humble、网络连接，以及可使用 `sudo` 安装系统依赖。
 
-当前能力是已审计的参考基线，而不是本仓库已经迁入的实现：
+```bash
+mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
+git clone https://github.com/Aldoubt/agt-lio-pgo-mapping.git
+cd agt-lio-pgo-mapping
+./scripts/bootstrap.sh
+```
 
-- MID360 / Livox `CustomMsg` 与 `PointCloud2` 格式适配；
-- FAST-LIO2 或 Batch-LIO LiDAR-Inertial Odometry 前端；
-- 基于关键帧的 PGO 回环与位姿图优化；
-- 基于导出关键帧 patch 与轨迹的 HBA 离线精化；
-- `map.pcd`、轨迹、关键帧 patch、元数据及可选导航/重定位派生产物导出。
+脚本会锁定并获取 FAST-LIO2/PGO、Livox driver 和 Batch-LIO，安装 Humble 依赖并构建所需 package。
 
-## 输入与输出
+## 运行建图
 
-| 输入 | 语义 |
-| --- | --- |
-| LiDAR 点云 | MID360 `CustomMsg` 或规范化 `sensor_msgs/PointCloud2`，保留原始时间信息。 |
-| IMU | `sensor_msgs/Imu`，与 LiDAR 使用一致的时间基准。 |
-| 标定 | LiDAR-IMU 外参、frame 约定、时间偏置及传感器 profile。 |
-| 可选初值 | 外部姿态、已知地图或离线处理配置。 |
+给定 MID360 rosbag 目录：
 
-| 输出 | 语义 |
-| --- | --- |
-| `map.pcd` | 优化后稠密点云地图。 |
-| trajectory | 带时间戳的局部与全局优化轨迹。 |
-| patches | 关键帧 body-frame 点云及其优化位姿。 |
-| `metadata.yaml` | 标定、frame、参数、软件版本、输入与输出校验信息。 |
+```bash
+cd ~/ros2_ws/src/agt-lio-pgo-mapping
+./scripts/run_mid360_mapping.sh /path/to/mid360_mapping_bag
+```
 
-完整字段和约束见 [docs/interface_contract.md](docs/interface_contract.md)。
+该命令会自动启动 RViz、播放 rosbag，并在播放结束后触发 PGO 与地图导出。RViz 中展示的是**实时 LIO**点云与轨迹；最终可交付地图以导出的 `map_package` 为准。
 
-## 研究方向
+检查导出结果：
 
-- 动态目标检测、剔除与跨时刻静态置信度建模；
-- 基于语义的点云过滤与地图分层表达；
-- 由三维点云派生地面、坡度、障碍物与可通行性地图；
-- PGO/HBA 参数、鲁棒因子和大范围地图一致性优化；
-- 增量建图、地图差分、版本化更新与长期地图维护。
+```bash
+./scripts/verify_map_artifact.sh ~/ros2_ws/output/<run_name>
+```
 
-## 与 `agt_navigation_v3` 的关系
+合格产物目录结构：
 
-`agt_navigation_v3` 是机器人运行时系统，负责定位接入、`map -> odom` TF ownership、Nav2、任务、HMI、底盘和地图审批/激活。本仓库负责产生可审计的建图产物，不发布或控制导航运行时全局 TF，也不拥有地图部署决策。
+```text
+map_package/
+├── map.pcd
+├── poses.txt
+├── poses_timed.txt
+├── patches/
+├── calibration.yaml
+├── metadata.yaml
+├── manifest.yaml
+└── checksums.sha256
+```
 
-两者通过版本化地图产物和稳定接口协作：framework 导出已验证的 PCD、轨迹、patch 与 metadata；navigation 系统审核、激活并消费经批准的派生产物。当前参考来源仍位于 `agt_navigation_v3`，不代表代码已经被迁移。
+仅当 `metadata.yaml` 中存在 `backend: PGO` 和 `optimized: true`，且校验脚本成功时，才应交付地图。
+
+## 技术边界
+
+```text
+MID-360 CustomMsg + IMU
+          ↓
+MID360 adapter（校验扫描并保留时间/强度）
+          ↓
+FAST-LIO2 frontend
+          ↓
+Keyframes + PGO
+          ↓
+Optimized PCD map artifact
+```
+
+详细接口、地图格式、架构和研究扩展点见 [`docs/`](docs/)。本仓库产生版本化地图资产；`agt_navigation_v3` 负责审核并在机器人运行时使用这些资产。
