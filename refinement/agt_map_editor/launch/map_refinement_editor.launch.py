@@ -12,6 +12,7 @@ def generate_launch_description():
         DeclareLaunchArgument('map_package', default_value=''),
         DeclareLaunchArgument('output_package', default_value=''),
         DeclareLaunchArgument('resolution', default_value='0.05'),
+        DeclareLaunchArgument('display_max_points', default_value='100000'),
         DeclareLaunchArgument('frame_id', default_value='map'),
         Node(
             package='agt_map_editor',
@@ -24,6 +25,7 @@ def generate_launch_description():
                 'map_package': LaunchConfiguration('map_package'),
                 'output_package': LaunchConfiguration('output_package'),
                 'resolution': LaunchConfiguration('resolution'),
+                'display_max_points': LaunchConfiguration('display_max_points'),
                 'frame_id': LaunchConfiguration('frame_id'),
             }],
         ),

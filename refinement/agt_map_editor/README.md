@@ -23,6 +23,10 @@ ros2 launch agt_map_editor map_refinement_editor.launch.py \
   map_pcd:=/path/to/map_package/map.pcd
 ```
 
+The editor displays at most 100,000 sampled points by default for responsive
+RViz interaction. The source PCD remains full resolution and is used for the
+export. Adjust with `display_max_points:=50000` or `200000` when needed.
+
 In RViz, add a `PointCloud2` display with topic
 `/map_refinement_editor/map_cloud` and an `InteractiveMarkers` display for topic
 `/map_refinement_editor/update`. Drag polygon vertices or the two box corner

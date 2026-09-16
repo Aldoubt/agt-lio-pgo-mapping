@@ -28,12 +28,14 @@ class MapRefinementEditor(Node):
         self.declare_parameter('map_package', '')
         self.declare_parameter('output_package', '')
         self.declare_parameter('resolution', 0.05)
+        self.declare_parameter('display_max_points', 100000)
         self.declare_parameter('frame_id', 'map')
         self.refinement_file = Path(self.get_parameter('refinement_file').value).expanduser()
         self.map_pcd = Path(self.get_parameter('map_pcd').value).expanduser()
         self.map_package = Path(self.get_parameter('map_package').value).expanduser()
         self.output_package = Path(self.get_parameter('output_package').value).expanduser()
         self.resolution = float(self.get_parameter('resolution').value)
+        self.display_max_points = int(self.get_parameter('display_max_points').value)
         if not str(self.refinement_file) or str(self.refinement_file) == '.':
             self.refinement_file = self.output_package / 'refinement.yaml'
         if not str(self.map_package) or str(self.map_package) == '.':
@@ -74,9 +76,11 @@ class MapRefinementEditor(Node):
                   for row in pcd.rows]
         if not points:
             raise ValueError(f'map PCD contains no points: {self.map_pcd}')
+        display_step = max(1, len(points) // max(1, self.display_max_points))
         return (min(point[0] for point in points), max(point[0] for point in points),
                 min(point[1] for point in points), max(point[1] for point in points),
-                min(point[2] for point in points), max(point[2] for point in points), points)
+            min(point[2] for point in points), max(point[2] for point in points),
+            points[::display_step])
 
     def _publish_cloud(self):
         points = self.map_bounds[6]
@@ -127,6 +131,24 @@ class MapRefinementEditor(Node):
         sphere.color.r, sphere.color.g, sphere.color.b = (1.0, 0.2, 0.1) if label == 'box_min' else (0.1, 0.7, 1.0)
         control.markers.append(sphere)
         marker.controls.append(control)
+        for name, axis in (('move_x', (1.0, 0.0, 0.0)), ('move_y', (0.0, 1.0, 0.0))):
+            axis_control = InteractiveMarkerControl()
+            axis_control.name = name
+            axis_control.interaction_mode = InteractiveMarkerControl.MOVE_AXIS
+            axis_control.orientation.w = 1.0
+            axis_control.orientation.x = axis[0]
+            axis_control.orientation.y = axis[1]
+            axis_control.orientation.z = axis[2]
+            axis_control.always_visible = True
+            arrow = Marker()
+            arrow.type = Marker.ARROW
+            arrow.scale.x, arrow.scale.y, arrow.scale.z = (0.8, 0.08, 0.08)
+            arrow.color.a = 0.9
+            arrow.color.r = 1.0 if axis[0] else 0.2
+            arrow.color.g = 1.0 if axis[1] else 0.2
+            arrow.color.b = 0.2
+            axis_control.markers.append(arrow)
+            marker.controls.append(axis_control)
         self.server.insert(marker, feedback_callback=self._feedback)
 
     def _insert_add_marker(self, name: str, text_value: str, x: float, y: float):
