@@ -15,6 +15,21 @@ clicked:
 The original source package is never modified. The output package may be
 regenerated in place because it is a derived artifact.
 
+Keyboard controls are available when the editor is started from a terminal:
+
+```text
+W / S       move the active box along Y
+A / D       move the active box along X
+Q / E       move the active box along Z
+R / F       enlarge / shrink the active box in X and Y
+Delete      remove points inside the active box from the live display
+Ctrl+S      save refinement.yaml and export the refined package
+```
+
+The active box is a preview until `Delete` is pressed. The display updates
+immediately after deletion; the source PCD is unchanged until the save/export
+step. Keep focus in the terminal running `edit_map.sh` while using the keys.
+
 For manual launch with an existing rule file:
 
 ```bash

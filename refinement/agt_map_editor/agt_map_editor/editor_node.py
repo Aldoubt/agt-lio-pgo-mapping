@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import shutil
+import select
+import sys
+import termios
 import tempfile
+import tty
 from pathlib import Path
 
 import rclpy
@@ -18,6 +22,7 @@ from visualization_msgs.msg import InteractiveMarker, InteractiveMarkerControl, 
 
 from agt_map_refinement_core.pcd import read_pcd
 from agt_map_refinement_core.pipeline import refine_map_package
+from agt_map_refinement_core.rules import point_is_removed
 
 
 class MapRefinementEditor(Node):
@@ -45,6 +50,9 @@ class MapRefinementEditor(Node):
         self.frame_id = self.get_parameter('frame_id').value
         self.document = self._load_document()
         self.map_bounds = self._load_map()
+        self.active_box = self._default_box()
+        self.keyboard_buffer = ''
+        self.keyboard_settings = None
         self.cloud_logged = False
         self.server = InteractiveMarkerServer(self, 'map_refinement_editor')
         cloud_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -54,9 +62,80 @@ class MapRefinementEditor(Node):
         self.save_service = self.create_service(Trigger, 'save_refinement', self._save)
         self._publish_cloud()
         self.cloud_timer = self.create_timer(2.0, self._publish_cloud)
+        self.keyboard_timer = self.create_timer(0.05, self._poll_keyboard)
         self._build_markers()
         self.server.applyChanges()
         self._publish_overlays()
+        self._enable_keyboard()
+
+    def _default_box(self):
+        x_min, x_max, y_min, y_max, z_min, z_max, _ = self.map_bounds
+        center_x, center_y = (x_min + x_max) / 2.0, (y_min + y_max) / 2.0
+        half_x = max((x_max - x_min) * 0.025, 1.0)
+        half_y = max((y_max - y_min) * 0.04, 1.0)
+        return {'min': {'x': center_x - half_x, 'y': center_y - half_y, 'z': z_min},
+                'max': {'x': center_x + half_x, 'y': center_y + half_y, 'z': z_max}}
+
+    def _enable_keyboard(self):
+        if not sys.stdin.isatty():
+            self.get_logger().warning('Keyboard controls unavailable: stdin is not a terminal')
+            return
+        self.keyboard_settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+        self.get_logger().info('Controls: WASD move, Q/E z, R/F resize, Delete remove, Ctrl+S save')
+
+    def _disable_keyboard(self):
+        if self.keyboard_settings is not None:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.keyboard_settings)
+            self.keyboard_settings = None
+
+    def _poll_keyboard(self):
+        if self.keyboard_settings is None:
+            return
+        while select.select([sys.stdin], [], [], 0)[0]:
+            key = sys.stdin.read(1)
+            self.keyboard_buffer += key
+            if self.keyboard_buffer.endswith('\x1b[3~') or key == '\x7f':
+                self.keyboard_buffer = ''
+                self._delete_active_box()
+            elif key == '\x13':
+                self.keyboard_buffer = ''
+                self._write_document()
+            elif key in 'wasdqeRF':
+                self.keyboard_buffer = ''
+                self._move_active_box(key)
+
+    def _move_active_box(self, key):
+        if self.active_box is None:
+            return
+        step = max(min(self.map_bounds[1] - self.map_bounds[0],
+                       self.map_bounds[3] - self.map_bounds[2]) * 0.005, 0.1)
+        if key in 'RF':
+            factor = 1.1 if key == 'R' else 1.0 / 1.1
+            center = {axis: (self.active_box['min'][axis] + self.active_box['max'][axis]) / 2.0
+                      for axis in ('x', 'y')}
+            for axis in ('x', 'y'):
+                half = (self.active_box['max'][axis] - self.active_box['min'][axis]) * factor / 2.0
+                self.active_box['min'][axis] = center[axis] - half
+                self.active_box['max'][axis] = center[axis] + half
+        else:
+            axis, amount = ({'a': ('x', -step), 'd': ('x', step), 'w': ('y', step),
+                             's': ('y', -step), 'q': ('z', -step), 'e': ('z', step)})[key]
+            self.active_box['min'][axis] += amount
+            self.active_box['max'][axis] += amount
+        self._rebuild_markers()
+        self._publish_cloud()
+
+    def _delete_active_box(self):
+        if self.active_box is None:
+            return
+        self.document['operations'].append({'type': 'remove_box',
+                                            'min': dict(self.active_box['min']),
+                                            'max': dict(self.active_box['max'])})
+        self.get_logger().info('Marked active box for deletion. Press Ctrl+S to save/export.')
+        self.active_box = self._default_box()
+        self._rebuild_markers()
+        self._publish_cloud()
 
     def _load_document(self) -> dict:
         if not self.refinement_file.is_file():
@@ -83,7 +162,8 @@ class MapRefinementEditor(Node):
             points[::display_step])
 
     def _publish_cloud(self):
-        points = self.map_bounds[6]
+        points = [point for point in self.map_bounds[6]
+                  if not point_is_removed(point[0], point[1], point[2], self.document['operations'])]
         if not points:
             return
         fields = [PointField(name=name, offset=offset, datatype=PointField.FLOAT32, count=1)
@@ -106,6 +186,10 @@ class MapRefinementEditor(Node):
             elif operation_type == 'remove_box':
                 self._insert_vertex(operation_index, 0, [operation['min']['x'], operation['min']['y'], operation['min']['z']], 'box_min')
                 self._insert_vertex(operation_index, 1, [operation['max']['x'], operation['max']['y'], operation['max']['z']], 'box_max')
+        if self.active_box:
+            active_index = len(self.document['operations'])
+            self._insert_vertex(active_index, 0, [self.active_box['min']['x'], self.active_box['min']['y'], self.active_box['min']['z']], 'active_box_min')
+            self._insert_vertex(active_index, 1, [self.active_box['max']['x'], self.active_box['max']['y'], self.active_box['max']['z']], 'active_box_max')
         self._insert_save_marker()
         center_x = (self.map_bounds[0] + self.map_bounds[1]) / 2.0
         center_y = (self.map_bounds[2] + self.map_bounds[3]) / 2.0
@@ -205,6 +289,13 @@ class MapRefinementEditor(Node):
             return
         parts = feedback.marker_name.split('_')
         operation_index, point_index = int(parts[1]), int(parts[3])
+        if operation_index == len(self.document['operations']) and self.active_box:
+            self.active_box['min' if point_index == 0 else 'max'] = {
+                'x': feedback.pose.position.x, 'y': feedback.pose.position.y,
+                'z': feedback.pose.position.z}
+            self._publish_cloud()
+            self._publish_overlays()
+            return
         operation = self.document['operations'][operation_index]
         point = [feedback.pose.position.x, feedback.pose.position.y, feedback.pose.position.z]
         if operation.get('type') == 'remove_box':
@@ -216,14 +307,7 @@ class MapRefinementEditor(Node):
         self._publish_overlays()
 
     def _add_box(self):
-        x_min, x_max, y_min, y_max, z_min, z_max, _ = self.map_bounds
-        center_x, center_y = (x_min + x_max) / 2.0, (y_min + y_max) / 2.0
-        size = max(min(x_max - x_min, y_max - y_min) * 0.05, 1.0)
-        self.document['operations'].append({
-            'type': 'remove_box',
-            'min': {'x': center_x - size, 'y': center_y - size, 'z': z_min},
-            'max': {'x': center_x + size, 'y': center_y + size, 'z': z_max},
-        })
+        self.active_box = self._default_box()
         self._rebuild_markers()
 
     def _add_polygon(self):
@@ -268,7 +352,22 @@ class MapRefinementEditor(Node):
                     next_x, next_y = corners[(index + 1) % len(corners)]
                     marker.points.extend((Point(x=float(x), y=float(y), z=0.0),
                                           Point(x=float(next_x), y=float(next_y), z=0.0)))
+        if self.active_box:
+            minimum, maximum = self.active_box['min'], self.active_box['max']
+            corners = [(minimum['x'], minimum['y']), (maximum['x'], minimum['y']),
+                       (maximum['x'], maximum['y']), (minimum['x'], maximum['y'])]
+            for index, (x, y) in enumerate(corners):
+                next_x, next_y = corners[(index + 1) % len(corners)]
+                marker.points.extend((Point(x=float(x), y=float(y), z=0.0),
+                                      Point(x=float(next_x), y=float(next_y), z=0.0)))
         self.overlay_publisher.publish(marker)
+
+    @staticmethod
+    def _point_in_box(point, box):
+        minimum, maximum = box['min'], box['max']
+        return (minimum['x'] <= point[0] <= maximum['x'] and
+                minimum['y'] <= point[1] <= maximum['y'] and
+                minimum['z'] <= point[2] <= maximum['z'])
 
     def _save(self, request, response):
         del request
@@ -307,5 +406,6 @@ def main(args=None):
     try:
         rclpy.spin(node)
     finally:
+        node._disable_keyboard()
         node.destroy_node()
         rclpy.shutdown()
