@@ -30,6 +30,7 @@ class MapRefinementEditor(Node):
         self.frame_id = self.get_parameter('frame_id').value
         self.document = self._load_document()
         self.map_bounds = self._load_map()
+        self.cloud_logged = False
         self.server = InteractiveMarkerServer(self, 'map_refinement_editor')
         cloud_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -37,6 +38,7 @@ class MapRefinementEditor(Node):
         self.overlay_publisher = self.create_publisher(Marker, 'selection_overlay', 10)
         self.save_service = self.create_service(Trigger, 'save_refinement', self._save)
         self._publish_cloud()
+        self.cloud_timer = self.create_timer(2.0, self._publish_cloud)
         self._build_markers()
         self.server.applyChanges()
         self._publish_overlays()
@@ -73,6 +75,9 @@ class MapRefinementEditor(Node):
         header.frame_id = self.frame_id
         message = point_cloud2.create_cloud(header, fields, points)
         self.cloud_publisher.publish(message)
+        if not self.cloud_logged:
+            self.get_logger().info(f'Published map cloud: {len(points)} points on map_cloud')
+            self.cloud_logged = True
 
     def _build_markers(self):
         for operation_index, operation in enumerate(self.document['operations']):
