@@ -72,7 +72,7 @@ Target command after the five commits and external dependency installation:
 
 ```bash
 ros2 launch agt_mapping_bringup mapping_v0.launch.py \
-  bag_path:=/home/yangxuan/ros2_ws/src/rosbag/bunker_mid360_mapping_20260901_205036 \
+  bag_path:=/home/yangxuan/ros2_ws/experiments/data/rosbag/bunker_mid360_mapping_20260901_205036 \
   output_dir:=/absolute/path/to/output
 ```
 

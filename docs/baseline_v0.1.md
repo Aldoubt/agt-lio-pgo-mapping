@@ -15,7 +15,7 @@ The baseline establishes a reference experiment for later research. It deliberat
 The primary regression input is the existing bag:
 
 ```text
-/home/yangxuan/ros2_ws/src/rosbag/bunker_mid360_mapping_20260901_205036
+/home/yangxuan/ros2_ws/experiments/data/rosbag/bunker_mid360_mapping_20260901_205036
 ```
 
 The alternate bag `bunker_mid360_mapping_20260901_211105` may be used only as a second regression case after the primary case passes.

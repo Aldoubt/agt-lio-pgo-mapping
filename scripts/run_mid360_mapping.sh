@@ -10,7 +10,7 @@ fi
 ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)"
 WORKSPACE="$(cd "$ROOT/../.." && pwd)"
 BAG_PATH="$(realpath "$1")"
-OUTPUT_DIR="${2:-$WORKSPACE/output/$(basename "$BAG_PATH")_$(date +%Y%m%d_%H%M%S)}"
+OUTPUT_DIR="${2:-$WORKSPACE/experiments/artifacts/output/$(basename "$BAG_PATH")_$(date +%Y%m%d_%H%M%S)}"
 
 if [[ ! -d "$BAG_PATH" ]]; then
   echo "Rosbag directory does not exist: $BAG_PATH" >&2

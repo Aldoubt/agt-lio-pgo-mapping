@@ -33,7 +33,7 @@ cd ~/ros2_ws/src/agt-lio-pgo-mapping
 检查导出结果：
 
 ```bash
-./scripts/verify_map_artifact.sh ~/ros2_ws/output/<run_name>
+./scripts/verify_map_artifact.sh ~/ros2_ws/experiments/artifacts/output/<run_name>
 ```
 
 合格产物目录结构：
