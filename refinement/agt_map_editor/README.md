@@ -30,6 +30,9 @@ The active box is a preview until `Delete` is pressed. The display updates
 immediately after deletion; the source PCD is unchanged until the save/export
 step. Keep focus in the terminal running `edit_map.sh` while using the keys.
 
+Saved deletion boxes are green. The active box is amber and is rendered as a
+full 3D cuboid, so its X, Y, and Z extents are visible separately.
+
 For manual launch with an existing rule file:
 
 ```bash

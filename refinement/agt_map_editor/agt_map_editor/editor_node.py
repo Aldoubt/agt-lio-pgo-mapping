@@ -71,8 +71,9 @@ class MapRefinementEditor(Node):
     def _default_box(self):
         x_min, x_max, y_min, y_max, z_min, z_max, _ = self.map_bounds
         center_x, center_y = (x_min + x_max) / 2.0, (y_min + y_max) / 2.0
-        half_x = max((x_max - x_min) * 0.025, 1.0)
-        half_y = max((y_max - y_min) * 0.04, 1.0)
+        map_span = min(x_max - x_min, y_max - y_min)
+        half_x = max(map_span * 0.04, 1.0)
+        half_y = max(map_span * 0.02, 0.5)
         return {'min': {'x': center_x - half_x, 'y': center_y - half_y, 'z': z_min},
                 'max': {'x': center_x + half_x, 'y': center_y + half_y, 'z': z_max}}
 
@@ -328,16 +329,8 @@ class MapRefinementEditor(Node):
         self._publish_overlays()
 
     def _publish_overlays(self):
-        marker = Marker()
-        marker.header.frame_id = self.frame_id
-        marker.ns = 'refinement_regions'
-        marker.id = 1
-        marker.type = Marker.LINE_LIST
-        marker.action = Marker.ADD
-        marker.scale.x = 0.08
-        marker.color.a = 0.9
-        marker.color.g = 1.0
-        marker.color.b = 0.2
+        marker = self._line_marker('refinement_regions', 1, 0.2, 1.0, 0.2)
+        active_marker = self._line_marker('active_box', 2, 1.0, 0.7, 0.1)
         for operation in self.document['operations']:
             if operation.get('type') in ('remove_polygon', 'forbidden_zone'):
                 points = operation.get('points', operation.get('polygon', []))
@@ -345,22 +338,43 @@ class MapRefinementEditor(Node):
                 for index, point in enumerate(vertices):
                     marker.points.extend((point, vertices[(index + 1) % len(vertices)]))
             elif operation.get('type') == 'remove_box':
-                minimum, maximum = operation['min'], operation['max']
-                corners = [(minimum['x'], minimum['y']), (maximum['x'], minimum['y']),
-                           (maximum['x'], maximum['y']), (minimum['x'], maximum['y'])]
-                for index, (x, y) in enumerate(corners):
-                    next_x, next_y = corners[(index + 1) % len(corners)]
-                    marker.points.extend((Point(x=float(x), y=float(y), z=0.0),
-                                          Point(x=float(next_x), y=float(next_y), z=0.0)))
+                self._append_box_edges(marker, operation)
         if self.active_box:
-            minimum, maximum = self.active_box['min'], self.active_box['max']
-            corners = [(minimum['x'], minimum['y']), (maximum['x'], minimum['y']),
-                       (maximum['x'], maximum['y']), (minimum['x'], maximum['y'])]
-            for index, (x, y) in enumerate(corners):
-                next_x, next_y = corners[(index + 1) % len(corners)]
-                marker.points.extend((Point(x=float(x), y=float(y), z=0.0),
-                                      Point(x=float(next_x), y=float(next_y), z=0.0)))
+            self._append_box_edges(active_marker, self.active_box)
         self.overlay_publisher.publish(marker)
+        self.overlay_publisher.publish(active_marker)
+
+    def _line_marker(self, namespace, marker_id, red, green, blue):
+        marker = Marker()
+        marker.header.frame_id = self.frame_id
+        marker.ns = namespace
+        marker.id = marker_id
+        marker.type = Marker.LINE_LIST
+        marker.action = Marker.ADD
+        marker.scale.x = 0.08
+        marker.color.a = 0.9
+        marker.color.r, marker.color.g, marker.color.b = red, green, blue
+        return marker
+
+    @staticmethod
+    def _append_box_edges(marker, box):
+        minimum, maximum = box['min'], box['max']
+        corners = [
+            (minimum['x'], minimum['y'], minimum['z']),
+            (maximum['x'], minimum['y'], minimum['z']),
+            (maximum['x'], maximum['y'], minimum['z']),
+            (minimum['x'], maximum['y'], minimum['z']),
+            (minimum['x'], minimum['y'], maximum['z']),
+            (maximum['x'], minimum['y'], maximum['z']),
+            (maximum['x'], maximum['y'], maximum['z']),
+            (minimum['x'], maximum['y'], maximum['z']),
+        ]
+        edges = ((0, 1), (1, 2), (2, 3), (3, 0),
+                 (4, 5), (5, 6), (6, 7), (7, 4),
+                 (0, 4), (1, 5), (2, 6), (3, 7))
+        for start, end in edges:
+            marker.points.extend((Point(x=float(corners[start][0]), y=float(corners[start][1]), z=float(corners[start][2])),
+                                  Point(x=float(corners[end][0]), y=float(corners[end][1]), z=float(corners[end][2]))))
 
     @staticmethod
     def _point_in_box(point, box):
