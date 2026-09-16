@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Start the validated MID360 -> FAST-LIO2 -> PGO mapping pipeline.
-set -euo pipefail
+set -eo pipefail
+
+# Humble's setup script reads AMENT_TRACE_SETUP_FILES before defining it.
+source /opt/ros/humble/setup.bash
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
   echo "Usage: $0 <MID360_ROSBAG_DIRECTORY> [OUTPUT_DIRECTORY]" >&2
@@ -21,8 +24,8 @@ if [[ ! -f "$WORKSPACE/install/setup.bash" ]]; then
   exit 2
 fi
 
-source /opt/ros/humble/setup.bash
 source "$WORKSPACE/install/setup.bash"
+set -u
 echo "Writing final artifact to: $OUTPUT_DIR/map_package"
 echo "RViz opens with the live LIO cloud; wait for export completion before closing."
 ros2 launch agt_mapping_bringup mapping_v0.launch.py \

@@ -1,0 +1,8 @@
+version: 1
+operations:
+  - type: forbidden_zone
+    polygon:
+      - [12.0, -2.0]
+      - [16.0, -2.0]
+      - [16.0, 1.0]
+      - [12.0, 1.0]
