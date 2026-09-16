@@ -1,0 +1,46 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Reference Frame: map
+      Plane: XY
+      Plane Cell Count: 40
+      Cell Size: 1
+      Color: 100; 100; 100
+      Alpha: 0.5
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Map Point Cloud
+      Topic: /map_cloud
+      Style: Flat Squares
+      Size (m): 0.03
+      Color Transformer: FlatColor
+      Color: 255; 255; 255
+      Use Fixed Frame: true
+    - Class: rviz_default_plugins/InteractiveMarkers
+      Name: Refinement Controls
+      Update Topic: /map_refinement_editor/update
+      Show Descriptions: true
+    - Class: rviz_default_plugins/Marker
+      Name: Refinement Regions
+      Marker Topic: /selection_overlay
+  Global Options:
+    Fixed Frame: map
+    Background Color: 48; 48; 48
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 30
+      Focal Point: 0; 0; 0
+      Pitch: 1.0
+      Yaw: 0.8

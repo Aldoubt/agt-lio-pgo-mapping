@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import tempfile
 from pathlib import Path
 
 import rclpy
@@ -15,6 +17,7 @@ from std_srvs.srv import Trigger
 from visualization_msgs.msg import InteractiveMarker, InteractiveMarkerControl, Marker
 
 from agt_map_refinement_core.pcd import read_pcd
+from agt_map_refinement_core.pipeline import refine_map_package
 
 
 class MapRefinementEditor(Node):
@@ -22,9 +25,19 @@ class MapRefinementEditor(Node):
         super().__init__('map_refinement_editor')
         self.declare_parameter('refinement_file', 'refinement.yaml')
         self.declare_parameter('map_pcd', '')
+        self.declare_parameter('map_package', '')
+        self.declare_parameter('output_package', '')
+        self.declare_parameter('resolution', 0.05)
         self.declare_parameter('frame_id', 'map')
         self.refinement_file = Path(self.get_parameter('refinement_file').value).expanduser()
         self.map_pcd = Path(self.get_parameter('map_pcd').value).expanduser()
+        self.map_package = Path(self.get_parameter('map_package').value).expanduser()
+        self.output_package = Path(self.get_parameter('output_package').value).expanduser()
+        self.resolution = float(self.get_parameter('resolution').value)
+        if not str(self.refinement_file) or str(self.refinement_file) == '.':
+            self.refinement_file = self.output_package / 'refinement.yaml'
+        if not str(self.map_package) or str(self.map_package) == '.':
+            self.map_package = self.refinement_file.parent
         if not str(self.map_pcd) or str(self.map_pcd) == '.':
             self.map_pcd = self.refinement_file.parent / 'map.pcd'
         self.frame_id = self.get_parameter('frame_id').value
@@ -246,6 +259,24 @@ class MapRefinementEditor(Node):
         self.refinement_file.parent.mkdir(parents=True, exist_ok=True)
         self.refinement_file.write_text(yaml.safe_dump(self.document, sort_keys=False), encoding='utf-8')
         self.get_logger().info(f'Saved refinement rules: {self.refinement_file}')
+        if str(self.map_package) not in ('', '.') and str(self.output_package) not in ('', '.'):
+            self._export_refined_package()
+
+    def _export_refined_package(self):
+        if self.map_package.resolve() == self.output_package.resolve():
+            raise ValueError('output_package must differ from map_package')
+        self.output_package.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix='.refined-editor-',
+                                         dir=str(self.output_package.parent)))
+        try:
+            refine_map_package(self.map_package, self.refinement_file, staging, self.resolution)
+            if self.output_package.exists():
+                shutil.rmtree(self.output_package)
+            staging.rename(self.output_package)
+            self.get_logger().info(f'Exported refined map package: {self.output_package}')
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
 
 
 def main(args=None):
