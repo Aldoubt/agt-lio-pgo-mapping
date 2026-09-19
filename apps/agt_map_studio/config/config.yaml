@@ -1,0 +1,9 @@
+camera:
+  speed: 0.5
+  fast_speed: 3.0
+
+viewer:
+  point_size: 2.0
+  background: white
+  show_axis: true
+  color_mode: height
