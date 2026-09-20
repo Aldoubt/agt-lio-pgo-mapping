@@ -8,6 +8,7 @@ setup(name=package_name, version='0.1.0', packages=[package_name], data_files=[
 ], install_requires=['setuptools'], zip_safe=True, maintainer='AGT Mapping Team',
     maintainer_email='xuanyang.robotics@gmail.com',
     description='Schema, provenance and integrity boundary for mapping artifacts.', license='Apache-2.0',
+    tests_require=['pytest'],
     entry_points={'console_scripts': [
         'export_map_package = agt_mapping_artifacts.export_map_package:main',
     ]})
