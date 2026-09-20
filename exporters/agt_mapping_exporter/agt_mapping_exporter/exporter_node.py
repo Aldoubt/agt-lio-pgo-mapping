@@ -5,6 +5,7 @@ from pathlib import Path
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
 from std_msgs.msg import String
 
 from agt_mapping_artifacts import ArtifactWriter
@@ -60,7 +61,16 @@ class MappingArtifactExporter(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = MappingArtifactExporter()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    node = None
+    try:
+        node = MappingArtifactExporter()
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # A verified mapping session closes its nodes with SIGINT. This is a
+        # normal shutdown, not an export failure. Other exceptions still escape.
+        pass
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
