@@ -51,17 +51,42 @@ void OccupancyViewer::refresh() {
 void OccupancyViewer::set_mode(OccupancyInteractionMode mode) {
   mode_ = mode;
   editing_drag_ = false;
-  if (mode_ != OccupancyInteractionMode::Forbidden) forbidden_polygon_world_.clear();
-  emit status_changed(QStringLiteral("2D mode: %1").arg(
-      mode_ == OccupancyInteractionMode::View
-          ? QStringLiteral("View")
-          : mode_ == OccupancyInteractionMode::Erase
-                ? QStringLiteral("Erase")
-                : mode_ == OccupancyInteractionMode::Obstacle
-                      ? QStringLiteral("Obstacle")
-                      : QStringLiteral("Forbidden")));
+  if (!occupancy_mode_uses_polygon(mode_)) {
+    forbidden_polygon_world_.clear();
+    emit polygon_vertex_count_changed(0);
+  }
+  emit status_changed(QStringLiteral("2D mode: %1").arg(mode_name(mode_)));
   update();
 }
+
+QString OccupancyViewer::mode_name(OccupancyInteractionMode mode) {
+  switch (mode) {
+    case OccupancyInteractionMode::View: return QStringLiteral("View");
+    case OccupancyInteractionMode::Erase: return QStringLiteral("Erase");
+    case OccupancyInteractionMode::Obstacle: return QStringLiteral("Obstacle");
+    case OccupancyInteractionMode::Forbidden: return QStringLiteral("Forbidden");
+    case OccupancyInteractionMode::FreePolygon: return QStringLiteral("Free polygon");
+    case OccupancyInteractionMode::OccupiedPolygon: return QStringLiteral("Occupied polygon");
+    case OccupancyInteractionMode::UnknownPolygon: return QStringLiteral("Unknown polygon");
+  }
+  return QString();
+}
+
+void OccupancyViewer::cancel_polygon() {
+  editing_drag_ = false;
+  forbidden_polygon_world_.clear();
+  emit polygon_vertex_count_changed(0);
+  update();
+}
+
+void OccupancyViewer::pop_polygon_vertex() {
+  if (forbidden_polygon_world_.isEmpty()) return;
+  forbidden_polygon_world_.removeLast();
+  emit polygon_vertex_count_changed(forbidden_polygon_world_.size());
+  update();
+}
+
+void OccupancyViewer::finish_polygon() { finish_forbidden_polygon(); }
 
 void OccupancyViewer::set_obstacle_width(double width_m) {
   if (width_m > 0.0) obstacle_width_m_ = width_m;
@@ -157,14 +182,25 @@ void OccupancyViewer::paintEvent(QPaintEvent *) {
       painter.setPen(QPen(QColor(40, 110, 240, 230), pixel_width,
                           Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
       painter.drawLine(edit_start_screen_, edit_current_screen_);
-    } else if (mode_ == OccupancyInteractionMode::Forbidden &&
+    } else if (occupancy_mode_uses_polygon(mode_) &&
                !forbidden_polygon_world_.isEmpty()) {
       QPolygonF polygon;
       for (const auto &point : forbidden_polygon_world_) {
         polygon << world_to_screen({point.x(), point.y()});
       }
-      painter.setPen(QPen(QColor(240, 30, 30, 230), 2, Qt::DashLine));
-      painter.setBrush(QColor(240, 30, 30, 65));
+      QColor color(240, 30, 30);
+      if (mode_ == OccupancyInteractionMode::FreePolygon) color = QColor(40, 170, 80);
+      if (mode_ == OccupancyInteractionMode::OccupiedPolygon) color = QColor(40, 110, 240);
+      if (mode_ == OccupancyInteractionMode::UnknownPolygon) color = QColor(120, 120, 120);
+      painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 230), 2,
+                          Qt::DashLine));
+      painter.setBrush(QColor(color.red(), color.green(), color.blue(), 65));
+      if (!polygon.isEmpty()) {
+        painter.drawLine(polygon.last(), QPointF(last_mouse_position_));
+        painter.drawText(polygon.last() + QPointF(8, -8),
+                         QStringLiteral("%1 pts | double-click/Enter close | Backspace undo | Esc")
+                             .arg(polygon.size()));
+      }
       painter.drawPolyline(polygon);
       if (polygon.size() >= 3) painter.drawLine(polygon.last(), polygon.first());
     }
@@ -181,9 +217,18 @@ void OccupancyViewer::resizeEvent(QResizeEvent *event) {
 
 void OccupancyViewer::keyPressEvent(QKeyEvent *event) {
   if (event->key() == Qt::Key_Escape) {
-    editing_drag_ = false;
-    forbidden_polygon_world_.clear();
-    update();
+    cancel_polygon();
+    event->accept();
+    return;
+  }
+  if (event->key() == Qt::Key_Backspace && occupancy_mode_uses_polygon(mode_)) {
+    pop_polygon_vertex();
+    event->accept();
+    return;
+  }
+  if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
+      occupancy_mode_uses_polygon(mode_)) {
+    finish_forbidden_polygon();
     event->accept();
     return;
   }
@@ -205,11 +250,11 @@ void OccupancyViewer::mousePressEvent(QMouseEvent *event) {
   if (event->button() == Qt::LeftButton && mode_ == OccupancyInteractionMode::View) {
     panning_ = true;
     last_mouse_position_ = event->pos();
-  } else if (event->button() == Qt::LeftButton &&
-             mode_ == OccupancyInteractionMode::Forbidden) {
+  } else if (event->button() == Qt::LeftButton && occupancy_mode_uses_polygon(mode_)) {
     GridWorldPoint world;
     if (screen_to_world(QPointF(event->pos()), &world)) {
       forbidden_polygon_world_.push_back(QPointF(world.x, world.y));
+      emit polygon_vertex_count_changed(forbidden_polygon_world_.size());
       update();
     }
   } else if (event->button() == Qt::LeftButton) {
@@ -224,6 +269,10 @@ void OccupancyViewer::mousePressEvent(QMouseEvent *event) {
 }
 
 void OccupancyViewer::mouseMoveEvent(QMouseEvent *event) {
+  if (occupancy_mode_uses_polygon(mode_) && !forbidden_polygon_world_.isEmpty()) {
+    last_mouse_position_ = event->pos();
+    update();
+  }
   if (panning_) {
     pan_ += QPointF(event->pos() - last_mouse_position_);
     last_mouse_position_ = event->pos();
@@ -261,8 +310,7 @@ void OccupancyViewer::mouseReleaseEvent(QMouseEvent *event) {
 }
 
 void OccupancyViewer::mouseDoubleClickEvent(QMouseEvent *event) {
-  if (event->button() == Qt::LeftButton &&
-      mode_ == OccupancyInteractionMode::Forbidden) {
+  if (event->button() == Qt::LeftButton && occupancy_mode_uses_polygon(mode_)) {
     finish_forbidden_polygon();
     event->accept();
     return;
@@ -341,10 +389,19 @@ void OccupancyViewer::finish_forbidden_polygon() {
       forbidden_polygon_world_.removeLast();
     }
     if (forbidden_polygon_world_.size() >= 3U) {
-      emit forbidden_polygon_requested(forbidden_polygon_world_);
+      if (mode_ == OccupancyInteractionMode::Forbidden) {
+        emit forbidden_polygon_requested(forbidden_polygon_world_);
+      } else if (mode_ == OccupancyInteractionMode::FreePolygon) {
+        emit fill_polygon_requested(forbidden_polygon_world_, GridMap::kFree);
+      } else if (mode_ == OccupancyInteractionMode::OccupiedPolygon) {
+        emit fill_polygon_requested(forbidden_polygon_world_, GridMap::kOccupied);
+      } else if (mode_ == OccupancyInteractionMode::UnknownPolygon) {
+        emit fill_polygon_requested(forbidden_polygon_world_, GridMap::kUnknown);
+      }
     }
   }
   forbidden_polygon_world_.clear();
+  emit polygon_vertex_count_changed(0);
   update();
 }
 

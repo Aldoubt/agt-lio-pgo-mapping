@@ -48,6 +48,7 @@ def _wait_ready(rclpy, node, output):
     timeout = float(node.declare_parameter('startup_timeout', 45.0).value)
     lidar = node.declare_parameter('lidar_topic', '/livox/lidar').value
     imu = node.declare_parameter('imu_topic', '/livox/imu').value
+    require_publishers = bool(node.declare_parameter('require_publishers', False).value)
     client = node.create_client(Trigger, '/mapping/backend/export_artifact')
     missing = []
 
@@ -55,6 +56,12 @@ def _wait_ready(rclpy, node, output):
         missing.clear()
         if not client.service_is_ready():
             missing.append('/mapping/backend/export_artifact')
+        if require_publishers:
+            # Live mode: the driver must already publish both raw streams,
+            # otherwise FAST-LIO2 would wait forever with no visible error.
+            for topic in (lidar, imu):
+                if not node.get_publishers_info_by_topic(topic):
+                    missing.append(f'publisher on {topic} (livox_ros_driver2 not up or sensor unreachable)')
         services = dict(node.get_service_names_and_types())
         if 'interface/srv/SaveMaps' not in services.get('/pgo/save_maps', []):
             missing.append('/pgo/save_maps')
@@ -79,7 +86,8 @@ def _wait_ready(rclpy, node, output):
     except TimeoutError as exc:
         raise TimeoutError(f'{exc}; missing: {", ".join(missing)}') from exc
     mark_session(output, 'ready', 'Required services and sensor/backend consumers discovered')
-    node.get_logger().info('[1/4] Pipeline ready; rosbag playback may start')
+    node.get_logger().info('[1/4] Pipeline ready; ' + (
+        'live sensor streams are being consumed' if require_publishers else 'rosbag playback may start'))
 
 
 def _export(rclpy, node, output):

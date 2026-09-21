@@ -13,7 +13,22 @@ namespace agt_map_studio {
 
 class RefinementModel;
 
-enum class OccupancyInteractionMode { View, Erase, Obstacle, Forbidden };
+enum class OccupancyInteractionMode {
+  View,
+  Erase,
+  Obstacle,
+  Forbidden,
+  FreePolygon,      // fill polygon -> free
+  OccupiedPolygon,  // fill polygon -> occupied
+  UnknownPolygon    // fill polygon -> unknown
+};
+
+inline bool occupancy_mode_uses_polygon(OccupancyInteractionMode mode) {
+  return mode == OccupancyInteractionMode::Forbidden ||
+         mode == OccupancyInteractionMode::FreePolygon ||
+         mode == OccupancyInteractionMode::OccupiedPolygon ||
+         mode == OccupancyInteractionMode::UnknownPolygon;
+}
 
 class OccupancyViewer : public QWidget {
   Q_OBJECT
@@ -33,6 +48,12 @@ public:
   void set_mode(OccupancyInteractionMode mode);
   OccupancyInteractionMode mode() const { return mode_; }
   void set_obstacle_width(double width_m);
+  void cancel_polygon();
+  int pending_polygon_vertices() const { return forbidden_polygon_world_.size(); }
+  // Removes the last vertex of the polygon being drawn.
+  void pop_polygon_vertex();
+  void finish_polygon();
+  static QString mode_name(OccupancyInteractionMode mode);
   double obstacle_width() const { return obstacle_width_m_; }
 
 signals:
@@ -42,6 +63,9 @@ signals:
   void obstacle_line_requested(double start_x, double start_y, double end_x,
                                double end_y, double width_m);
   void forbidden_polygon_requested(const QVector<QPointF> &polygon);
+  // value: GridMap::kFree / kOccupied / kUnknown
+  void fill_polygon_requested(const QVector<QPointF> &polygon, int value);
+  void polygon_vertex_count_changed(int count);
 
 protected:
   void paintEvent(QPaintEvent *event) override;

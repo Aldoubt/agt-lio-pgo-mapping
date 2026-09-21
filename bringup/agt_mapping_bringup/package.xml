@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>agt_mapping_bringup</name>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
   <description>Composition launch boundary for AGT mapping framework pipelines.</description>
   <maintainer email="xuanyang.robotics@gmail.com">AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>
@@ -13,6 +13,8 @@
   <exec_depend>agt_mid360_adapter</exec_depend>
   <exec_depend>agt_mapping_artifacts</exec_depend>
   <exec_depend>agt_mapping_exporter</exec_depend>
+  <exec_depend>agt_pcd2grid_exporter</exec_depend>
+  <exec_depend>agt_map_studio</exec_depend>
   <exec_depend>agt_fastlio_backend</exec_depend>
   <exec_depend>agt_pgo_backend</exec_depend>
   <exec_depend>fastlio2</exec_depend>
@@ -23,6 +25,9 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <!-- Live MID360 mode (mapping_live_mid360.launch.py); replay never loads the driver. -->
+  <exec_depend>livox_ros_driver2</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>ros2bag</exec_depend>
   <exec_depend>ros2launch</exec_depend>

@@ -19,6 +19,8 @@ cd agt-lio-pgo-mapping
 
 脚本会锁定并获取 FAST-LIO2/PGO、Livox driver 和 Batch-LIO，安装 Humble 依赖并构建所需 package。
 
+已有工作区的全量/增量重编译、自动化测试、入口冒烟测试和现场验收步骤见 [编译与测试流程](docs/build_and_test.md)。
+
 ## 运行建图
 
 给定 MID360 rosbag 目录：
@@ -66,6 +68,62 @@ map_package/
 
 仅当 `metadata.yaml` 中存在 `backend: PGO`、`backend_status.optimized: true`，并且非空地图、必需文件、完整 checksum 清单及 SHA-256 全部通过校验时，才应交付地图。导出服务返回成功仅表示受理请求，不代表写入或校验完成。
 
+### 单 MID360 实机建图（0.3.0）
+
+```bash
+./scripts/run_mid360_live_mapping.sh [OUTPUT] --no-rviz          # 启动 Livox 驱动 + LIO/PGO，同步录制 raw_bag/
+ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1 \
+  ros2 service call /mapping/session/finish std_srvs/srv/Trigger "{}"   # 或 touch <OUTPUT>/STOP_MAPPING
+```
+
+等价于 `run_mid360_mapping.sh --live`；支持 `--livox-config`、`--duration`、`--sensor-stall-seconds`、`--dry-run`。原始 `/livox/lidar` + `/livox/imu` 始终录制到 `<OUTPUT>/raw_bag`，可用回放模式复现。
+
+### 建图后自动转二维图并人工确认
+
+```bash
+./scripts/run_mid360_mapping_review.sh \
+  /home/yangxuan/ros2_ws/experiments/data/rosbag/bunker_mid360_mapping_20260901_205036 \
+  /home/yangxuan/ros2_ws/experiments/artifacts/output/bunker_mid360_review_$(date +%Y%m%d_%H%M%S) \
+  --lidar-topic /agt/sensors/lidar/custom \
+  --imu-topic /agt/sensors/imu/data
+```
+
+该入口先正常回放建图；最终 PGO 地图通过校验后，自动调用本仓库的
+`agt_pcd2grid_exporter` 生成 PGM/YAML，再以轻量二维模式打开 Map Studio。
+此模式不会把大 PCD 加载到 OpenGL，编辑完成前不会产生“已确认”地图。使用
+`Erase rect`、`Obstacle line`、三种 polygon 或 `Forbidden zone` 修改后，点击
+`Confirm & Save 2D Map`，结果写入：
+
+```text
+<OUTPUT>/map_review/
+├── base/                   # 自动转换的原始二维图
+│   ├── map.pgm
+│   └── map.yaml
+└── confirmed/              # 仅人工确认后创建/更新
+    ├── map.pgm
+    ├── map.yaml
+    ├── map_refinement.yaml
+    ├── keepout_zones.yaml
+    ├── metadata.yaml
+    └── review_status.yaml  # status: confirmed
+```
+
+已经完成建图时无需再回放录包，可直接审核已有输出：
+
+```bash
+./scripts/review_mapping_output.sh /path/to/completed_mapping_output
+```
+
+这条 PCD→PGM→人工编辑→确认链路只依赖 `agt_mapping_framework` 内的包，
+不依赖、不检测也不调用 `agt_navigation_v3`。
+
+二维转换默认还会使用建图包中的 `patches/*.pcd` 和 `poses_timed.txt` 做静态持久性
+过滤：20 cm 三维体素需要被至少两个、且相隔至少两个关键帧重复观测，随后按局部
+地面相对高度提取障碍、删除小孤立区域并做一格闭运算。这样可过滤跟车人员等只在
+少量连续帧出现的拖影，同时保留墙、路沿和立柱。原始 `map.pcd` 与建图包不会被修改。
+长时间原地不动的人仍可能被当成静态物体，需在二维编辑器中删除；若现场仍频繁出现，
+再考虑在建图前端增加语义动态目标过滤，而不是直接改变 SLAM 主链。
+
 ## 技术边界
 
 ```text
@@ -80,4 +138,4 @@ Keyframes + PGO
 Optimized PCD map artifact
 ```
 
-详细接口、地图格式、架构和研究扩展点见 [`docs/`](docs/)，交付验收记录见 [docs/delivery_acceptance.md](docs/delivery_acceptance.md)。本仓库产生版本化地图资产；`agt_navigation_v3` 负责审核并在机器人运行时使用这些资产。
+详细接口、地图格式、架构和研究扩展点见 [`docs/`](docs/)，交付验收记录见 [docs/delivery_acceptance.md](docs/delivery_acceptance.md)。本仓库独立完成建图、PCD→PGM、二维编辑和人工确认；确认后的地图可由其他运行时按需使用。

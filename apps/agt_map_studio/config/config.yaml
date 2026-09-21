@@ -7,3 +7,19 @@ viewer:
   background: white
   show_axis: true
   color_mode: height
+
+# Publish workflow defaults (mirrors agt_map_manager pipeline defaults).
+workflow:
+  map_root: ""            # empty -> $AGT_MAP_ROOT or ~/ros2_ws/maps
+  resolution: 0.10
+  margin: 1.0
+  min_points: 2
+  max_step: 0.22
+  max_slope_deg: 20.0
+  use_trajectory: true
+
+# 3D selection tool defaults.
+selection:
+  sphere_radius_m: 0.5
+  z_window_min: -1.0
+  z_window_max: 3.0

@@ -2,6 +2,9 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <cmath>
+#include <functional>
+
 #include <chrono>
 #include <algorithm>
 #include <cstdint>
@@ -241,7 +244,7 @@ bool RefinementModel::load_refinement_yaml(const std::string &path,
           operation.geometry.push_back({point[0].as<double>(), point[1].as<double>()});
         }
         operation.width_m = geometry["width_m"].as<double>();
-      } else if (operation.type == "forbidden_polygon") {
+      } else if (geometry["polygon"]) {
         for (const auto &point : geometry["polygon"]) {
           operation.geometry.push_back({point[0].as<double>(), point[1].as<double>()});
         }
@@ -324,6 +327,159 @@ bool RefinementModel::export_navigation_map(const std::string &output_dir,
     metadata_stream << metadata.c_str() << '\n';
     if (!pgm.good() || !yaml_stream.good() || !metadata_stream.good()) {
       if (error) *error = "failed writing navigation map asset";
+      return false;
+    }
+  } catch (const std::exception &exception) {
+    if (error) *error = exception.what();
+    return false;
+  }
+  return true;
+}
+
+bool RefinementModel::has_active_operations() const {
+  return std::any_of(history_.begin(), history_.end(),
+                     [](const RefinementOperation &entry) { return !entry.undone; });
+}
+
+std::string RefinementModel::active_fingerprint() const {
+  if (!has_active_operations()) return std::string();
+  std::ostringstream stream;
+  for (const auto &entry : history_) {
+    if (entry.undone) continue;
+    stream << entry.id << ':' << entry.type << ':' << entry.changes.size() << ':'
+           << entry.geometry.size() << ':' << entry.width_m << ';';
+  }
+  std::ostringstream hex;
+  hex << std::hex << std::hash<std::string>{}(stream.str());
+  return hex.str();
+}
+
+std::size_t RefinementModel::patch_edit_count() const {
+  return static_cast<std::size_t>(std::count_if(
+      history_.begin(), history_.end(), [](const RefinementOperation &entry) {
+        return !entry.undone && entry.type != "forbidden_polygon" && !entry.changes.empty();
+      }));
+}
+
+namespace {
+
+std::vector<GridWorldPoint> patch_polygon_for(const RefinementOperation &entry,
+                                              std::string *mode) {
+  std::vector<GridWorldPoint> polygon;
+  if (entry.type == "erase_rectangle" && entry.geometry.size() >= 2U) {
+    *mode = "free";
+    const auto &a = entry.geometry[0];
+    const auto &b = entry.geometry[1];
+    polygon = {{a.x, a.y}, {b.x, a.y}, {b.x, b.y}, {a.x, b.y}};
+  } else if (entry.type == "draw_obstacle" && entry.geometry.size() >= 2U) {
+    *mode = "occupied";
+    const auto &a = entry.geometry[0];
+    const auto &b = entry.geometry[1];
+    const double dx = b.x - a.x;
+    const double dy = b.y - a.y;
+    const double length = std::hypot(dx, dy);
+    const double half = std::max(entry.width_m, 0.02) * 0.5;
+    double nx = 0.0;
+    double ny = half;
+    double ex = 0.0;
+    double ey = 0.0;
+    if (length > 1e-9) {
+      nx = -dy / length * half;
+      ny = dx / length * half;
+      ex = dx / length * half;  // extend the stroke by its half width (round caps)
+      ey = dy / length * half;
+    }
+    polygon = {{a.x - ex + nx, a.y - ey + ny}, {b.x + ex + nx, b.y + ey + ny},
+               {b.x + ex - nx, b.y + ey - ny}, {a.x - ex - nx, a.y - ey - ny}};
+  } else if (entry.type == "fill_free_polygon") {
+    *mode = "free";
+    polygon = entry.geometry;
+  } else if (entry.type == "fill_occupied_polygon") {
+    *mode = "occupied";
+    polygon = entry.geometry;
+  } else if (entry.type == "fill_unknown_polygon") {
+    *mode = "unknown";
+    polygon = entry.geometry;
+  }
+  return polygon;
+}
+
+}  // namespace
+
+bool RefinementModel::write_navigation_patch(const std::string &path,
+                                             std::string *error) const {
+  if (!has_map()) {
+    if (error) *error = "no base occupancy map loaded";
+    return false;
+  }
+  try {
+    const std::filesystem::path file_path(path);
+    if (!file_path.parent_path().empty()) {
+      std::filesystem::create_directories(file_path.parent_path());
+    }
+    YAML::Emitter emitter;
+    emitter << YAML::BeginMap
+            << YAML::Key << "generator" << YAML::Value << "agt_map_studio"
+            << YAML::Key << "base_map_yaml" << YAML::Value << base_map_.yaml_path()
+            << YAML::Key << "created_at" << YAML::Value << timestamp_now()
+            << YAML::Key << "edits" << YAML::Value << YAML::BeginSeq;
+    for (const auto &entry : history_) {
+      if (entry.undone || entry.type == "forbidden_polygon") continue;
+      std::string mode;
+      const auto polygon = patch_polygon_for(entry, &mode);
+      if (polygon.size() < 3U || mode.empty()) continue;
+      emitter << YAML::BeginMap << YAML::Key << "mode" << YAML::Value << mode
+              << YAML::Key << "note" << YAML::Value
+              << ("studio op " + std::to_string(entry.id) + " " + entry.type + " @ " +
+                  entry.timestamp)
+              << YAML::Key << "polygon_m" << YAML::Value << YAML::BeginSeq;
+      for (const auto &point : polygon) {
+        emitter << YAML::Flow << YAML::BeginSeq << point.x << point.y << YAML::EndSeq;
+      }
+      emitter << YAML::EndSeq << YAML::EndMap;
+    }
+    emitter << YAML::EndSeq << YAML::EndMap;
+    std::ofstream stream(file_path);
+    stream << emitter.c_str() << '\n';
+    if (!stream.good()) {
+      if (error) *error = "failed writing navigation patch: " + path;
+      return false;
+    }
+  } catch (const std::exception &exception) {
+    if (error) *error = exception.what();
+    return false;
+  }
+  return true;
+}
+
+bool RefinementModel::write_keepout_zones(const std::string &path,
+                                          std::string *error) const {
+  try {
+    const std::filesystem::path file_path(path);
+    if (!file_path.parent_path().empty()) {
+      std::filesystem::create_directories(file_path.parent_path());
+    }
+    YAML::Emitter emitter;
+    emitter << YAML::BeginMap
+            << YAML::Key << "version" << YAML::Value << 1
+            << YAML::Key << "generator" << YAML::Value << "agt_map_studio"
+            << YAML::Key << "frame_id" << YAML::Value << "map"
+            << YAML::Key << "base_map_yaml" << YAML::Value << base_map_.yaml_path()
+            << YAML::Key << "zones" << YAML::Value << YAML::BeginSeq;
+    for (const auto &zone : forbidden_zones_) {
+      emitter << YAML::BeginMap << YAML::Key << "id" << YAML::Value << zone.id
+              << YAML::Key << "type" << YAML::Value << "keepout"
+              << YAML::Key << "polygon_m" << YAML::Value << YAML::BeginSeq;
+      for (const auto &point : zone.polygon) {
+        emitter << YAML::Flow << YAML::BeginSeq << point.x << point.y << YAML::EndSeq;
+      }
+      emitter << YAML::EndSeq << YAML::EndMap;
+    }
+    emitter << YAML::EndSeq << YAML::EndMap;
+    std::ofstream stream(file_path);
+    stream << emitter.c_str() << '\n';
+    if (!stream.good()) {
+      if (error) *error = "failed writing keepout zones: " + path;
       return false;
     }
   } catch (const std::exception &exception) {

@@ -16,11 +16,25 @@ if ! command -v ros2 >/dev/null 2>&1; then
   exit 2
 fi
 executables="$(ros2 pkg executables agt_mapping_bringup)"
-for helper in mapping_wait_ready mapping_export_verified; do
+helpers=(mapping_wait_ready mapping_export_verified)
+live_mode=0
+for argument in "$@"; do
+  if [[ "$argument" == mapping_live_mid360.launch.py ]]; then
+    live_mode=1
+  fi
+done
+if [[ $live_mode -eq 1 ]]; then
+  helpers+=(mapping_live_supervisor)
+fi
+for helper in "${helpers[@]}"; do
   if ! grep -Fqx -- "agt_mapping_bringup $helper" <<< "$executables"; then
     echo "Selected overlay is stale: missing agt_mapping_bringup/$helper" >&2
     echo "Rebuild agt_mapping_bringup and agt_mapping_artifacts into $OVERLAY_SETUP, then retry." >&2
     exit 2
   fi
 done
+if [[ $live_mode -eq 1 ]] && ! ros2 pkg prefix livox_ros_driver2 >/dev/null 2>&1; then
+  echo "Live mode requires livox_ros_driver2 in the sourced overlay (src/external/livox_ros_driver2)." >&2
+  exit 2
+fi
 exec "$@"

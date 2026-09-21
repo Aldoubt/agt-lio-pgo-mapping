@@ -40,6 +40,10 @@ add_executable(map_viewer
   src/occupancy/commands/EraseRectangleCommand.cpp
   src/occupancy/commands/DrawObstacleCommand.cpp
   src/occupancy/commands/ForbiddenPolygonCommand.cpp
+  src/occupancy/commands/FillPolygonCommand.cpp
+  src/tools/ExternalToolRunner.cpp
+  src/workflow/WorkflowSession.cpp
+  src/ui/WorkflowPanel.cpp
   src/ui/MainWindow.cpp
 )
 
@@ -103,6 +107,7 @@ if(BUILD_TESTING)
     src/occupancy/commands/EraseRectangleCommand.cpp
     src/occupancy/commands/DrawObstacleCommand.cpp
     src/occupancy/commands/ForbiddenPolygonCommand.cpp
+    src/occupancy/commands/FillPolygonCommand.cpp
   )
   target_include_directories(test_occupancy_viewer PRIVATE src)
   target_link_libraries(test_occupancy_viewer yaml-cpp)
@@ -115,9 +120,43 @@ if(BUILD_TESTING)
     src/occupancy/commands/EraseRectangleCommand.cpp
     src/occupancy/commands/DrawObstacleCommand.cpp
     src/occupancy/commands/ForbiddenPolygonCommand.cpp
+    src/occupancy/commands/FillPolygonCommand.cpp
   )
   target_include_directories(test_occupancy_refinement PRIVATE src)
   target_link_libraries(test_occupancy_refinement yaml-cpp)
+
+  ament_add_gtest(test_patch_export
+    test/test_patch_export.cpp
+    src/occupancy/GridMap.cpp
+    src/occupancy/MapYamlLoader.cpp
+    src/occupancy/RefinementModel.cpp
+    src/occupancy/commands/EraseRectangleCommand.cpp
+    src/occupancy/commands/DrawObstacleCommand.cpp
+    src/occupancy/commands/ForbiddenPolygonCommand.cpp
+    src/occupancy/commands/FillPolygonCommand.cpp
+  )
+  target_include_directories(test_patch_export PRIVATE src)
+  target_link_libraries(test_patch_export yaml-cpp)
+
+  ament_add_gtest(test_refinement_rules_export
+    test/test_refinement_rules_export.cpp
+    src/io/PCDLoader.cpp
+    src/selection/SelectionManager.cpp
+  )
+  target_include_directories(test_refinement_rules_export PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_compile_definitions(test_refinement_rules_export PRIVATE ${PCL_DEFINITIONS})
+  target_link_libraries(test_refinement_rules_export
+    ${PCL_LIBRARIES}
+    ${QT_WIDGETS_TARGET}
+    yaml-cpp
+  )
+
+  ament_add_gtest(test_workflow_session
+    test/test_workflow_session.cpp
+    src/workflow/WorkflowSession.cpp
+  )
+  target_include_directories(test_workflow_session PRIVATE src)
+  target_link_libraries(test_workflow_session ${QT_WIDGETS_TARGET} yaml-cpp)
 endif()
 
 ament_package()

@@ -4,7 +4,7 @@ package_name = 'agt_map_refinement_core'
 
 setup(
     name=package_name,
-    version='0.1.0',
+    version='0.3.0',
     packages=[package_name],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
@@ -16,6 +16,7 @@ setup(
     maintainer_email='xuanyang.robotics@gmail.com',
     description='Offline map refinement rules, package publication and Nav2 derivatives.',
     license='Apache-2.0',
+    tests_require=['pytest'],
     entry_points={'console_scripts': [
         'apply_map_refinement = agt_map_refinement_core.cli:main',
     ]},

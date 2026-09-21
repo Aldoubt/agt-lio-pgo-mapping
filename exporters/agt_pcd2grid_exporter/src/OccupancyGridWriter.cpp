@@ -71,10 +71,22 @@ bool OccupancyGridWriter::write_navigation_map(
              << YAML::Key << "input_points" << YAML::Value << stats.input_points
              << YAML::Key << "accepted_points" << YAML::Value << stats.accepted_points
              << YAML::Key << "z_filtered_points" << YAML::Value << stats.z_filtered_points
+             << YAML::Key << "ground_points" << YAML::Value << stats.ground_points
+             << YAML::Key << "obstacle_points" << YAML::Value << stats.obstacle_points
              << YAML::Key << "width" << YAML::Value << grid.width
              << YAML::Key << "height" << YAML::Value << grid.height
              << YAML::Key << "occupied_cells" << YAML::Value << stats.occupied_cells
+             << YAML::Key << "free_cells" << YAML::Value << stats.free_cells
+             << YAML::Key << "unknown_cells" << YAML::Value << stats.unknown_cells
              << YAML::Key << "empty_cells" << YAML::Value << stats.empty_cells
+             << YAML::Key << "removed_small_component_cells" << YAML::Value
+             << stats.removed_small_component_cells << YAML::Key << "closing_added_cells"
+             << YAML::Value << stats.closing_added_cells << YAML::Key << "free_expanded_cells"
+             << YAML::Value << stats.free_expanded_cells << YAML::Key
+             << "temporal_input_points" << YAML::Value << stats.temporal_input_points
+             << YAML::Key << "temporal_retained_points" << YAML::Value
+             << stats.temporal_retained_points << YAML::Key << "temporal_removed_points"
+             << YAML::Value << stats.temporal_removed_points
              << YAML::Key << "coordinate_convention" << YAML::Value
              << "origin is lower-left; PGM rows are vertically flipped" << YAML::EndMap;
     std::ofstream metadata_stream(directory / "metadata.yaml");

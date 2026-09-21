@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>agt_map_refinement_core</name>
-  <version>0.1.0</version>
+  <version>0.3.0</version>
   <description>Offline map refinement rules, package publication and Nav2 derivatives.</description>
   <maintainer email="xuanyang.robotics@gmail.com">AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>

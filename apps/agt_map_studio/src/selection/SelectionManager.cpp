@@ -2,6 +2,7 @@
 
 #include <Eigen/Geometry>
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
 
@@ -20,20 +21,63 @@
 namespace agt_map_studio {
 namespace {
 
+void emit_geometry(YAML::Emitter &emitter, const SelectionGeometry &geometry) {
+  emitter << YAML::Key << "type" << YAML::Value << geometry.rule_type;
+  if (geometry.rule_type == "remove_polygon") {
+    emitter << YAML::Key << "points" << YAML::Value << YAML::BeginSeq;
+    for (const auto &point : geometry.polygon_xy) {
+      emitter << YAML::Flow << YAML::BeginSeq << point.x() << point.y() << YAML::EndSeq;
+    }
+    emitter << YAML::EndSeq;
+    if (geometry.has_z_range) {
+      emitter << YAML::Key << "z_range" << YAML::Value << YAML::Flow << YAML::BeginSeq
+              << geometry.z_min << geometry.z_max << YAML::EndSeq;
+    }
+  } else if (geometry.rule_type == "remove_height_band") {
+    emitter << YAML::Key << "min_z" << YAML::Value << geometry.z_min
+            << YAML::Key << "max_z" << YAML::Value << geometry.z_max;
+  } else if (geometry.rule_type == "remove_sphere") {
+    emitter << YAML::Key << "center" << YAML::Value << YAML::Flow << YAML::BeginMap
+            << YAML::Key << "x" << YAML::Value << geometry.center.x()
+            << YAML::Key << "y" << YAML::Value << geometry.center.y()
+            << YAML::Key << "z" << YAML::Value << geometry.center.z() << YAML::EndMap
+            << YAML::Key << "radius" << YAML::Value << geometry.radius;
+  } else {
+    emitter << YAML::Key << "min" << YAML::Value << YAML::Flow << YAML::BeginMap
+            << YAML::Key << "x" << YAML::Value << geometry.box.min.x()
+            << YAML::Key << "y" << YAML::Value << geometry.box.min.y()
+            << YAML::Key << "z" << YAML::Value << geometry.box.min.z() << YAML::EndMap
+            << YAML::Key << "max" << YAML::Value << YAML::Flow << YAML::BeginMap
+            << YAML::Key << "x" << YAML::Value << geometry.box.max.x()
+            << YAML::Key << "y" << YAML::Value << geometry.box.max.y()
+            << YAML::Key << "z" << YAML::Value << geometry.box.max.z() << YAML::EndMap;
+  }
+}
+
 }  // namespace
 
 void SelectionManager::reset(std::size_t point_count) {
   statuses_.assign(point_count, PointStatus::VISIBLE);
   selected_indices_.clear();
-  selection_box_ = AxisAlignedBoundingBox();
+  selection_geometry_ = SelectionGeometry();
   history_.clear();
   undo_stack_.clear();
   redo_stack_.clear();
   next_operation_id_ = 1;
+  hide_deleted_ = false;
+  isolate_selected_ = false;
 }
 
 void SelectionManager::select_points(const std::vector<std::size_t> &indices,
                                      const AxisAlignedBoundingBox &box) {
+  SelectionGeometry geometry;
+  geometry.rule_type = "remove_box";
+  geometry.box = box;
+  select_points(indices, geometry);
+}
+
+void SelectionManager::select_points(const std::vector<std::size_t> &indices,
+                                     const SelectionGeometry &geometry) {
   for (auto &status : statuses_) {
     if (status == PointStatus::SELECTED) status = PointStatus::VISIBLE;
   }
@@ -44,22 +88,44 @@ void SelectionManager::select_points(const std::vector<std::size_t> &indices,
       selected_indices_.push_back(index);
     }
   }
-  selection_box_ = selected_indices_.empty() ? AxisAlignedBoundingBox() : box;
+  selection_geometry_ = selected_indices_.empty() ? SelectionGeometry() : geometry;
+}
+
+void SelectionManager::invert_selection() {
+  selected_indices_.clear();
+  for (std::size_t i = 0; i < statuses_.size(); ++i) {
+    if (statuses_[i] == PointStatus::SELECTED) {
+      statuses_[i] = PointStatus::VISIBLE;
+    } else if (statuses_[i] == PointStatus::VISIBLE) {
+      statuses_[i] = PointStatus::SELECTED;
+      selected_indices_.push_back(i);
+    }
+  }
+  // An inverted set no longer has a compact rule; the delete falls back to an
+  // explicit box built from the selected points by the viewer, so clear it.
+  selection_geometry_ = SelectionGeometry();
+  selection_geometry_.rule_type = "remove_box";
 }
 
 bool SelectionManager::delete_selected() {
   if (selected_indices_.empty()) return false;
-  DeleteBoxCommand command;
+  DeleteCommand command;
   command.indices = selected_indices_;
   command.before_status.reserve(command.indices.size());
-  command.box = selection_box_;
+  command.geometry = selection_geometry_;
   command.operation_id = next_operation_id_++;
   for (const auto index : command.indices) {
     command.before_status.push_back(statuses_[index]);
     statuses_[index] = PointStatus::DELETED;
   }
-  history_.push_back({command.operation_id, "delete_box", command.box,
-                      command.indices.size(), timestamp_now(), false});
+  EditOperation entry;
+  entry.id = command.operation_id;
+  entry.type = command.geometry.rule_type;
+  entry.box = command.geometry.box;
+  entry.geometry = command.geometry;
+  entry.point_count = command.indices.size();
+  entry.timestamp = timestamp_now();
+  history_.push_back(entry);
   undo_stack_.push_back(std::move(command));
   redo_stack_.clear();
   clear_selection();
@@ -68,7 +134,7 @@ bool SelectionManager::delete_selected() {
 
 bool SelectionManager::undo() {
   if (undo_stack_.empty()) return false;
-  DeleteBoxCommand command = std::move(undo_stack_.back());
+  DeleteCommand command = std::move(undo_stack_.back());
   undo_stack_.pop_back();
   for (std::size_t i = 0; i < command.indices.size(); ++i) {
     statuses_[command.indices[i]] = command.before_status[i];
@@ -81,7 +147,7 @@ bool SelectionManager::undo() {
 
 bool SelectionManager::redo() {
   if (redo_stack_.empty()) return false;
-  DeleteBoxCommand command = std::move(redo_stack_.back());
+  DeleteCommand command = std::move(redo_stack_.back());
   redo_stack_.pop_back();
   for (const auto index : command.indices) statuses_[index] = PointStatus::DELETED;
   if (auto *entry = operation(command.operation_id)) entry->undone = false;
@@ -106,6 +172,27 @@ std::size_t SelectionManager::deleted_count() const {
                                               PointStatus::DELETED));
 }
 
+bool SelectionManager::has_active_deletes() const {
+  return std::any_of(history_.begin(), history_.end(),
+                     [](const EditOperation &entry) { return !entry.undone; });
+}
+
+QString SelectionManager::active_fingerprint() const {
+  if (!has_active_deletes()) return QString();
+  QCryptographicHash hash(QCryptographicHash::Sha256);
+  for (const auto &entry : history_) {
+    if (entry.undone) continue;
+    std::ostringstream stream;
+    stream << entry.id << ':' << entry.type << ':' << entry.point_count << ':'
+           << entry.geometry.box.min.transpose() << ':' << entry.geometry.box.max.transpose()
+           << ':' << entry.geometry.z_min << ':' << entry.geometry.z_max << ':'
+           << entry.geometry.radius << ':' << entry.geometry.polygon_xy.size();
+    const std::string text = stream.str();
+    hash.addData(text.data(), static_cast<int>(text.size()));
+  }
+  return QString::fromLatin1(hash.result().toHex().left(16));
+}
+
 std::string SelectionManager::timestamp_now() {
   const auto now = std::chrono::system_clock::now();
   const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(now);
@@ -125,7 +212,7 @@ void SelectionManager::clear_selection() {
     if (status == PointStatus::SELECTED) status = PointStatus::VISIBLE;
   }
   selected_indices_.clear();
-  selection_box_ = AxisAlignedBoundingBox();
+  selection_geometry_ = SelectionGeometry();
 }
 
 void SelectionManager::rebuild_selection_from_statuses() {
@@ -133,7 +220,7 @@ void SelectionManager::rebuild_selection_from_statuses() {
   for (std::size_t i = 0; i < statuses_.size(); ++i) {
     if (statuses_[i] == PointStatus::SELECTED) selected_indices_.push_back(i);
   }
-  if (selected_indices_.empty()) selection_box_ = AxisAlignedBoundingBox();
+  if (selected_indices_.empty()) selection_geometry_ = SelectionGeometry();
 }
 
 EditOperation *SelectionManager::operation(std::size_t id) {
@@ -141,6 +228,37 @@ EditOperation *SelectionManager::operation(std::size_t id) {
     if (entry.id == id) return &entry;
   }
   return nullptr;
+}
+
+bool SelectionManager::write_refinement_rules(const QString &path, const QString &source_path,
+                                              QString *error) const {
+  try {
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    YAML::Emitter emitter;
+    emitter << YAML::BeginMap << YAML::Key << "version" << YAML::Value << 1
+            << YAML::Key << "generator" << YAML::Value << "agt_map_studio"
+            << YAML::Key << "source_pcd" << YAML::Value << source_path.toStdString()
+            << YAML::Key << "operations" << YAML::Value << YAML::BeginSeq;
+    for (const auto &entry : history_) {
+      if (entry.undone) continue;
+      emitter << YAML::BeginMap;
+      emit_geometry(emitter, entry.geometry);
+      emitter << YAML::Key << "studio_operation_id" << YAML::Value << entry.id
+              << YAML::Key << "studio_point_count" << YAML::Value << entry.point_count
+              << YAML::EndMap;
+    }
+    emitter << YAML::EndSeq << YAML::EndMap;
+    std::ofstream stream(path.toStdString());
+    stream << emitter.c_str() << '\n';
+    if (!stream.good()) {
+      if (error) *error = QStringLiteral("Cannot write refinement rules: %1").arg(path);
+      return false;
+    }
+  } catch (const std::exception &exception) {
+    if (error) *error = QString::fromUtf8(exception.what());
+    return false;
+  }
+  return true;
 }
 
 bool SelectionManager::export_clean_map(const LoadedPointCloud &cloud,
@@ -180,10 +298,11 @@ bool SelectionManager::export_clean_map(const LoadedPointCloud &cloud,
     output.data.insert(output.data.end(), cloud.source->data.begin() + offset,
                        cloud.source->data.begin() + offset + cloud.source->point_step);
   }
+  // Binary output: smaller and lossless compared with ASCII text.
   if (pcl::io::savePCDFile((QDir(output_dir).filePath("map.pcd")).toStdString(),
                            output, Eigen::Vector4f::Zero(),
                            Eigen::Quaternionf::Identity(), true) != 0) {
-    if (error) *error = QStringLiteral("Could not write clean map.pcd");
+    if (error) *error = QStringLiteral("Failed to write clean map PCD");
     return false;
   }
 
@@ -193,21 +312,23 @@ bool SelectionManager::export_clean_map(const LoadedPointCloud &cloud,
                     << YAML::Key << "operations" << YAML::Value << YAML::BeginSeq;
     for (const auto &entry : history_) {
       history_emitter << YAML::BeginMap << YAML::Key << "id" << YAML::Value << entry.id
-                      << YAML::Key << "type" << YAML::Value << entry.type
-                      << YAML::Key << "point_count" << YAML::Value << entry.point_count
                       << YAML::Key << "undone" << YAML::Value << entry.undone
-                      << YAML::Key << "bbox" << YAML::Value << YAML::BeginMap
-                      << YAML::Key << "min" << YAML::Value << YAML::Flow << YAML::BeginSeq
-                      << entry.box.min.x() << entry.box.min.y() << entry.box.min.z()
-                      << YAML::EndSeq << YAML::Key << "max" << YAML::Value << YAML::Flow
-                      << YAML::BeginSeq << entry.box.max.x() << entry.box.max.y()
-                      << entry.box.max.z() << YAML::EndSeq << YAML::EndMap
+                      << YAML::Key << "point_count" << YAML::Value << entry.point_count
                       << YAML::Key << "timestamp" << YAML::Value << entry.timestamp
-                      << YAML::EndMap;
+                      << YAML::Key << "rule" << YAML::Value << YAML::BeginMap;
+      emit_geometry(history_emitter, entry.geometry);
+      history_emitter << YAML::EndMap << YAML::EndMap;
     }
     history_emitter << YAML::EndSeq << YAML::EndMap;
     std::ofstream history_stream(QDir(output_dir).filePath("edit_history.yaml").toStdString());
     history_stream << history_emitter.c_str() << '\n';
+
+    QString rules_error;
+    if (!write_refinement_rules(QDir(output_dir).filePath("refinement.yaml"), source_path,
+                                &rules_error)) {
+      if (error) *error = rules_error;
+      return false;
+    }
 
     YAML::Emitter metadata_emitter;
     metadata_emitter << YAML::BeginMap << YAML::Key << "version" << YAML::Value << 1
@@ -215,6 +336,10 @@ bool SelectionManager::export_clean_map(const LoadedPointCloud &cloud,
                      << YAML::Key << "original_points" << YAML::Value << cloud.point_count()
                      << YAML::Key << "visible_points" << YAML::Value << visible_count()
                      << YAML::Key << "deleted_points" << YAML::Value << deleted_count()
+                     << YAML::Key << "pcd_format" << YAML::Value << "binary"
+                     << YAML::Key << "publishable" << YAML::Value << false
+                     << YAML::Key << "note" << YAML::Value
+                     << "clean_map is a preview artifact; publish through refined_mapping_source"
                      << YAML::Key << "fields" << YAML::Value << YAML::BeginSeq;
     for (const auto &field : cloud.source->fields) metadata_emitter << field.name;
     metadata_emitter << YAML::EndSeq << YAML::Key << "exported_at" << YAML::Value

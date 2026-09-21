@@ -47,6 +47,18 @@ public:
   bool export_navigation_map(const std::string &output_dir,
                              std::string *error) const;
 
+  // Whether at least one operation is active (not undone).
+  bool has_active_operations() const;
+  // Stable fingerprint of the active cell edits and forbidden zones.
+  std::string active_fingerprint() const;
+  // agt_navigation_v3 `patch_nav_map` YAML: every active raster edit becomes a
+  // polygon_m entry (mode free/occupied/unknown). Forbidden polygons are not
+  // raster edits; they go to write_keepout_zones().
+  bool write_navigation_patch(const std::string &path, std::string *error) const;
+  // Nav2 keepout-style zone list for the active forbidden polygons.
+  bool write_keepout_zones(const std::string &path, std::string *error) const;
+  std::size_t patch_edit_count() const;
+
   std::size_t next_operation_id() const { return next_operation_id_; }
   static std::string timestamp_now();
 

@@ -1,5 +1,10 @@
 #include "viewer/PointCloudViewer.hpp"
 
+#include <QPolygonF>
+#include <QVector2D>
+
+#include <algorithm>
+
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QMouseEvent>
@@ -90,8 +95,35 @@ void PointCloudViewer::set_selection_manager(SelectionManager *manager) {
 void PointCloudViewer::set_mode(InteractionMode mode) {
   mode_ = mode;
   selecting_ = false;
+  pending_polygon_.clear();
   if (mode_ == InteractionMode::Navigate) selection_box_ = SelectionBox();
   emit stats_changed(stats_text());
+  update();
+}
+
+void PointCloudViewer::set_selection_tool(SelectionTool tool) {
+  tool_ = tool;
+  selecting_ = false;
+  pending_polygon_.clear();
+  selection_box_ = SelectionBox();
+  emit stats_changed(stats_text());
+  update();
+}
+
+void PointCloudViewer::set_z_window(bool enabled, double z_min, double z_max) {
+  z_window_enabled_ = enabled;
+  z_window_min_ = std::min(z_min, z_max);
+  z_window_max_ = std::max(z_min, z_max);
+  emit stats_changed(stats_text());
+}
+
+bool PointCloudViewer::passes_z_window(float z) const {
+  return !z_window_enabled_ || (z >= z_window_min_ && z <= z_window_max_);
+}
+
+void PointCloudViewer::cancel_pending_polygon() {
+  pending_polygon_.clear();
+  selecting_ = false;
   update();
 }
 
@@ -135,13 +167,27 @@ QString PointCloudViewer::stats_text() const {
   const std::size_t deleted = selection_manager_ ? selection_manager_->deleted_count() : 0U;
   const std::size_t visible = selection_manager_ ? selection_manager_->visible_count()
                                                  : point_count();
-  return QStringLiteral("File: %1 | Total: %2 | Deleted: %3 | Visible: %4 | Mode: %5 | FPS: %6")
+  const std::size_t selected = selection_manager_ ? selection_manager_->selected_count() : 0U;
+  QString text = QStringLiteral("File: %1 | Total: %2 | Selected: %3 | Deleted: %4 | Visible: %5 | Mode: %6")
       .arg(name)
       .arg(static_cast<qulonglong>(point_count()))
+      .arg(static_cast<qulonglong>(selected))
       .arg(static_cast<qulonglong>(deleted))
       .arg(static_cast<qulonglong>(visible))
-      .arg(mode_text())
-      .arg(fps_, 0, 'f', 1);
+      .arg(mode_text());
+  if (mode_ != InteractionMode::Navigate) text += QStringLiteral(" / %1").arg(tool_text());
+  if (z_window_enabled_) {
+    text += QStringLiteral(" | Z [%1, %2]").arg(z_window_min_, 0, 'f', 2).arg(z_window_max_, 0, 'f', 2);
+  }
+  return text + QStringLiteral(" | FPS: %1").arg(fps_, 0, 'f', 1);
+}
+
+QString PointCloudViewer::tool_text() const {
+  switch (tool_) {
+    case SelectionTool::PolygonPrism: return QStringLiteral("Polygon");
+    case SelectionTool::Sphere: return QStringLiteral("Sphere %1m").arg(sphere_radius_, 0, 'f', 2);
+    default: return QStringLiteral("Rect");
+  }
 }
 
 QString PointCloudViewer::mode_text() const {
@@ -225,8 +271,10 @@ void PointCloudViewer::initializeGL() {
     }
 
     void main() {
-      if (v_status > 1.5) {
-        gl_FragColor = vec4(0.9, 0.05, 0.05, 1.0);
+      if (v_status > 2.5) {
+        discard;
+      } else if (v_status > 1.5) {
+        gl_FragColor = vec4(0.9, 0.05, 0.05, 0.85);
       } else if (v_status > 0.5) {
         gl_FragColor = vec4(1.0, 0.75, 0.05, 1.0);
       } else {
@@ -319,11 +367,30 @@ void PointCloudViewer::paintGL() {
   QPainter painter(this);
   painter.setPen(dark_background_ ? Qt::white : Qt::black);
   painter.drawText(12, 22, stats_text());
-  if (selecting_ && selection_box_.is_valid()) {
+  if (selecting_ && tool_ == SelectionTool::ScreenRect && selection_box_.is_valid()) {
     QPen pen(QColor(30, 120, 255), 2, Qt::DashLine);
     painter.setPen(pen);
     painter.setBrush(QColor(50, 140, 255, 35));
     painter.drawRect(selection_box_.rect());
+  }
+  if (tool_ == SelectionTool::PolygonPrism && !pending_polygon_.isEmpty() &&
+      mode_ != InteractionMode::Navigate) {
+    QPen pen(QColor(30, 120, 255), 2, Qt::DashLine);
+    painter.setPen(pen);
+    painter.setBrush(QColor(50, 140, 255, 35));
+    QPolygon preview = pending_polygon_;
+    preview << last_mouse_position_;
+    painter.drawPolygon(preview);
+    painter.drawText(pending_polygon_.last() + QPoint(8, -8),
+                     QStringLiteral("%1 pts, double-click or Enter to close, Esc cancels")
+                         .arg(pending_polygon_.size()));
+  }
+  if (tool_ == SelectionTool::Sphere && mode_ != InteractionMode::Navigate) {
+    painter.setPen(QPen(QColor(30, 120, 255), 1, Qt::DashLine));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawEllipse(last_mouse_position_, 12, 12);
+    painter.drawText(last_mouse_position_ + QPoint(16, 4),
+                     QStringLiteral("click: sphere r=%1 m").arg(sphere_radius_, 0, 'f', 2));
   }
   if (height_coloring_ && has_cloud()) {
     const int legend_width = 180;
@@ -378,8 +445,16 @@ void PointCloudViewer::upload_statuses() {
   std::vector<float> values(cloud_.point_count(), 0.0F);
   if (selection_manager_ && selection_manager_->statuses().size() == values.size()) {
     const auto &statuses = selection_manager_->statuses();
+    const bool hide_deleted = selection_manager_->hide_deleted();
+    const bool isolate = selection_manager_->isolate_selected() &&
+                         selection_manager_->selected_count() > 0U;
     for (std::size_t i = 0; i < statuses.size(); ++i) {
-      values[i] = static_cast<float>(statuses[i]);
+      float value = static_cast<float>(statuses[i]);
+      if ((hide_deleted && statuses[i] == PointStatus::DELETED) ||
+          (isolate && statuses[i] == PointStatus::VISIBLE)) {
+        value = 3.0F;  // hidden: discarded by the fragment shader
+      }
+      values[i] = value;
     }
   }
   status_buffer_.bind();
@@ -400,18 +475,20 @@ void PointCloudViewer::tick() {
 }
 
 void PointCloudViewer::keyPressEvent(QKeyEvent *event) {
-  if (event->key() == Qt::Key_N) {
-    set_mode(InteractionMode::Navigate);
+  // Mode switching is owned by MainWindow (toolbar + F1/F2/F3), so the WASD
+  // camera keys are never shadowed here.
+  if (event->key() == Qt::Key_Escape) {
+    cancel_pending_polygon();
+    if (selection_manager_) {
+      selection_manager_->clear_selection();
+      mark_edit_state_dirty();
+    }
     event->accept();
     return;
   }
-  if (event->key() == Qt::Key_S) {
-    set_mode(InteractionMode::Select);
-    event->accept();
-    return;
-  }
-  if (event->key() == Qt::Key_D) {
-    set_mode(InteractionMode::Delete);
+  if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
+      tool_ == SelectionTool::PolygonPrism && pending_polygon_.size() >= 3) {
+    finish_polygon_selection();
     event->accept();
     return;
   }
@@ -430,9 +507,12 @@ void PointCloudViewer::keyPressEvent(QKeyEvent *event) {
     event->accept();
     return;
   }
-  if (event->key() == Qt::Key_Delete && selection_manager_ &&
-      mode_ == InteractionMode::Delete) {
-    if (selection_manager_->delete_selected()) mark_edit_state_dirty();
+  if (event->key() == Qt::Key_Delete && selection_manager_) {
+    if (mode_ != InteractionMode::Delete) {
+      emit delete_requested_outside_delete_mode();
+    } else if (selection_manager_->delete_selected()) {
+      mark_edit_state_dirty();
+    }
     event->accept();
     return;
   }
@@ -467,17 +547,36 @@ void PointCloudViewer::mousePressEvent(QMouseEvent *event) {
                mode_ == InteractionMode::Navigate;
   right_drag_ = event->button() == Qt::RightButton;
   if (event->button() == Qt::LeftButton && mode_ != InteractionMode::Navigate) {
-    selecting_ = true;
-    selection_box_.set_start(event->pos());
-    selection_box_.set_end(event->pos());
+    if (tool_ == SelectionTool::ScreenRect) {
+      selecting_ = true;
+      selection_box_.set_start(event->pos());
+      selection_box_.set_end(event->pos());
+    } else if (tool_ == SelectionTool::PolygonPrism) {
+      pending_polygon_ << event->pos();
+      selecting_ = true;
+    } else if (tool_ == SelectionTool::Sphere) {
+      select_sphere_at(event->pos(), sphere_radius_);
+    }
   }
   event->accept();
+}
+
+void PointCloudViewer::mouseDoubleClickEvent(QMouseEvent *event) {
+  if (event->button() == Qt::LeftButton && mode_ != InteractionMode::Navigate &&
+      tool_ == SelectionTool::PolygonPrism) {
+    // The first click of the double-click already appended a vertex; drop it.
+    if (!pending_polygon_.isEmpty()) pending_polygon_.removeLast();
+    finish_polygon_selection();
+    event->accept();
+    return;
+  }
+  QOpenGLWidget::mouseDoubleClickEvent(event);
 }
 
 void PointCloudViewer::mouseMoveEvent(QMouseEvent *event) {
   const QPoint delta = event->pos() - last_mouse_position_;
   last_mouse_position_ = event->pos();
-  if (selecting_) {
+  if (selecting_ && tool_ == SelectionTool::ScreenRect) {
     selection_box_.set_end(event->pos());
   } else if (left_drag_) {
     camera_.orbit(delta.x(), delta.y());
@@ -488,7 +587,7 @@ void PointCloudViewer::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void PointCloudViewer::mouseReleaseEvent(QMouseEvent *event) {
-  if (event->button() == Qt::LeftButton && selecting_) {
+  if (event->button() == Qt::LeftButton && selecting_ && tool_ == SelectionTool::ScreenRect) {
     selecting_ = false;
     if (selection_box_.is_valid()) select_screen_rect(selection_box_);
   }
@@ -497,6 +596,51 @@ void PointCloudViewer::mouseReleaseEvent(QMouseEvent *event) {
   event->accept();
 }
 
+std::optional<QPoint> PointCloudViewer::project(std::size_t i, const QMatrix4x4 &mvp) const {
+  const QVector4D clip(mvp * QVector4D(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U],
+                                       cloud_.xyz[i * 3U + 2U], 1.0F));
+  if (clip.w() <= 0.0F) return std::nullopt;
+  const QVector3D ndc = clip.toVector3DAffine();
+  return QPoint(qRound((ndc.x() + 1.0F) * 0.5F * width()),
+                qRound((1.0F - ndc.y()) * 0.5F * height()));
+}
+
+std::optional<Eigen::Vector3f> PointCloudViewer::unproject_to_ground(const QPoint &screen,
+                                                                     float z) const {
+  // Intersect the pick ray with the horizontal plane at height z (map frame).
+  const QMatrix4x4 mvp = camera_.projection_matrix() * camera_.view_matrix();
+  bool invertible = false;
+  const QMatrix4x4 inverse = mvp.inverted(&invertible);
+  if (!invertible || width() <= 0 || height() <= 0) return std::nullopt;
+  const float nx = 2.0F * static_cast<float>(screen.x()) / static_cast<float>(width()) - 1.0F;
+  const float ny = 1.0F - 2.0F * static_cast<float>(screen.y()) / static_cast<float>(height());
+  const QVector4D near_h = inverse * QVector4D(nx, ny, -1.0F, 1.0F);
+  const QVector4D far_h = inverse * QVector4D(nx, ny, 1.0F, 1.0F);
+  if (qFuzzyIsNull(near_h.w()) || qFuzzyIsNull(far_h.w())) return std::nullopt;
+  const QVector3D origin = near_h.toVector3DAffine();
+  const QVector3D direction = far_h.toVector3DAffine() - origin;
+  if (qFuzzyIsNull(direction.z())) return std::nullopt;
+  const float t = (z - origin.z()) / direction.z();
+  if (t < 0.0F) return std::nullopt;
+  const QVector3D hit = origin + direction * t;
+  return Eigen::Vector3f(hit.x(), hit.y(), hit.z());
+}
+
+namespace {
+
+void grow_box(AxisAlignedBoundingBox &box, const Eigen::Vector3f &point) {
+  if (!box.valid) {
+    box.min = point;
+    box.max = point;
+    box.valid = true;
+  } else {
+    box.min = box.min.cwiseMin(point);
+    box.max = box.max.cwiseMax(point);
+  }
+}
+
+}  // namespace
+
 void PointCloudViewer::select_screen_rect(const SelectionBox &box) {
   if (!selection_manager_ || !box.is_valid() || cloud_.xyz.empty() ||
       selection_manager_->statuses().size() != cloud_.point_count()) {
@@ -504,29 +648,160 @@ void PointCloudViewer::select_screen_rect(const SelectionBox &box) {
   }
   const QMatrix4x4 mvp = camera_.projection_matrix() * camera_.view_matrix();
   std::vector<std::size_t> indices;
-  AxisAlignedBoundingBox bounds;
+  SelectionGeometry geometry;
+  geometry.rule_type = "remove_box";
   for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
-    const QVector4D clip(mvp * QVector4D(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U],
-                                         cloud_.xyz[i * 3U + 2U], 1.0F));
-    if (clip.w() <= 0.0F) continue;
-    const QVector3D ndc = clip.toVector3DAffine();
-    const QPoint screen(qRound((ndc.x() + 1.0F) * 0.5F * width()),
-                        qRound((1.0F - ndc.y()) * 0.5F * height()));
-    if (!box.contains(screen)) continue;
+    const float z = cloud_.xyz[i * 3U + 2U];
+    if (!passes_z_window(z)) continue;
+    const auto screen = project(i, mvp);
+    if (!screen || !box.contains(*screen)) continue;
     if (selection_manager_->statuses()[i] == PointStatus::DELETED) continue;
     indices.push_back(i);
-    const Eigen::Vector3f point(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U],
-                                cloud_.xyz[i * 3U + 2U]);
-    if (!bounds.valid) {
-      bounds.min = point;
-      bounds.max = point;
-      bounds.valid = true;
-    } else {
-      bounds.min = bounds.min.cwiseMin(point);
-      bounds.max = bounds.max.cwiseMax(point);
+    grow_box(geometry.box, Eigen::Vector3f(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U], z));
+  }
+  if (z_window_enabled_ && geometry.box.valid) {
+    geometry.box.min.z() = static_cast<float>(z_window_min_);
+    geometry.box.max.z() = static_cast<float>(z_window_max_);
+  }
+  selection_manager_->select_points(indices, geometry);
+  mark_edit_state_dirty();
+}
+
+void PointCloudViewer::rebuild_selection_box_from_points() {
+  if (!selection_manager_ || selection_manager_->statuses().size() != cloud_.point_count()) return;
+  SelectionGeometry geometry;
+  geometry.rule_type = "remove_box";
+  const auto &statuses = selection_manager_->statuses();
+  for (std::size_t i = 0; i < statuses.size(); ++i) {
+    if (statuses[i] != PointStatus::SELECTED) continue;
+    grow_box(geometry.box, Eigen::Vector3f(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U],
+                                           cloud_.xyz[i * 3U + 2U]));
+  }
+  selection_manager_->set_selection_geometry(geometry);
+  mark_edit_state_dirty();
+}
+
+void PointCloudViewer::finish_polygon_selection() {
+  const QPolygon polygon = pending_polygon_;
+  pending_polygon_.clear();
+  selecting_ = false;
+  if (polygon.size() >= 3) select_screen_polygon(polygon);
+  update();
+}
+
+void PointCloudViewer::select_screen_polygon(const QPolygon &polygon) {
+  if (!selection_manager_ || polygon.size() < 3 || cloud_.xyz.empty() ||
+      selection_manager_->statuses().size() != cloud_.point_count()) {
+    return;
+  }
+  const QMatrix4x4 mvp = camera_.projection_matrix() * camera_.view_matrix();
+  std::vector<std::size_t> indices;
+  SelectionGeometry geometry;
+  geometry.rule_type = "remove_polygon";
+  // Map-frame footprint: unproject each screen vertex onto the lowest cloud
+  // height so the rule is reproducible outside this camera pose. This is
+  // exact for the top view and an approximation for oblique views; the
+  // exported rule therefore also carries the measured point AABB.
+  const float ground_z = cloud_.min_bound.z();
+  bool footprint_ok = true;
+  for (const QPoint &vertex : polygon) {
+    const auto hit = unproject_to_ground(vertex, ground_z);
+    if (!hit) {
+      footprint_ok = false;
+      break;
+    }
+    geometry.polygon_xy.emplace_back(hit->x(), hit->y());
+  }
+  for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
+    const float z = cloud_.xyz[i * 3U + 2U];
+    if (!passes_z_window(z)) continue;
+    const auto screen = project(i, mvp);
+    if (!screen || !polygon.containsPoint(*screen, Qt::OddEvenFill)) continue;
+    if (selection_manager_->statuses()[i] == PointStatus::DELETED) continue;
+    indices.push_back(i);
+    grow_box(geometry.box, Eigen::Vector3f(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U], z));
+  }
+  if (!footprint_ok || geometry.polygon_xy.size() < 3U) {
+    geometry.rule_type = "remove_box";
+    geometry.polygon_xy.clear();
+  } else {
+    geometry.has_z_range = true;
+    geometry.z_min = z_window_enabled_ ? z_window_min_
+                                       : (geometry.box.valid ? geometry.box.min.z() : 0.0);
+    geometry.z_max = z_window_enabled_ ? z_window_max_
+                                       : (geometry.box.valid ? geometry.box.max.z() : 0.0);
+  }
+  selection_manager_->select_points(indices, geometry);
+  mark_edit_state_dirty();
+}
+
+void PointCloudViewer::select_height_band(double z_min, double z_max) {
+  if (!selection_manager_ || cloud_.xyz.empty() ||
+      selection_manager_->statuses().size() != cloud_.point_count()) {
+    return;
+  }
+  const double low = std::min(z_min, z_max);
+  const double high = std::max(z_min, z_max);
+  std::vector<std::size_t> indices;
+  SelectionGeometry geometry;
+  geometry.rule_type = "remove_height_band";
+  geometry.z_min = low;
+  geometry.z_max = high;
+  geometry.has_z_range = true;
+  geometry.box.min = cloud_.min_bound;
+  geometry.box.max = cloud_.max_bound;
+  geometry.box.min.z() = static_cast<float>(low);
+  geometry.box.max.z() = static_cast<float>(high);
+  geometry.box.valid = true;
+  for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
+    const float z = cloud_.xyz[i * 3U + 2U];
+    if (z < low || z > high) continue;
+    if (selection_manager_->statuses()[i] == PointStatus::DELETED) continue;
+    indices.push_back(i);
+  }
+  selection_manager_->select_points(indices, geometry);
+  mark_edit_state_dirty();
+}
+
+void PointCloudViewer::select_sphere_at(const QPoint &screen, double radius_m) {
+  if (!selection_manager_ || cloud_.xyz.empty() || radius_m <= 0.0 ||
+      selection_manager_->statuses().size() != cloud_.point_count()) {
+    return;
+  }
+  // Pick the nearest visible point under the cursor as the sphere centre.
+  const QMatrix4x4 mvp = camera_.projection_matrix() * camera_.view_matrix();
+  std::optional<std::size_t> best;
+  int best_distance = 12 * 12;
+  for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
+    if (selection_manager_->statuses()[i] == PointStatus::DELETED) continue;
+    const auto projected = project(i, mvp);
+    if (!projected) continue;
+    const QPoint delta = *projected - screen;
+    const int distance = delta.x() * delta.x() + delta.y() * delta.y();
+    if (distance < best_distance) {
+      best_distance = distance;
+      best = i;
     }
   }
-  selection_manager_->select_points(indices, bounds);
+  if (!best) return;
+  const Eigen::Vector3f center(cloud_.xyz[*best * 3U], cloud_.xyz[*best * 3U + 1U],
+                               cloud_.xyz[*best * 3U + 2U]);
+  const float radius = static_cast<float>(radius_m);
+  std::vector<std::size_t> indices;
+  SelectionGeometry geometry;
+  geometry.rule_type = "remove_sphere";
+  geometry.center = center.cast<double>();
+  geometry.radius = radius_m;
+  geometry.box.min = (center.array() - radius).matrix();
+  geometry.box.max = (center.array() + radius).matrix();
+  geometry.box.valid = true;
+  for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
+    if (selection_manager_->statuses()[i] == PointStatus::DELETED) continue;
+    const Eigen::Vector3f point(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U],
+                                cloud_.xyz[i * 3U + 2U]);
+    if ((point - center).squaredNorm() <= radius * radius) indices.push_back(i);
+  }
+  selection_manager_->select_points(indices, geometry);
   mark_edit_state_dirty();
 }
 
