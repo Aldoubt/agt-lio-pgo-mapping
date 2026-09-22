@@ -127,6 +127,22 @@ def frontend_remappings(config_path, imu_topic):
     for key in ('imu_topic', 'lidar_topic'):
         if not isinstance(config.get(key), str) or not config[key].startswith('/'):
             raise PreflightError(f'FAST-LIO2 config requires an absolute {key}')
+    local_map_keys = ('cube_len', 'det_range', 'move_thresh')
+    if any(key in config for key in local_map_keys):
+        try:
+            cube_len, det_range, move_thresh = (
+                float(config[key]) for key in local_map_keys)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PreflightError(
+                'FAST-LIO2 config requires numeric cube_len, det_range, and move_thresh') from exc
+        if not all(math.isfinite(value) and value > 0
+                   for value in (cube_len, det_range, move_thresh)):
+            raise PreflightError(
+                'FAST-LIO2 cube_len, det_range, and move_thresh must be finite and positive')
+        if cube_len <= 2.0 * move_thresh * det_range:
+            raise PreflightError(
+                'FAST-LIO2 local map is unstable: cube_len must exceed '
+                '2 * move_thresh * det_range')
     return [(config['imu_topic'], imu_topic),
             (config['lidar_topic'], '/mapping/sensor/livox')]
 

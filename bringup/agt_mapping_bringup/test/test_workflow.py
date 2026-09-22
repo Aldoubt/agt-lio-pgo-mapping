@@ -137,12 +137,21 @@ class BagFixture(unittest.TestCase):
 
     def test_fastlio_yaml_topic_is_explicitly_remapped(self):
         config = self.root / 'lio.yaml'
-        content = 'imu_topic: /agt/sensors/imu/data\nlidar_topic: /mapping/sensor/livox\n'
+        content = ('imu_topic: /agt/sensors/imu/data\n'
+                   'lidar_topic: /mapping/sensor/livox\n'
+                   'cube_len: 300\ndet_range: 60\nmove_thresh: 1.5\n')
         config.write_text(content)
         self.assertEqual(frontend_remappings(config, '/livox/imu'), [
             ('/agt/sensors/imu/data', '/livox/imu'),
             ('/mapping/sensor/livox', '/mapping/sensor/livox')])
         self.assertEqual(config.read_text(), content)
+
+    def test_fastlio_yaml_rejects_local_cube_that_moves_every_scan(self):
+        config = self.root / 'lio.yaml'
+        config.write_text('imu_topic: /imu\nlidar_topic: /lidar\n'
+                          'cube_len: 200\ndet_range: 300\nmove_thresh: 1.5\n')
+        with self.assertRaisesRegex(PreflightError, 'local map is unstable'):
+            frontend_remappings(config, '/livox/imu')
 
     def test_output_path_unrepresentable_in_backend_status_is_rejected(self):
         with self.assertRaises(PreflightError):

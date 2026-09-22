@@ -12,6 +12,7 @@ Differences from the offline replay (session_launch.py):
 """
 import atexit
 from pathlib import Path
+import signal
 
 from ament_index_python.packages import get_package_share_directory
 from launch.actions import EmitEvent, ExecuteProcess, LogInfo, OpaqueFunction, RegisterEventHandler
@@ -128,7 +129,7 @@ def launch_live_session(context):
         if event.returncode != 0:
             return fail(f'Live supervisor ended with {event.returncode}; no export (sensor stall or cancel)')
         # Close the recorder cleanly (SIGINT flushes rosbag2 metadata), then export.
-        return [EmitEvent(event=SignalProcess(signal_number='SIGINT',
+        return [EmitEvent(event=SignalProcess(signal_number=signal.SIGINT,
                                               process_matcher=lambda action: action is recorder))]
 
     def recorder_exit(event, ctx):
