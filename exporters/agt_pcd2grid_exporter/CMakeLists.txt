@@ -13,6 +13,7 @@ add_library(${PROJECT_NAME} SHARED
   src/OccupancyGridWriter.cpp
   src/ParameterLoader.cpp
   src/TemporalPersistenceFilter.cpp
+  src/TraversabilityGridBuilder.cpp
 )
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -41,6 +42,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_pcd2grid
     test/test_pcd2grid.cpp
+    test/test_traversability.cpp
   )
   target_include_directories(test_pcd2grid PRIVATE include ${PCL_INCLUDE_DIRS})
   target_link_libraries(test_pcd2grid ${PROJECT_NAME} ${PCL_LIBRARIES} yaml-cpp)

@@ -1,0 +1,79 @@
+# Evidence-based navigation map for keyframe mapping packages.
+# Usage:
+#   ros2 run agt_pcd2grid_exporter pcd2grid_exporter --package <mapping_package> \
+#     --output <navigation_dir> --config projection_traversability.yaml
+# Requires --package (patches/*.pcd + poses_timed.txt); --pcd is rejected.
+resolution: 0.05
+projection_mode: traversability
+origin:
+  auto: true
+  x: 0.0
+  y: 0.0
+# z_filter / ground / free_threshold / free_space_radius_cells keep their
+# local_ground meaning and are ignored by this mode except free_threshold
+# (ground returns needed for a free cell).
+z_filter:
+  min: -0.3
+  max: 1.5
+ground:
+  cell_size: 0.5
+  percentile: 0.10
+  neighbor_radius_cells: 1
+  free_tolerance: 0.10
+# The Bunker v1 camera mast reaches ~1.75 m above base_footprint, so the
+# collision band keeps the full robot height.
+obstacle_height:
+  min: 0.12
+  max: 1.80
+occupied_threshold: 2
+free_threshold: 1
+free_space_radius_cells: 0
+postprocess:
+  closing_radius_cells: 1
+  min_component_cells: 3
+temporal_filter:
+  enabled: true
+  voxel_size: 0.20
+  min_observations: 2
+  min_keyframe_span: 2
+empty_cell: unknown
+robot:
+  # T_base_footprint_body = T_base_lidar (agt_robot_description bunker_v1:
+  # xyz [0.40607, 0, 0.92747], pitch 13 deg) * T_lidar_body (FAST-LIO2 t_il
+  # [-0.011, -0.02329, 0.04412], r_il = I).  Update when the mount changes.
+  base_from_body:
+    xyz: [0.40686, 0.02329, 0.88201]
+    rpy: [0.0, 0.2268928, 0.0]
+  # Same polygon as agt_navigation_v3 config/robot.yaml (without padding).
+  footprint: [[0.52, 0.40], [0.52, -0.40], [-0.52, -0.40], [-0.52, 0.40]]
+traversability:
+  self_filter:
+    enabled: true
+    margin: 0.10
+    min_height: -0.20
+    max_height: 2.20
+  ground:
+    cell_size: 0.25
+    percentile: 0.10
+    max_step: 0.10
+    fill_max_distance: 1.0
+    tolerance: 0.12
+    reference_extension: 2.0
+  raycast:
+    enabled: true
+    max_range: 30.0
+    carve_max_height: 1.0
+    end_margin_cells: 2
+    free_min_passes: 2
+  obstacle_evidence:
+    support_radius_cells: 1
+    free_requires_no_hits: true
+    # people following / walking next to the robot are only ever seen up close
+    min_observation_range: 2.0
+  footprint_sweep:
+    enabled: true
+    # = agt_navigation_v3 footprint_padding: the driven path must stay plannable
+    padding: 0.03
+  hole_fill_max_area: 0.5
+  max_keyframe_tilt_deg: 30.0
+  debug_layers: true

@@ -2,6 +2,7 @@
 #include "agt_pcd2grid_exporter/PCDProjector.hpp"
 #include "agt_pcd2grid_exporter/ParameterLoader.hpp"
 #include "agt_pcd2grid_exporter/TemporalPersistenceFilter.hpp"
+#include "agt_pcd2grid_exporter/TraversabilityGridBuilder.hpp"
 
 #include <pcl/io/pcd_io.h>
 
@@ -53,6 +54,36 @@ int main(int argc, char **argv) {
       !agt_pcd2grid_exporter::ParameterLoader::load(config_path, &parameters, &error)) {
     std::cerr << "Parameter error: " << error << '\n';
     return 1;
+  }
+  if (parameters.projection_mode == agt_pcd2grid_exporter::ProjectionMode::Traversability) {
+    if (package_path.empty()) {
+      std::cerr << "projection_mode 'traversability' needs --package (keyframes + poses)\n";
+      return 2;
+    }
+    agt_pcd2grid_exporter::OccupancyGrid grid;
+    agt_pcd2grid_exporter::ProjectionStats stats;
+    agt_pcd2grid_exporter::TraversabilityStats traversability;
+    const std::string debug_dir = (std::filesystem::path(output_dir) / "debug").string();
+    if (!agt_pcd2grid_exporter::TraversabilityGridBuilder::build(
+            package_path, parameters, &grid, &stats, &traversability, &error, debug_dir)) {
+      std::cerr << "Traversability error: " << error << '\n';
+      return 1;
+    }
+    if (!agt_pcd2grid_exporter::OccupancyGridWriter::write_navigation_map(
+            grid, parameters, stats, output_dir, package_path, &error, &traversability)) {
+      std::cerr << "Write error: " << error << '\n';
+      return 1;
+    }
+    std::cout << "Generated " << output_dir << " (" << grid.width << "x" << grid.height
+              << ", traversability mode, keyframes=" << traversability.keyframes
+              << ", self-filtered points=" << traversability.self_filtered_points
+              << ", rays=" << traversability.rays_cast
+              << ", occupied cells=" << stats.occupied_cells
+              << ", free cells=" << stats.free_cells
+              << ", unknown cells=" << stats.unknown_cells
+              << ", sweep-cleared occupied=" << traversability.sweep_cleared_occupied_cells
+              << ")\n";
+    return 0;
   }
   pcl::PCLPointCloud2 cloud;
   agt_pcd2grid_exporter::TemporalFilterStats temporal_stats;

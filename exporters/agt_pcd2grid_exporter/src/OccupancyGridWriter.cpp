@@ -13,7 +13,8 @@ namespace agt_pcd2grid_exporter {
 bool OccupancyGridWriter::write_navigation_map(
     const OccupancyGrid &grid, const ProjectionParameters &parameters,
     const ProjectionStats &stats, const std::string &output_dir,
-    const std::string &source_pcd, std::string *error) {
+    const std::string &source_pcd, std::string *error,
+    const TraversabilityStats *traversability) {
   if (grid.width == 0U || grid.height == 0U ||
       grid.hit_count.size() != static_cast<std::size_t>(grid.width) * grid.height) {
     if (error) *error = "occupancy grid is empty or inconsistent";
@@ -88,7 +89,39 @@ bool OccupancyGridWriter::write_navigation_map(
              << stats.temporal_retained_points << YAML::Key << "temporal_removed_points"
              << YAML::Value << stats.temporal_removed_points
              << YAML::Key << "coordinate_convention" << YAML::Value
-             << "origin is lower-left; PGM rows are vertically flipped" << YAML::EndMap;
+             << "origin is lower-left; PGM rows are vertically flipped";
+    if (traversability && traversability->valid) {
+      metadata << YAML::Key << "traversability" << YAML::Value << YAML::BeginMap
+               << YAML::Key << "keyframes" << YAML::Value << traversability->keyframes
+               << YAML::Key << "self_filtered_points" << YAML::Value
+               << traversability->self_filtered_points
+               << YAML::Key << "ground_seed_cells" << YAML::Value
+               << traversability->ground_seed_cells
+               << YAML::Key << "ground_observed_cells" << YAML::Value
+               << traversability->ground_observed_cells
+               << YAML::Key << "ground_inferred_cells" << YAML::Value
+               << traversability->ground_inferred_cells
+               << YAML::Key << "ground_rejected_cells" << YAML::Value
+               << traversability->ground_rejected_cells
+               << YAML::Key << "rays_cast" << YAML::Value << traversability->rays_cast
+               << YAML::Key << "ray_cells_visited" << YAML::Value
+               << traversability->ray_cells_visited
+               << YAML::Key << "ground_hit_cells" << YAML::Value
+               << traversability->ground_hit_cells
+               << YAML::Key << "carved_cells" << YAML::Value << traversability->carved_cells
+               << YAML::Key << "support_occupied_cells" << YAML::Value
+               << traversability->support_occupied_cells
+               << YAML::Key << "hit_vetoed_cells" << YAML::Value
+               << traversability->hit_vetoed_cells
+               << YAML::Key << "near_field_only_points" << YAML::Value
+               << traversability->near_field_only_points
+               << YAML::Key << "sweep_cells" << YAML::Value << traversability->sweep_cells
+               << YAML::Key << "sweep_cleared_occupied_cells" << YAML::Value
+               << traversability->sweep_cleared_occupied_cells
+               << YAML::Key << "hole_filled_cells" << YAML::Value
+               << traversability->hole_filled_cells << YAML::EndMap;
+    }
+    metadata << YAML::EndMap;
     std::ofstream metadata_stream(directory / "metadata.yaml");
     metadata_stream << metadata.c_str() << '\n';
     if (!map_stream.good() || !metadata_stream.good()) {

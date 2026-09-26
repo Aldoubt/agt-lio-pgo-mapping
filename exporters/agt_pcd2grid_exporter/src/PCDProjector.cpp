@@ -179,6 +179,13 @@ bool PCDProjector::project(const pcl::PCLPointCloud2 &cloud,
   }
   *grid = OccupancyGrid();
   *stats = ProjectionStats();
+  if (parameters.projection_mode == ProjectionMode::Traversability) {
+    if (error) {
+      *error = "projection_mode 'traversability' needs a keyframe mapping package; run "
+               "pcd2grid_exporter --package (TraversabilityGridBuilder) instead of projecting a cloud";
+    }
+    return false;
+  }
   if (!(parameters.resolution > 0.0F) ||
       !(parameters.z_min <= parameters.z_max) ||
       parameters.occupied_threshold == 0U || parameters.free_threshold == 0U ||

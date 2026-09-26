@@ -13,7 +13,8 @@ public:
                                    const ProjectionStats &stats,
                                    const std::string &output_dir,
                                    const std::string &source_pcd,
-                                   std::string *error);
+                                   std::string *error,
+                                   const TraversabilityStats *traversability = nullptr);
 };
 
 }  // namespace agt_pcd2grid_exporter
