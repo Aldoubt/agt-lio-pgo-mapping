@@ -45,7 +45,9 @@ def parser():
     live = result.add_argument_group('live MID360 mode')
     live.add_argument('--live', action='store_true',
                       help='Map from the connected MID360 instead of a bag; always records a raw bag')
-    live.add_argument('--livox-config', help='livox_ros_driver2 MID360 JSON (default: installed MID360_config.json)')
+    live.add_argument('--robot', choices=('bunker_v1', 'yhs_v1'), default='bunker_v1',
+                      help='live sensor owner; YHS requires an explicit YHS IP config and never starts a chassis')
+    live.add_argument('--livox-config', help='livox_ros_driver2 MID360 JSON (YHS: REQUIRED; no Bunker default)')
     live.add_argument('--publish-freq', type=float, default=10.0, help='Livox publish frequency Hz (5/10/20/50)')
     live.add_argument('--frame-id', default='livox_frame', help='Livox driver frame_id')
     live.add_argument('--duration', type=float, default=0.0,
@@ -68,6 +70,8 @@ def _default_livox_config(workspace, setup):
 def _live_plan(args, workspace, setup, ros_setup, start_rviz):
     for name in ('duration', 'sensor_stall_seconds'):
         setattr(args, name, validate_number(getattr(args, name), name, allow_zero=True))
+    if args.robot == 'yhs_v1' and not args.livox_config:
+        raise PreflightError('YHS live mapping requires --livox-config with a verified YHS MID360/host IP; refusing Bunker default')
     config = Path(args.livox_config).expanduser().resolve() if args.livox_config else _default_livox_config(workspace, setup)
     lidar_topic = DEFAULT_LIDAR_TOPIC if args.lidar_topic == 'auto' else args.lidar_topic
     imu_topic = DEFAULT_IMU_TOPIC if args.imu_topic == 'auto' else args.imu_topic
@@ -84,11 +88,14 @@ def _live_plan(args, workspace, setup, ros_setup, start_rviz):
         'startup_timeout': args.startup_timeout, 'export_timeout': args.export_timeout,
         'drain_seconds': args.drain_seconds,
     }
-    command = ['ros2', 'launch', 'agt_mapping_bringup', 'mapping_live_mid360.launch.py']
+    launch_file = ('mapping_live_yhs_mid360.launch.py' if args.robot == 'yhs_v1'
+                   else 'mapping_live_mid360.launch.py')
+    command = ['ros2', 'launch', 'agt_mapping_bringup', launch_file]
     command += [f'{key}:={str(value).lower() if isinstance(value, bool) else value}'
                 for key, value in parameters.items()]
     plan = {
-        'mode': 'dry-run' if args.dry_run else 'live', 'livox_config': str(source.path),
+        'mode': 'dry-run' if args.dry_run else 'live', 'robot': args.robot,
+        'sensor_only_no_base': args.robot == 'yhs_v1', 'livox_config': str(source.path),
         'host_ip': source.host_ip, 'lidar_ip': source.lidar_ip,
         'lidar_topic': source.lidar_topic, 'imu_topic': source.imu_topic,
         'raw_bag': str(output / 'raw_bag'), 'output': str(output),
@@ -133,6 +140,9 @@ def main(argv=None):
                 raise PreflightError('--live does not take a bag; the sensor is the input')
             if args.start_paused or args.manual_export:
                 raise PreflightError('--start-paused/--manual-export apply to bag replay only')
+        elif args.robot != 'bunker_v1':
+            raise PreflightError('--robot yhs_v1 selects the YHS sensor-only LIVE entry; '
+                                 'bag replay is robot-agnostic and must be explicitly promoted as yhs_v1 later')
         elif not args.bag:
             raise PreflightError('a rosbag2 directory is required (or use --live)')
         if args.setup:

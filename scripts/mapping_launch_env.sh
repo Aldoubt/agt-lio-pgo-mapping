@@ -19,7 +19,8 @@ executables="$(ros2 pkg executables agt_mapping_bringup)"
 helpers=(mapping_wait_ready mapping_export_verified)
 live_mode=0
 for argument in "$@"; do
-  if [[ "$argument" == mapping_live_mid360.launch.py ]]; then
+  if [[ "$argument" == mapping_live_mid360.launch.py ||
+        "$argument" == mapping_live_yhs_mid360.launch.py ]]; then
     live_mode=1
   fi
 done

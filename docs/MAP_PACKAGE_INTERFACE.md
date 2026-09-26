@@ -2,6 +2,8 @@
 
 Status: v1, implementation contract for the mapping-to-navigation boundary.
 
+> 2026-09-24 update: the mapping_source contract below remains valid for raw PGO exports. For the complete navigation candidate, human acceptance and registry/latest_validated publication workflow, see [the integration report](mcp-traversability-main-integration.md). The shared installed map-manager CLI packages mapping-generated navigation assets; it does not regenerate them.
+
 ## Ownership
 
 `agt_mapping_framework` owns FAST-LIO2, PGO, map saving, keyframe patches and

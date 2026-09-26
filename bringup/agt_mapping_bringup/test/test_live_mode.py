@@ -103,6 +103,20 @@ class LiveCliTests(unittest.TestCase):
         self.assertEqual(plan['environment']['ROS_LOCALHOST_ONLY'], '1')
         self.assertFalse(self.output.exists())
 
+    def test_yhs_live_refuses_bunker_default_and_plans_sensor_only(self):
+        code, _, error = self.invoke(['--live', str(self.output), '--robot', 'yhs_v1',
+                                      '--dry-run', '--no-rviz'])
+        self.assertEqual(code, 2)
+        self.assertIn('requires --livox-config', error)
+        code, output, error = self.invoke(['--live', str(self.output), '--robot', 'yhs_v1',
+                                           '--livox-config', str(self.config), '--dry-run', '--no-rviz'])
+        self.assertEqual((code, error), (0, ''))
+        plan = json.loads(output)
+        self.assertEqual(plan['robot'], 'yhs_v1')
+        self.assertTrue(plan['sensor_only_no_base'])
+        self.assertIn('mapping_live_yhs_mid360.launch.py', plan['command'])
+        self.assertFalse(self.output.exists())
+
     def test_live_rejects_bag_and_replay_only_flags(self):
         bag = self.root / 'bag'
         bag.mkdir()
@@ -135,14 +149,41 @@ class LiveCliTests(unittest.TestCase):
 
 
 class LiveLaunchHelpersTests(unittest.TestCase):
-    def test_driver_parameters_pin_custommsg(self):
+    def test_yhs_sensor_parameters_have_no_base_driver_or_bunker_tf(self):
+        from agt_mapping_bringup.yhs_live_sensor import sensor_parameters
+        source = type('Sensor', (), {'path': Path('/tmp/yhs-mid360.json'), 'publish_freq': 10.0})()
+        params = sensor_parameters(source, 'livox_frame')
+        self.assertEqual(params['user_config_path'], '/tmp/yhs-mid360.json')
+        self.assertEqual(params['xfer_format'], 1)
+        self.assertEqual(params['multi_topic'], 0)
+        self.assertNotIn('can', ' '.join(params))
+        self.assertNotIn('robot_description', ' '.join(params))
+        live_source = (Path(__file__).resolve().parents[1] /
+                       'agt_mapping_bringup' / 'live_launch.py').read_text()
+        self.assertIn('if sensor_only:', live_source)
+        self.assertIn('make_sensor_node', live_source)
+        launch_source = (Path(__file__).resolve().parents[1] /
+                         'launch' / 'mapping_live_yhs_mid360.launch.py').read_text()
+        self.assertIn('sensor_only=True', launch_source)
+        self.assertNotIn('bunker_v1', launch_source)
+
+    def test_yhs_launch_requires_live_runtime_preflight(self):
+        wrapper = (Path(__file__).resolve().parents[3] /
+                   'scripts' / 'mapping_launch_env.sh').read_text()
+        self.assertIn('mapping_live_yhs_mid360.launch.py', wrapper)
+        self.assertIn('helpers+=(mapping_live_supervisor)', wrapper)
+        self.assertIn('ros2 pkg prefix livox_ros_driver2', wrapper)
+
+    def test_live_mapping_uses_robot_hardware_owner(self):
         try:
-            from agt_mapping_bringup.live_launch import livox_driver_parameters, raw_record_command
+            from agt_mapping_bringup.live_launch import raw_record_command
         except ImportError:
             self.skipTest('launch/ament_index not importable without ROS')
-        params = livox_driver_parameters('/tmp/x.json', 10.0, 'livox_frame')[0]
-        self.assertEqual((params['xfer_format'], params['multi_topic']), (1, 0))
-        self.assertEqual(params['user_config_path'], '/tmp/x.json')
+        source = (Path(__file__).resolve().parents[1] /
+                  'agt_mapping_bringup' / 'live_launch.py').read_text()
+        self.assertIn("get_package_share_directory('agt_robot_bringup')", source)
+        self.assertIn("'mid360_driver_mode': 'mapping_custom'", source)
+        self.assertNotIn("Node(package='livox_ros_driver2'", source)
         command = raw_record_command('/tmp/run', '/livox/lidar', '/livox/imu')
         self.assertEqual(command[:3], ['ros2', 'bag', 'record'])
         self.assertIn('/tmp/run/raw_bag', command)

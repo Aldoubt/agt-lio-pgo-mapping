@@ -18,4 +18,5 @@ setup(name=package_name, version='0.3.0', packages=[package_name], data_files=[
         'mapping_export_verified = agt_mapping_bringup.session_runtime:export_main',
         'mapping_live_supervisor = agt_mapping_bringup.live_supervisor:supervisor_main',
         'mapping_review = agt_mapping_bringup.review:main',
+        'mapping_map_release = agt_mapping_bringup.map_release:main',
     ]})

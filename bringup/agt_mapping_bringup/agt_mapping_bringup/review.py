@@ -44,6 +44,19 @@ def inspect_output(output):
     return output, artifact
 
 
+def default_projection_config():
+    """Bunker v1 profile; legacy point-cloud callers keep their old defaults."""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        config = Path(get_package_share_directory('agt_pcd2grid_exporter')) / 'config'
+    except (ImportError, LookupError):
+        config = Path(__file__).resolve().parents[3] / 'exporters/agt_pcd2grid_exporter/config'
+    result = config / 'projection_traversability.yaml'
+    if not result.is_file():
+        raise ReviewError(f'traversability config missing; rebuild exporter: {result}')
+    return result
+
+
 def make_plan(output, artifact, config=None):
     review_root = output / 'map_review'
     base = review_root / 'base'
@@ -52,8 +65,8 @@ def make_plan(output, artifact, config=None):
         'ros2', 'run', 'agt_pcd2grid_exporter', 'pcd2grid_exporter',
         '--package', str(artifact), '--output', str(base),
     ]
-    if config:
-        converter.extend(['--config', str(Path(config).expanduser().resolve())])
+    config = Path(config).expanduser().resolve() if config else default_projection_config()
+    converter.extend(['--config', str(config)])
     studio = [
         'ros2', 'run', 'agt_map_studio', 'map_viewer',
         '--review-package', str(artifact),
@@ -85,7 +98,7 @@ def build_parser():
         description='Convert a verified mapping PCD to PGM and open lightweight 2D review.'
     )
     parser.add_argument('output', help='Completed mapping output directory containing session.json')
-    parser.add_argument('--config', help='Optional agt_pcd2grid_exporter projection YAML')
+    parser.add_argument('--config', help='Projection YAML (default: Bunker v1 traversability; projection.yaml restores legacy mode)')
     parser.add_argument(
         '--no-studio', action='store_true',
         help='Generate/reuse the base PGM but do not open the editor',
