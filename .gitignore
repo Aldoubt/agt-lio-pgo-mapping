@@ -1,8 +1,11 @@
 # Python bytecode generated while running ROS 2 launch files.
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
 # Colcon build products are local to a workspace.
 build/
 install/
 log/
+.vscode/
+.idea/

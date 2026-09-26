@@ -139,3 +139,11 @@ Optimized PCD map artifact
 ```
 
 详细接口、地图格式、架构和研究扩展点见 [`docs/`](docs/)，交付验收记录见 [docs/delivery_acceptance.md](docs/delivery_acceptance.md)。本仓库独立完成建图、PCD→PGM、二维编辑和人工确认；确认后的地图可由其他运行时按需使用。
+
+## 2026-09-24：新版栅格导出与地图发布
+
+主仓库已整合 traversability 实验版，建图审阅默认使用 Bunker v1 配置。
+新增 `mapping_map_release prepare/publish`，候选先放 experiments，人工验收后发布到 maps，
+导航通过 registry 的 latest_validated 读取。
+完整差异、测试、已生成候选和命令见 [整合报告](docs/mcp-traversability-main-integration.md)。
+正式地图尚未切换；请先 source 工作区 install，再 source install_mapping_framework。
