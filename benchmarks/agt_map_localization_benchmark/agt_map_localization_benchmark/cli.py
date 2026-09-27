@@ -1,4 +1,4 @@
-"""Phase 3B offline-only benchmark orchestration. No ROS node or publisher."""
+"""Phase 3B/3C offline-only benchmark orchestration. No ROS node or publisher."""
 from __future__ import annotations
 
 import argparse
@@ -356,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     # supplied --output-root must remain in the dedicated experiment tree.
     experiment_root = EXPERIMENTS.parent.resolve()
     if root.parent != experiment_root:
-        raise SystemExit('--output-root must be a direct child of the dedicated Phase 3B experiment root')
+        raise SystemExit('--output-root must be a direct child of the dedicated Phase 3C experiment root')
     root.mkdir(parents=True, exist_ok=True)
     run = root / args.run_id
     if run.exists():
