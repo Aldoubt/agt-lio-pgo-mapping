@@ -20,7 +20,12 @@ from .geometry import alignment_and_recovery, query_geometry
 from .metrics import (FAILURE_CODES, SUCCESS_RULES, classify_failure, initial_pose, measure_pose,
                       perturbations, pose_record, write_outputs)
 from .pcd import sha256_file, write_pcd
-from .selection import CONTROL_SEED, SWEEP_QUANTILES, make_candidates
+from .quality_analysis import write_phase3c_outputs
+from .quality_features import (NATIVE_MIN_MAP_POINTS, NATIVE_MIN_MAP_POINTS_SOURCE,
+                               local_crop_support, localization_quality_features)
+from .selection import (CONTROL_SEED, SWEEP_QUANTILES, make_candidates)
+from .coverage_sampling import (COVERAGE_CELL_M, COVERAGE_FRACTIONS,
+                                MIN_POINTS_PER_CELL, MIN_VOXELS_PER_CELL)
 from .synthetic import run_synthetic
 
 
@@ -34,7 +39,7 @@ REVIEWED = Path('/home/yangxuan/ros2_ws/experiments/'
                 'agt_spatial_confidence_phase2b_20260927/studio_reviewed_agent_final')
 ROS_INSTALL = Path('/home/yangxuan/ros2_ws/install')
 EXPERIMENTS = Path('/home/yangxuan/ros2_ws/experiments/'
-                   'agt_map_localization_phase3b_20260927/runs')
+                   'agt_map_localization_phase3c_20260928/runs')
 SOURCE = Path(__file__).resolve().parents[2]  # agt_mapping_framework/benchmarks
 
 
@@ -132,6 +137,10 @@ def _check_standard_predecessor(args: argparse.Namespace, source_hashes: dict,
             or settings.get('success_criteria_exploratory') != SUCCESS_RULES
             or settings.get('qt_quantile_sweep_predeclared') != list(SWEEP_QUANTILES)
             or settings.get('control_seed') != CONTROL_SEED
+            or settings.get('coverage_cell_m') != COVERAGE_CELL_M
+            or settings.get('coverage_fractions_predeclared') != list(COVERAGE_FRACTIONS)
+            or settings.get('coverage_min_points_per_cell') != MIN_POINTS_PER_CELL
+            or settings.get('coverage_min_voxels_per_cell') != MIN_VOXELS_PER_CELL
             or smoke.get('synthetic', {}).get('local_cases', 0) < 15
             or smoke.get('real_trial_count', 0) < 1):
         raise ValueError('SMOKE predecessor incomplete or inputs/code/algorithms/settings differ')
@@ -143,7 +152,7 @@ def _candidate_record(c) -> dict:
 
 
 def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
-              plan: dict, manifest: dict, *, use_global: bool) -> tuple[list[dict], dict]:
+              plan: dict, manifest: dict, *, use_global: bool) -> tuple[list[dict], dict, list[dict]]:
     base = run / 'real'
     base.mkdir()
     results = run / 'results.jsonl'
@@ -151,6 +160,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
     candidates: dict = {}
     scenario_map = {p['name']: p for p in perturbations()}
     prepared = {}
+    coverage_rows: list[dict] = []
     for tier, settings in plan.items():
         if tier == 'global':
             continue
@@ -166,6 +176,9 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                     raise AssertionError('Tier1 query frames overlap candidate map subset')
         selected, raw = make_candidates(data, split.map_indices, stage / 'candidates')
         coords, lookup, found = raw['points'], raw['lookups'], raw['found']
+        baseline_b = raw['baseline_B_indices']
+        for entry in raw['coverage_field']:
+            coverage_rows.append({'tier': tier, **entry})
         candidates[tier] = {item.name: _candidate_record(item) for item in selected}
         manifest['splits'][tier] = {
             'map_keyframes': list(split.map_indices), 'heldout_keyframes': list(split.heldout_indices),
@@ -204,7 +217,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                                                     & set(split.map_indices)),
                 }
         write_json(stage / 'queries.json', queries)
-        prepared[tier] = (stage, split, selected, coords, lookup, found, queries)
+        prepared[tier] = (stage, split, selected, coords, lookup, found, baseline_b, queries)
         print(f'REAL PREP {tier}: map keyframes={len(split.map_indices)} '
               f'candidates={len(selected)} queries={len(queries)}', flush=True)
     write_json(run / 'manifest.json', manifest)
@@ -216,7 +229,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
 
     # LOCAL is completed BEFORE trying GLOBAL. One unchanged native program and
     # identical query/seed/parameters per candidate within each case.
-    for tier, (stage, split, selected, coords, lookup, found, queries) in prepared.items():
+    for tier, (stage, split, selected, coords, lookup, found, baseline_b, queries) in prepared.items():
         settings = plan[tier]
         for center in settings['centers']:
             ref = data.poses[center]
@@ -227,6 +240,14 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                     geom = query_geometry(data, coords, lookup, found, candidate.indices, ref.t,
                                           radius_xy=LOCAL_SETTINGS['radius_xy_m'],
                                           half_height=LOCAL_SETTINGS['half_height_m'])
+                    support = local_crop_support(
+                        candidate.indices, baseline_b, coords, lookup, found, data.geom, ref.t,
+                        radius_xy=LOCAL_SETTINGS['radius_xy_m'],
+                        half_height=LOCAL_SETTINGS['half_height_m'])
+                    eps = data.geom_meta['parameters']['epsilon']
+                    quality = localization_quality_features(
+                        geom, support, translation_epsilon=float(eps['translation']),
+                        rotation_epsilon_m2=float(eps['rotation_m2']))
                     for name in settings['scenario_names']:
                         scenario = scenario_map[name]
                         t, quat = initial_pose(ref.t, ref.quat_xyzw, scenario)
@@ -247,7 +268,8 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                                'query_pcd': query, 'candidate_pcd': str(candidate.path),
                                'reference_pose': ref_pose, 'initial_pose': pose_record(t, quat),
                                'perturbation': scenario, 'native': native_result,
-                               'geometry': geom, 'weak_alignment': recovery,
+                               'geometry': geom, 'local_support': support,
+                               'quality_features': quality, 'weak_alignment': recovery,
                                **measure_pose(ref_pose, native_result)}
                         row['failure_code'] = classify_failure(row)
                         append(row)
@@ -260,7 +282,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
 
     if use_global:
         for tier in plan['global']['tiers']:
-            stage, split, selected, coords, lookup, found, queries = prepared[tier]
+            stage, split, selected, coords, lookup, found, baseline_b, queries = prepared[tier]
             assets_root = stage / 'assets'
             assets_root.mkdir()
             for candidate in selected:
@@ -276,6 +298,14 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                     ref = data.poses[center]
                     ref_pose = pose_record(ref.t, ref.quat_xyzw)
                     geom = query_geometry(data, coords, lookup, found, candidate.indices, ref.t)
+                    support = local_crop_support(
+                        candidate.indices, baseline_b, coords, lookup, found, data.geom, ref.t,
+                        radius_xy=LOCAL_SETTINGS['radius_xy_m'],
+                        half_height=LOCAL_SETTINGS['half_height_m'])
+                    eps = data.geom_meta['parameters']['epsilon']
+                    quality = localization_quality_features(
+                        geom, support, translation_epsilon=float(eps['translation']),
+                        rotation_epsilon_m2=float(eps['rotation_m2']))
                     for frames in plan['global']['frames']:
                         query = queries[f'kf{center:03d}_f{frames}']['path']
                         native_result = invoke(global_command(native.paths['candidate_bbs_gicp_localizer'],
@@ -288,6 +318,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                                'query_pcd': query, 'candidate_pcd': str(candidate.path),
                                'reference_pose': ref_pose, 'initial_pose': None,
                                'perturbation': None, 'native': native_result, 'geometry': geom,
+                               'local_support': support, 'quality_features': quality,
                                'weak_alignment': alignment_and_recovery(
                                    ref.t, ref.t, np.array([native_result['pose'][k] for k in ('x', 'y', 'z')])
                                    if native_result['pose'] else None, geom, 0),
@@ -299,7 +330,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
         manifest['not_run']['GLOBAL'] = 'native descriptor/BBS programs absent or explicitly disabled'
     manifest['global_trial_count'] = sum(row['algorithm'] == 'GLOBAL' for row in rows)
     write_json(run / 'manifest.json', manifest)
-    return rows, candidates
+    return rows, candidates, coverage_rows
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -333,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
     run.mkdir(mode=0o755)
     plan = _profile_plan(args.profile)
     manifest = {
-        'schema_version': 2, 'status': 'IN_PROGRESS',
+        'schema_version': 3, 'status': 'IN_PROGRESS',
         'created_utc': datetime.now(timezone.utc).isoformat(),
         'run_id': args.run_id, 'profile': args.profile,
         'offline_only': True, 'publish_production_map': False,
@@ -355,11 +386,18 @@ def main(argv: list[str] | None = None) -> int:
             'case_failure_codes': FAILURE_CODES,
             'qt_quantile_sweep_predeclared': SWEEP_QUANTILES,
             'control_seed': CONTROL_SEED,
+            'coverage_cell_m': COVERAGE_CELL_M,
+            'coverage_fractions_predeclared': list(COVERAGE_FRACTIONS),
+            'coverage_min_points_per_cell': MIN_POINTS_PER_CELL,
+            'coverage_min_voxels_per_cell': MIN_VOXELS_PER_CELL,
+            'native_min_map_points': NATIVE_MIN_MAP_POINTS,
+            'native_min_map_points_source': NATIVE_MIN_MAP_POINTS_SOURCE,
             'map_subset_rule': 'within 30m of fixed optimized PGO centers, i%3!=2; '
                                'nearest 96 patches per center; Tier1 holds out every ±2 query patch; '
                                'oracle ROI bias, offline resource control only',
-            'candidate_selection': 'A raw, B V1 stable, C reviewed stable, D=B&valid Qt>=quantile; '
-                                   'B-matched random and 1m XY voxel-stratified controls',
+            'candidate_selection': 'A raw, B V1 stable, C reviewed stable, legacy global Qt negative '
+                                   'control, plus B-derived coverage-preserving Qt/random/uniform '
+                                   'samplers with the same 1m XY cell set and exact per-cell quota',
             'reference_frame': 'optimized_PGO_pose T_map_body, not absolute ground truth',
             'query_accumulation': 'inverse(T_map_body_ref)*T_map_body_i applied to body patch i',
         },
@@ -370,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
             'FULL': 'profile not supported; explicit user approval required',
             'online_robot_nav_tf': 'offline CLI only, no ROS node / map->odom / Guardian / robot',
             'negative_session_false_relocation_rate': 'no verified independent negative-session query',
-            'confidence_v2_or_product_threshold': 'not part of Phase 3B',
+            'confidence_v2_or_product_threshold': 'forbidden in Phase 3C; evidence remains experimental',
         },
     }
     if data.rev is None:
@@ -380,8 +418,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.profile == 'smoke':
             manifest['synthetic'] = run_synthetic(native, run / 'synthetic')
             write_json(run / 'manifest.json', manifest)
-        rows, candidate_meta = _run_real(run, data, native, plan, manifest,
-                                         use_global=use_global)
+        rows, candidate_meta, coverage_rows = _run_real(run, data, native, plan, manifest,
+                                                        use_global=use_global)
         # Source integrity is verified *again* after every offline native call.
         final_digests = data.validate_sources()
         if final_digests != digests:
@@ -400,6 +438,13 @@ def main(argv: list[str] | None = None) -> int:
         manifest['real_trial_count'] = len(rows)
         manifest['status'] = 'COMPLETED'
         write_outputs(run, rows, candidate_meta, manifest)
+        phase3c = write_phase3c_outputs(run, rows, coverage_rows)
+        manifest['phase3c_analysis'] = {
+            'summary': 'coverage_geometry_summary.json',
+            'report': 'coverage_geometry_report.md',
+            'coverage_field': 'coverage_field.csv',
+            'semantics': phase3c['semantics'],
+        }
         write_json(run / 'manifest.json', manifest)
         print(f'BENCHMARK COMPLETED: {run} ({len(rows)} real registrations)', flush=True)
         return 0
