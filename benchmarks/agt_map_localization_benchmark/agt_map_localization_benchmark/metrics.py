@@ -12,12 +12,19 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from scipy.stats import spearmanr
 
-# Analytical replay criteria, NOT calibrated field safety or product gates.
+# Predeclared 3D-translation / heading-yaw criteria, NOT product safety gates.
+# Z is already included in 3D translation; an additional Z cutoff would silently
+# tighten the requested thresholds and is therefore deliberately not applied.
 SUCCESS_RULES = {
-    'strict': {'translation_3d_m': 0.25, 'z_m': 0.20, 'yaw_deg': 5.0},
-    'nominal': {'translation_3d_m': 0.50, 'z_m': 0.40, 'yaw_deg': 10.0},
-    'loose': {'translation_3d_m': 1.00, 'z_m': 0.70, 'yaw_deg': 20.0},
+    'strict': {'translation_3d_m': 0.20, 'yaw_deg': 2.0},
+    'nominal': {'translation_3d_m': 0.50, 'yaw_deg': 5.0},
+    'loose': {'translation_3d_m': 1.00, 'yaw_deg': 10.0},
 }
+FAILURE_CODES = (
+    'NO_CONVERGENCE', 'WRONG_BASIN', 'INSUFFICIENT_MAP_POINTS',
+    'INSUFFICIENT_QUERY_POINTS', 'MAX_ITERATIONS', 'INVALID_RESULT', 'TIMEOUT',
+    'REFERENCE_UNAVAILABLE', 'UNKNOWN_FAILURE', 'FALSE_RELOCALIZATION',
+)
 
 
 def perturbations() -> tuple[dict, ...]:
@@ -68,19 +75,59 @@ def measure_pose(reference: dict, native: dict) -> dict:
     ref_q = Rotation.from_quat([reference[k] for k in ('qx', 'qy', 'qz', 'qw')])
     res_q = Rotation.from_quat([pose[k] for k in ('qx', 'qy', 'qz', 'qw')])
     d_rotation = res_q * ref_q.inv()
-    yaw_delta = float(d_rotation.as_euler('zyx', degrees=True)[0])
+    # Compare each body's heading in the map plane; yaw of R_result*R_ref^-1
+    # is NOT generally the heading difference when roll/pitch are nonzero.
+    def heading(rotation: Rotation) -> float:
+        forward = rotation.apply([1., 0., 0.])
+        return math.atan2(float(forward[1]), float(forward[0]))
+    yaw_delta = heading(res_q) - heading(ref_q)
     out.update({'translation_3d_error_m': float(np.linalg.norm(delta)),
                 'xy_error_m': float(np.linalg.norm(delta[:2])),
                 'z_error_m': abs(float(delta[2])),
-                'yaw_error_deg': abs(((yaw_delta + 180) % 360) - 180),
+                'yaw_error_deg': abs(math.degrees(math.atan2(math.sin(yaw_delta),
+                                                            math.cos(yaw_delta)))),
                 'so3_error_deg': math.degrees(d_rotation.magnitude()),
                 'error_xyz_map_m': [float(v) for v in delta]})
     for name, rule in SUCCESS_RULES.items():
         out[f'{name}_success'] = bool(native['backend_success']
             and out['translation_3d_error_m'] <= rule['translation_3d_m']
-            and out['z_error_m'] <= rule['z_m']
             and out['yaw_error_deg'] <= rule['yaw_deg'])
     return out
+
+
+def classify_failure(row: dict) -> str | None:
+    """Offline reference-aware case outcome, never inferred from native fitness.
+
+    A native iteration-limit failure is only MAX_ITERATIONS if the backend
+    *says so*: its current CLI does not expose an iteration count.  GLOBAL
+    FALSE_RELOCALIZATION means a returned wrong pose relative to this same-
+    session optimized PGO reference, NOT a negative-session false-positive rate.
+    """
+    if not row.get('reference_pose'):
+        return 'REFERENCE_UNAVAILABLE'
+    native = row['native']
+    reason = str(native.get('backend_reason') or '').lower()
+    if native.get('backend_exit_code') == 124 or 'timeout' in reason or 'timed out' in reason:
+        return 'TIMEOUT'
+    if native.get('backend_success'):
+        if native.get('pose') is None or row.get('translation_3d_error_m') is None:
+            return 'INVALID_RESULT'
+        if not row.get('loose_success'):
+            return 'FALSE_RELOCALIZATION' if row['algorithm'] == 'GLOBAL' else 'WRONG_BASIN'
+        return None
+    if 'local map has fewer' in reason or 'map too sparse' in reason or 'target_points=0' in reason:
+        return 'INSUFFICIENT_MAP_POINTS'
+    if 'query scan too sparse' in reason or 'query too sparse' in reason or 'scan too sparse' in reason:
+        return 'INSUFFICIENT_QUERY_POINTS'
+    if 'max iteration' in reason or 'iteration limit' in reason:
+        return 'MAX_ITERATIONS'
+    if 'did not converge' in reason or 'found no valid pose' in reason:
+        return 'NO_CONVERGENCE'
+    if ('invalid' in reason or 'nonfinite' in reason or 'nan' in reason
+            or 'no parseable backend json' in reason or 'quaternion' in reason
+            or native.get('pose') is None and native.get('backend_exit_code') == 0):
+        return 'INVALID_RESULT'
+    return 'UNKNOWN_FAILURE'
 
 
 def distribution(rows: list[dict], field: str) -> dict:
@@ -129,13 +176,72 @@ def association(rows: list[dict], value_field: str) -> dict:
         hits = sum(v[1] for v in group)
         trials = sum(v[2] for v in group)
         bins.append({'q_lower': float(edge[i]), 'q_upper': float(edge[i + 1]),
-                     'independent_candidate_query_groups': len(group),
+                     'candidate_query_groups_not_independent': len(group),
                      'nominal_hits': hits, 'trials': trials,
                      'empirical_success_fraction': hits / trials if trials else None})
     return {'groups': len(pairs),
             'spearman_q_vs_empirical_nominal_fraction': float(corr) if math.isfinite(corr) else None,
             'reliability_bins': bins,
-            'note': 'descriptive repeated-session association, NOT calibrated P(success)'}
+            'note': 'shared session and nested maps: groups NOT independent, NOT calibrated P(success)'}
+
+
+def _weak_direction_summary(group: list[dict]) -> dict:
+    """Condition on actual nonzero starts; weak axes have arbitrary sign."""
+    result = {}
+    for axis in ('translation_query', 'translation_mapping',
+                 'rotation_query', 'rotation_mapping'):
+        a = f'{axis}_weak_alignment_abs_cos'
+        recovery = f'{axis}_weak_recovery_{"deg" if axis.startswith("rotation_") else "m"}'
+        bins = {}
+        for label, predicate in (
+            ('weak_aligned', lambda x: x >= .80),
+            ('strong_aligned', lambda x: x <= .33),
+            ('intermediate', lambda x: .33 < x < .80),
+        ):
+            subset = [row for row in group
+                      if row['weak_alignment'].get(a) is not None
+                      and predicate(row['weak_alignment'][a])]
+            bins[label] = {
+                'nominal_success': sum(bool(row['nominal_success']) for row in subset),
+                'total': len(subset),
+                'weak_projection_recovery': distribution([row['weak_alignment'] for row in subset], recovery),
+            }
+        result[axis] = {'bins': bins, 'axis_semantics':
+                        'mapping-era per-voxel axial consensus' if axis.endswith('mapping') else
+                        'query-origin candidate-map spectrum'}
+    return result
+
+
+def _density_control_comparison(tables: list[dict]) -> list[dict]:
+    """Matched point count alone does not match occupied spatial footprint."""
+    by_key = {(t['tier'], t['algorithm'], t['frames'], t['candidate']): t for t in tables}
+    paired = []
+    for item in tables:
+        if item['algorithm'] != 'LOCAL' or not item['candidate'].startswith('D_QT_'):
+            continue
+        suffix = item['candidate'].removeprefix('D_QT_')
+        for kind in ('CONTROL_RANDOM', 'CONTROL_VOXEL'):
+            other = by_key.get((item['tier'], 'LOCAL', item['frames'], f'{kind}_{suffix}'))
+            if other is None:
+                continue
+            d, c = item['density_and_coverage'], other['density_and_coverage']
+            paired.append({
+                'tier': item['tier'], 'frames': item['frames'], 'qt_candidate': item['candidate'],
+                'control': other['candidate'], 'points_match': d['points'] == c['points'],
+                'points_each': d['points'],
+                'qt_xy_occupied': d['occupied_xy_1m_cells'],
+                'control_xy_occupied': c['occupied_xy_1m_cells'],
+                'qt_xyz_occupied': d['occupied_xyz_1m_cells'],
+                'control_xyz_occupied': c['occupied_xyz_1m_cells'],
+                'qt_nominal_success': item['success_counts']['nominal'],
+                'control_nominal_success': other['success_counts']['nominal'],
+                'qt_median_error_m': item['translation_3d_error_m']['median'],
+                'control_median_error_m': other['translation_3d_error_m']['median'],
+                'qt_median_wall_ms': item['wall_ms_external']['median'],
+                'control_median_wall_ms': other['wall_ms_external']['median'],
+                'note': 'observational matched-point-count comparison, NOT automatically selected winner',
+            })
+    return paired
 
 
 def summarize(rows: list[dict], candidates: dict, manifest: dict) -> dict:
@@ -145,12 +251,15 @@ def summarize(rows: list[dict], candidates: dict, manifest: dict) -> dict:
     tables = []
     for (tier, algo, name, frames), group in sorted(grouped.items()):
         total = len(group)
+        codes = {key: sum(r.get('failure_code') == key for r in group) for key in FAILURE_CODES}
         metrics = {
             'tier': tier, 'algorithm': algo, 'candidate': name, 'frames': frames,
             'success_counts': {criterion: {
                 'success': sum(bool(r[f'{criterion}_success']) for r in group),
                 'total': total} for criterion in SUCCESS_RULES},
             'native_backend_successes': sum(bool(r['native']['backend_success']) for r in group),
+            'available_result_poses': sum(r['native']['pose'] is not None for r in group),
+            'failure_codes': codes,
             'backend_failures_by_reason': dict(sorted(
                 (reason, sum(r['native']['backend_reason'] == reason for r in group))
                 for reason in set(r['native']['backend_reason'] for r in group)
@@ -160,45 +269,50 @@ def summarize(rows: list[dict], candidates: dict, manifest: dict) -> dict:
             'reference_label': group[0]['reference_label'],
             'translation_3d_error_m': distribution(group, 'translation_3d_error_m'),
             'xy_error_m': distribution(group, 'xy_error_m'),
+            'z_error_m': distribution(group, 'z_error_m'),
             'yaw_error_deg': distribution(group, 'yaw_error_deg'),
+            'so3_error_deg': distribution(group, 'so3_error_deg'),
             'wall_ms_external': distribution([r['native'] for r in group], 'wall_ms_external'),
             'fitness_native': distribution([r['native'] for r in group], 'fitness_native'),
-            'weak_axis_recovery_m': distribution([r['weak_alignment'] for r in group],
-                                                  'weak_axis_recovery_m'),
             'density_and_coverage': candidates[tier][name]['coverage'],
+            'weak_direction_analysis': _weak_direction_summary(group),
         }
-        for label, pred in (('strong_aligned', lambda x: x is not None and x >= 0.80),
-                            ('weak_aligned', lambda x: x is not None and x <= 0.33)):
-            subset = [r for r in group if pred(r['weak_alignment']['translation_perturb_weak_axis_abs_cos'])]
-            metrics[label + '_perturbations'] = {
-                'nominal_success': sum(r['nominal_success'] for r in subset),
-                'total': len(subset),
-                'weak_axis_recovery_m': distribution([r['weak_alignment'] for r in subset],
-                                                      'weak_axis_recovery_m')}
         tables.append(metrics)
     assoc = {name: association(rows, name) for name in
              ('qt_mapping_view_median', 'qr_mapping_view_median',
               'qt_query_local', 'qr_query_conditioned')}
+    counts = {code: sum(r.get('failure_code') == code for r in rows) for code in FAILURE_CODES}
     return {'rows': len(rows), 'tables': tables, 'associations': assoc,
+            'failure_breakdown': counts,
+            'insufficient_map_or_query_points': (counts['INSUFFICIENT_MAP_POINTS']
+                                                + counts['INSUFFICIENT_QUERY_POINTS']),
+            'density_control_comparisons': _density_control_comparison(tables),
             'parameters_frozen_pre_run': manifest['parameters'],
             'not_run': manifest['not_run'],
             'caveat': 'Q is directional richness, not probability or a safety limit. '
-                      'Both real tiers use the same session PGO and full-session evidence labels.'}
+                      'Both real tiers use the same session PGO and full-session evidence labels. '
+                      'Returned poses from native failures remain in error distributions with '
+                      'backend_success=false; unavailable poses are excluded, never imputed.'}
 
 
 def write_outputs(run: Path, rows: list[dict], candidates: dict, manifest: dict) -> dict:
     summary = summarize(rows, candidates, manifest)
     (run / 'summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False), encoding='utf-8')
     fields = ['tier', 'algorithm', 'candidate', 'center', 'frames', 'scenario',
-              'reference_label', 'backend_success', 'converged', 'backend_reason',
-              'strict_success', 'nominal_success', 'loose_success',
-              'translation_3d_error_m', 'xy_error_m', 'z_error_m', 'yaw_error_deg',
-              'so3_error_deg', 'wall_ms_external', 'fitness_native', 'overlap_native',
-              'inliers_native', 'iterations_native', 'qt_mapping_view_median',
-              'qr_mapping_view_median', 'qt_query_local', 'qr_query_conditioned',
-              'weak_axis_recovery_m', 'perturb_alignment_abs_cos',
+              'reference_label', 'leakage_label', 'failure_code', 'backend_success',
+              'converged', 'backend_reason', 'strict_success', 'nominal_success',
+              'loose_success', 'translation_3d_error_m', 'xy_error_m', 'z_error_m',
+              'yaw_error_deg', 'so3_error_deg', 'wall_ms_external', 'fitness_native',
+              'overlap_native', 'inliers_native', 'iterations_native',
+              'qt_mapping_view_median', 'qr_mapping_view_median', 'qt_query_local',
+              'qr_query_conditioned', 'translation_query_weak_alignment_abs_cos',
+              'translation_mapping_weak_alignment_abs_cos',
+              'rotation_query_weak_alignment_abs_cos',
+              'rotation_mapping_weak_alignment_abs_cos',
+              'translation_query_weak_recovery_m', 'translation_mapping_weak_recovery_m',
+              'rotation_query_weak_recovery_deg', 'rotation_mapping_weak_recovery_deg',
               'reference_pose', 'initial_pose', 'result_pose', 'native_json',
-              'geometry_json']
+              'geometry_json', 'weak_alignment_json']
     with (run / 'results.csv').open('x', encoding='utf-8', newline='') as stream:
         writer = csv.DictWriter(stream, fields)
         writer.writeheader()
@@ -220,13 +334,14 @@ def write_outputs(run: Path, rows: list[dict], candidates: dict, manifest: dict)
                 'qr_mapping_view_median': geom.get('qr_mapping_view_median'),
                 'qt_query_local': geom['qt_query_local']['q'],
                 'qr_query_conditioned': geom['qr_query_conditioned']['q'],
-                'weak_axis_recovery_m': row['weak_alignment']['weak_axis_recovery_m'],
-                'perturb_alignment_abs_cos': row['weak_alignment']['translation_perturb_weak_axis_abs_cos'],
+                **{key: row['weak_alignment'].get(key) for key in fields
+                   if '_weak_alignment_abs_cos' in key or '_weak_recovery_' in key},
                 'reference_pose': json.dumps(row['reference_pose']),
                 'initial_pose': json.dumps(row['initial_pose']),
                 'result_pose': json.dumps(native['pose']),
                 'native_json': json.dumps(native, allow_nan=False),
                 'geometry_json': json.dumps(geom, allow_nan=False),
+                'weak_alignment_json': json.dumps(row['weak_alignment'], allow_nan=False),
             })
     _write_report(run, summary)
     _write_plots(run, summary)
@@ -234,39 +349,96 @@ def write_outputs(run: Path, rows: list[dict], candidates: dict, manifest: dict)
 
 
 def _write_report(run: Path, summary: dict) -> None:
+    def fmt(x):
+        return 'NA' if x is None else f'{x:.3f}'
+
+    def stats(item):
+        return '/'.join(fmt(item[k]) for k in ('median', 'p95', 'worst'))
+
     text = [
         '# Offline Localization A/B — descriptive results', '',
-        'These are **observed offline runs**, not an online field validation or a '
-        'product-map threshold decision. PGO references are `optimized_PGO_pose`, not absolute GT.',
-        '', f"Total native registrations: {summary['rows']}", '',
-        '| Tier | Algorithm | Candidate | Frames | strict | nominal | loose | median 3D error | P95 3D error | median wall ms |',
-        '|---|---|---|---:|---:|---:|---:|---:|---:|---:|',
+        '## Observed (offline only)', '',
+        'These native trials did not start a ROS node, Nav2, robot controls, or map->odom. '
+        'Reference poses are `optimized_PGO_pose`, **not absolute ground truth**.',
+        'Tier0 is `SELF_QUERY/DATA_LEAKAGE_EXPECTED`. Tier1 excludes query patches '
+        'but has pose-graph, full-session evidence-label and reference-centered oracle-ROI leakage.',
+        '', f"Native real registrations: **{summary['rows']}**. Success is reported as N/total, "
+        'not as an inferred probability. Strict = 0.2 m / 2°, nominal = 0.5 m / 5°, '
+        'loose = 1 m / 10° (3D translation plus absolute heading yaw).', '',
+        '| Tier | Algorithm | Map | Frames | Strict | Nominal | Loose | 3D error m median/P95/max | Yaw ° median/P95/max | SO(3) ° median/P95/max | Wall ms median/P95/max |',
+        '|---|---|---|---:|---:|---:|---:|---|---|---|---|',
     ]
     for row in summary['tables']:
         def score(name):
-            v = row['success_counts'][name]
-            return f"{v['success']}/{v['total']}"
-        d = row['translation_3d_error_m']
-        w = row['wall_ms_external']['median']
+            value = row['success_counts'][name]
+            return f"{value['success']}/{value['total']}"
         text.append(f"| {row['tier']} | {row['algorithm']} | {row['candidate']} | {row['frames']} | "
                     f"{score('strict')} | {score('nominal')} | {score('loose')} | "
-                    f"{d['median'] if d['median'] is not None else 'NA'} | "
-                    f"{d['p95'] if d['p95'] is not None else 'NA'} | "
-                    f"{w if w is not None else 'NA'} |")
-    text += ['', '## Analysis limits', '',
-             '- Tier0 contains its own query points (`SELF_QUERY/DATA_LEAKAGE_EXPECTED`).',
-             '- Tier1 excludes query patches from every candidate map and descriptor database; '
-             'optimized poses and V1/geometry labels still use the full single session '
-             '(pose-graph **and evidence-label** leakage). The bounded map ROI is centered '
-             'on the known PGO reference: offline oracle ROI bias, not no-seed full-map search.',
-             '- Qr_mapping_view is the median of mapping-era per-voxel sidecar Qr. '
-             'Qr_query_conditioned is a separate query-origin recomputation on map-subset points; '
-             'they are not interchangeable.',
-             '- Native metrics not exposed by the unchanged executable (iterations, exact inlier count) '
-             'are null, not inferred from overlap.',
-             '- Strict/nominal/loose are predeclared offline replay criteria; Q is not P(success).',
-             '- GLOBAL success outside loose is backend-success-with-wrong-reference-pose, '
-             'not a measured negative-session false relocation rate.',
+                    f"{stats(row['translation_3d_error_m'])} | {stats(row['yaw_error_deg'])} | "
+                    f"{stats(row['so3_error_deg'])} | {stats(row['wall_ms_external'])} |")
+    text += ['', '## Failure breakdown', '',
+             'A native backend success outside loose is `WRONG_BASIN` (LOCAL) or '
+             '`FALSE_RELOCALIZATION` (GLOBAL, relative to same-session PGO). '
+             'It is **not** a measured independent negative-session false-positive rate. '
+             'MAX_ITERATIONS is only counted if the native CLI states it explicitly; '
+             'fitness or overlap never replace pose error.', '',
+             '| Failure code | Cases |', '|---|---:|']
+    text.extend(f'| {key} | {value} |' for key, value in summary['failure_breakdown'].items())
+    text += ['', '## Qt sweep versus point-count controls', '',
+             'Each paired control has exactly as many input points as D. XY and XYZ occupied '
+             '1m cells expose remaining spatial-coverage confounding; no automatic winner is selected.',
+             '', '| Tier | Frames | Qt map | Control | Points equal | XY cells Qt/control | XYZ cells Qt/control | Nominal Qt/control | Median error m Qt/control |',
+             '|---|---:|---|---|---|---|---|---|---|']
+    for item in summary['density_control_comparisons']:
+        a, b = item['qt_nominal_success'], item['control_nominal_success']
+        text.append(f"| {item['tier']} | {item['frames']} | {item['qt_candidate']} | {item['control']} | "
+                    f"{item['points_match']} ({item['points_each']}) | "
+                    f"{item['qt_xy_occupied']}/{item['control_xy_occupied']} | "
+                    f"{item['qt_xyz_occupied']}/{item['control_xyz_occupied']} | "
+                    f"{a['success']}/{a['total']} vs {b['success']}/{b['total']} | "
+                    f"{fmt(item['qt_median_error_m'])}/{fmt(item['control_median_error_m'])} |")
+    text += ['', '## Exploratory Q association (not calibrated)', '',
+             'Spearman and empirical bins group repeated perturbations by tier/map/query center/frame. '
+             'Those groups still share a session and nested maps; **they are not independent samples**. '
+             'Qr_mapping_view is a median of mapping-era sidecar values; '
+             'Qr_query_conditioned is recomputed around the query body origin from candidate-map '
+             'points and frozen normals; they are distinct populations.', '',
+             '| Evidence | Candidate/query groups | Spearman vs observed nominal fraction | Bins |',
+             '|---|---:|---:|---|']
+    for name, item in summary['associations'].items():
+        bins = '; '.join(f"[{fmt(b['q_lower'])},{fmt(b['q_upper'])}]:"
+                         f"{b['nominal_hits']}/{b['trials']}"
+                         for b in item['reliability_bins']) or 'NOT_AVAILABLE'
+        text.append(f"| {name} | {item['groups']} | "
+                    f"{fmt(item['spearman_q_vs_empirical_nominal_fraction'])} | {bins} |")
+    text += ['', '## Weak-axis perturbation / recovery', '',
+             'Both mapping-era per-voxel **axial consensus** (invalid when diffuse) and '
+             'candidate/query-origin spectrum are reported separately. '
+             'Positive projected recovery is only a smaller signed-axis-independent error; '
+             'zero starts and missing poses/axes yield null. Below are Tier1 LOCAL '
+             '1-frame nonzero starts; each cell is nominal hits/N and median weak-axis recovery.',
+             '', '| Map | Axis source / perturbation | Weak-aligned ≥0.80 | Strong-aligned ≤0.33 |',
+             '|---|---|---|---|']
+    for row in summary['tables']:
+        if row['tier'] != 'tier1' or row['algorithm'] != 'LOCAL' or row['frames'] != 1:
+            continue
+        for source, result in row['weak_direction_analysis'].items():
+            def bintext(label):
+                bin = result['bins'][label]
+                return (f"{bin['nominal_success']}/{bin['total']}; "
+                        f"{fmt(bin['weak_projection_recovery']['median'])} "
+                        f"{'°' if source.startswith('rotation_') else 'm'}")
+            text.append(f"| {row['candidate']} | {source} | {bintext('weak_aligned')} | "
+                        f"{bintext('strong_aligned')} |")
+    text += ['', '## Analysis limits and hypotheses', '',
+             '- Geometry Q measures directional richness, **not P(success)**; observed '
+             'associations cannot establish causation or predict an unseen session.',
+             '- A density-controlled difference may reflect spatial footprint, oracle ROI, '
+             'single-session evidence leakage or native local-map crop, not only Qt.',
+             '- Error distributions include *available* poses even when the native backend '
+             'reported failure; success N/total still requires backend success.',
+             '- Iterations and exact inliers remain null because the unchanged native JSON '
+             'does not provide them; do not infer them from overlap.',
              '', '## NOT_RUN / unavailable', '']
     for key, reason in summary['not_run'].items():
         text.append(f'- {key}: {reason}')
@@ -305,8 +477,8 @@ def _write_plots(run: Path, summary: dict) -> None:
             if b['empirical_success_fraction'] is not None:
                 center = (b['q_lower'] + b['q_upper']) / 2
                 ax.scatter(center, b['empirical_success_fraction'],
-                           s=35 + 8 * b['independent_candidate_query_groups'], color='#c8604b')
-                ax.annotate(str(b['independent_candidate_query_groups']),
+                           s=35 + 8 * b['candidate_query_groups_not_independent'], color='#c8604b')
+                ax.annotate(str(b['candidate_query_groups_not_independent']),
                             (center, b['empirical_success_fraction']))
         ax.set(xlabel='Median mapping-view Qt bin', ylabel='Observed nominal fraction', ylim=(0, 1),
                title='Empirical groups only; NOT calibrated probability')

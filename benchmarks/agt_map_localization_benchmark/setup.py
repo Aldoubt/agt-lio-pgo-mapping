@@ -11,6 +11,7 @@ setup(
         ('share/' + package_name, ['package.xml', 'README.md']),
     ],
     install_requires=['setuptools', 'numpy', 'scipy', 'PyYAML'],
+    tests_require=['pytest'],
     zip_safe=True,
     maintainer='AGT Mapping',
     maintainer_email='dev@agt.local',

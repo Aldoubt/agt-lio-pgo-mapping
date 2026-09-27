@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from .dataset import PgoEvidence
 
@@ -23,6 +24,37 @@ def spectrum(matrix: np.ndarray, n: int, minimum: int, epsilon: float) -> dict:
     return {'valid': True, 'q': float(np.clip(3.0 * eigen[0] / (eigen.sum() + epsilon), 0, 1)),
             'eigenvalues': [float(v) for v in eigen],
             'weak_xyz_map': [float(v) for v in vectors[:, 0]], 'reason': None}
+
+
+def mapping_weak_consensus(sidecar: np.ndarray, voxel: np.ndarray,
+                           kind: str, minimum: int) -> dict:
+    """Axial consensus of mapping-era per-voxel weak directions, NOT Ht/Hr.
+
+    v and -v are identical axes. A diffuse/ambiguous vote cannot be reported
+    as a single meaningful mapping-view weak direction. This diagnostic does
+    not reinterpret the sidecar's per-voxel Qt/Qr as query-conditioned Q.
+    """
+    included = voxel[sidecar[f'{kind}_valid'][voxel] != 0]
+    vectors = np.column_stack([sidecar[f'{kind}_weak_{axis}'][included]
+                               for axis in 'xyz']).astype('f8')
+    lengths = np.linalg.norm(vectors, axis=1)
+    keep = np.isfinite(vectors).all(axis=1) & np.isfinite(lengths) & (lengths > 1e-8)
+    vectors = vectors[keep] / lengths[keep, None]
+    count = len(vectors)
+    base = {'valid': False, 'count': count, 'weak_xyz_map': None,
+            'axial_coherence': None, 'top_eigen_gap_fraction': None}
+    if count < minimum:
+        return base | {'reason': f'valid mapping-era weak axes {count} < {minimum}'}
+    moment = vectors.T @ vectors / count
+    eigen, basis = np.linalg.eigh(moment)
+    coherence = float(eigen[-1] / eigen.sum())
+    gap = float((eigen[-1] - eigen[-2]) / eigen.sum())
+    base.update({'axial_coherence': coherence, 'top_eigen_gap_fraction': gap})
+    if gap < 0.10:
+        return base | {'reason': 'diffuse/ambiguous sidecar weak-axis population'}
+    return base | {'valid': True, 'weak_xyz_map': [float(v) for v in basis[:, -1]],
+                   'reason': None,
+                   'method': 'principal eigenvector of mean(v*v^T), axial sign invariant'}
 
 
 def query_geometry(data: PgoEvidence, map_points: np.ndarray, key_lookup: np.ndarray,
@@ -81,40 +113,79 @@ def query_geometry(data: PgoEvidence, map_points: np.ndarray, key_lookup: np.nda
         'valid_normal_voxels': int(n), 'normal_supported_map_points': int(len(indices)),
         'qt_mapping_view_median': median_sidecar('translation_q', 'translation_valid'),
         'qr_mapping_view_median': median_sidecar('rotation_q', 'rotation_valid'),
+        'translation_mapping_weak_consensus': mapping_weak_consensus(
+            data.geom, voxel, 'translation', min_normals),
+        'rotation_mapping_weak_consensus': mapping_weak_consensus(
+            data.geom, voxel, 'rotation', min_normals),
         'qt_query_local': qt,
         'qr_query_conditioned': qr,
     }
 
 
+def _project_recovery(axis: list[float] | None, initial: np.ndarray,
+                      final: np.ndarray | None, scale: float) -> dict:
+    result = {'alignment_abs_cos': None, 'initial_projection': None,
+              'final_projection': None, 'recovery': None}
+    if axis is None or float(np.linalg.norm(initial)) < 1e-12:
+        return result
+    weak = np.asarray(axis, dtype='f8')
+    before = abs(float(np.dot(initial, weak)))
+    result['alignment_abs_cos'] = before / float(np.linalg.norm(initial))
+    result['initial_projection'] = before * scale
+    if final is not None:
+        after = abs(float(np.dot(final, weak)))
+        result['final_projection'] = after * scale
+        result['recovery'] = (before - after) * scale
+    return result
+
+
 def alignment_and_recovery(reference_t: np.ndarray, initial_t: np.ndarray,
                            result_t: np.ndarray | None, geometry: dict,
-                           yaw_perturb_deg: float) -> dict:
-    weak = geometry['qt_query_local']['weak_xyz_map']
-    rotweak = geometry['qr_query_conditioned']['weak_xyz_map']
-    direction = initial_t - reference_t
-    norm = float(np.linalg.norm(direction))
-    output = {'translation_perturb_weak_axis_abs_cos': None,
-              'yaw_axis_vs_rotation_weak_abs_cos': None,
-              'initial_weak_projection_error_m': None,
-              'final_weak_projection_error_m': None,
-              'weak_axis_recovery_m': None,
-              'strong_plane_recovery_m': None}
-    if rotweak is not None and yaw_perturb_deg:
-        output['yaw_axis_vs_rotation_weak_abs_cos'] = abs(float(np.dot(rotweak, [0, 0, 1])))
-    if weak is None:
-        return output
-    w = np.asarray(weak, dtype='f8')
-    start_weak = abs(float(np.dot(direction, w)))
-    output['initial_weak_projection_error_m'] = start_weak
-    if norm:
-        output['translation_perturb_weak_axis_abs_cos'] = start_weak / norm
-    if result_t is None:
-        return output
-    final = np.asarray(result_t, dtype='f8') - reference_t
-    final_weak = abs(float(np.dot(final, w)))
-    output['final_weak_projection_error_m'] = final_weak
-    output['weak_axis_recovery_m'] = start_weak - final_weak
-    start_strong = float(np.linalg.norm(direction - np.dot(direction, w) * w))
-    final_strong = float(np.linalg.norm(final - np.dot(final, w) * w))
-    output['strong_plane_recovery_m'] = start_strong - final_strong
+                           yaw_perturb_deg: float, *,
+                           reference_xyzw: np.ndarray | None = None,
+                           result_xyzw: np.ndarray | None = None) -> dict:
+    """Map-frame perturbations vs both mapping-view and query-view weak axes.
+
+    Rotation vectors are map-frame left differences. A positive recovery is a
+    decrease in ABSOLUTE weak-axis error; it is not proof of correct basin.
+    Missing result orientation, uninformative axis, or zero perturbation gives
+    null rather than an invented rotation recovery.
+    """
+    translation = np.asarray(initial_t, dtype='f8') - reference_t
+    final_t = None if result_t is None else np.asarray(result_t, dtype='f8') - reference_t
+    initial_rot = np.array([0., 0., np.deg2rad(yaw_perturb_deg)])
+    final_rot = None
+    if reference_xyzw is not None and result_xyzw is not None:
+        final_rot = (Rotation.from_quat(result_xyzw)
+                     * Rotation.from_quat(reference_xyzw).inv()).as_rotvec()
+    axes = {
+        'translation_query': geometry['qt_query_local']['weak_xyz_map'],
+        'translation_mapping': geometry['translation_mapping_weak_consensus']['weak_xyz_map'],
+        'rotation_query': geometry['qr_query_conditioned']['weak_xyz_map'],
+        'rotation_mapping': geometry['rotation_mapping_weak_consensus']['weak_xyz_map'],
+    }
+    output = {}
+    for label, axis in axes.items():
+        is_rot = label.startswith('rotation_')
+        projection = _project_recovery(axis, initial_rot if is_rot else translation,
+                                       final_rot if is_rot else final_t,
+                                       180 / np.pi if is_rot else 1.)
+        unit = 'deg' if is_rot else 'm'
+        output[f'{label}_weak_alignment_abs_cos'] = projection['alignment_abs_cos']
+        output[f'{label}_initial_weak_error_{unit}'] = projection['initial_projection']
+        output[f'{label}_final_weak_error_{unit}'] = projection['final_projection']
+        output[f'{label}_weak_recovery_{unit}'] = projection['recovery']
+    # Original explicit query-conditioned aliases, kept for existing readers.
+    output['translation_perturb_weak_axis_abs_cos'] = output['translation_query_weak_alignment_abs_cos']
+    output['yaw_axis_vs_rotation_weak_abs_cos'] = output['rotation_query_weak_alignment_abs_cos']
+    output['initial_weak_projection_error_m'] = output['translation_query_initial_weak_error_m']
+    output['final_weak_projection_error_m'] = output['translation_query_final_weak_error_m']
+    output['weak_axis_recovery_m'] = output['translation_query_weak_recovery_m']
+    output['strong_plane_recovery_m'] = None
+    weak = axes['translation_query']
+    if weak is not None and final_t is not None and float(np.linalg.norm(translation)) > 1e-12:
+        w = np.asarray(weak, dtype='f8')
+        output['strong_plane_recovery_m'] = (
+            float(np.linalg.norm(translation - np.dot(translation, w) * w))
+            - float(np.linalg.norm(final_t - np.dot(final_t, w) * w)))
     return output

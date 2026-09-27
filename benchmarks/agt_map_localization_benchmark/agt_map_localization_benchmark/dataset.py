@@ -93,9 +93,11 @@ class PgoEvidence:
                             'final_confidence', 'override_mode', 'geometry_score'))
         self.geom = read_pcd(self.geometry / 'geometry_voxels.pcd',
                              ('x', 'y', 'z', 'voxel_x', 'voxel_y', 'voxel_z',
-                              'translation_valid', 'translation_q', 'normal_valid',
-                              'normal_x', 'normal_y', 'normal_z', 'rotation_valid',
-                              'rotation_q'))
+                              'translation_valid', 'translation_q',
+                              'translation_weak_x', 'translation_weak_y', 'translation_weak_z',
+                              'normal_valid', 'normal_x', 'normal_y', 'normal_z',
+                              'rotation_valid', 'rotation_q',
+                              'rotation_weak_x', 'rotation_weak_y', 'rotation_weak_z'))
         self.rev = (read_pcd(self.reviewed / 'confidence_voxels.pcd',
                              ('x', 'y', 'z', 'voxel_x', 'voxel_y', 'voxel_z',
                               'auto_confidence', 'final_confidence', 'override_mode'))
@@ -194,7 +196,12 @@ class PgoEvidence:
         return tuple(poses)
 
     def _patch_offsets(self) -> tuple[tuple[int, int], ...]:
-        """Prove map.pcd is a concatenation of these patches before slicing by index."""
+        """Prove ALL parent map points follow the patch order before splitting.
+
+        A three-point sample can miss a permuted query block and accidentally
+        leak the query into a Tier1 map.  This full linear check uses only
+        immutable input bytes; it never rewrites the parent map or patches.
+        """
         offsets = []
         cursor = 0
         for pose in self.poses:
@@ -202,12 +209,11 @@ class PgoEvidence:
             end = cursor + len(patch)
             if end > len(self.map_data):
                 raise ValueError('patch totals exceed optimized PGO map')
-            sample = np.unique(np.array([0, len(patch) // 2, len(patch) - 1]))
-            if len(sample):
-                reference = (xyz(patch[sample]).astype('f8') @ pose.rotation.T + pose.t)
-                in_map = xyz(self.map_data[cursor + sample]).astype('f8')
-                if not np.allclose(reference, in_map, rtol=0, atol=2e-4):
-                    raise ValueError(f'PGO map order does not follow patches: {pose.patch}')
+            if len(patch):
+                reference = xyz(patch).astype('f8') @ pose.rotation.T + pose.t
+                in_map = xyz(self.map_data[cursor:end]).astype('f8')
+                if not np.allclose(reference, in_map, rtol=0, atol=2e-4, equal_nan=False):
+                    raise ValueError(f'PGO map order does not follow ALL patch points: {pose.patch}')
             offsets.append((cursor, end))
             cursor = end
         if cursor != len(self.map_data):

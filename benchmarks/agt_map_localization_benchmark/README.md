@@ -26,8 +26,9 @@ output as a production map, field gate, calibrated probability, or absolute GT.
   full-session evidence; that information leakage is explicitly disclosed.
 - For each D, controls draw exactly the same number of points from B with a
   declared deterministic seed: unrestricted RANDOM and 1m-XY-cell
-  round-robin VOXEL. Report number of points, 1m XY occupied cells relative
-  to A, bounds and footprint. No success-based threshold selection.
+  round-robin VOXEL. Report number of points, occupied 1m XY **and XYZ** cells
+  relative to A, bounds and footprint. Equal points do not imply equal spatial
+  coverage. No success-based threshold selection.
 
 ## Leakage tiers and references
 
@@ -66,7 +67,12 @@ native candidate parameters from the audited `global_relocalization.yaml`.
 Every parameter and native executable SHA is in `manifest.json`.
 
 `Qr_mapping_view_median` is a local median of *mapping-era*, per-voxel geometry
-sidecar Qr. `Qr_query_conditioned` instead recomputes a local rotation matrix
+sidecar Qr. Mapping-view per-voxel weak directions also supply a separate
+sign-invariant **axial consensus**, explicitly invalid if their directions are
+diffuse; that is not an Ht/Hr or query-conditioned Q. Translation/yaw starts
+are compared with both mapping-view consensus and query-view weak axes. Zero
+starts or missing poses yield null recovery rather than fictitious improvement.
+`Qr_query_conditioned` instead recomputes a local rotation matrix
 from **only the candidate map points**, its normal per occupied voxel, and
 `g=(p_map-query_reference_body_origin) cross n`. Each voxel contributes its
 mean `g*g^T`, and Ht gives one vote per distinct valid normal voxel. They have
@@ -91,26 +97,65 @@ ros2 run agt_map_localization_benchmark agt_map_localization_benchmark \
 ```
 
 SMOKE always runs the synthetic suite **first**, then bounded Tier0/Tier1
-native tests. STANDARD requires a completed SMOKE on identical source bytes;
+native tests. STANDARD requires a completed SMOKE on identical source data,
+benchmark code, native executables, linked registration libraries, vendored
+versions and parameter settings;
 it uses two Tier1 centers, 1/3/5-frame queries and all 20 predeclared starts.
 GLOBAL (if available) is run only **after all LOCAL registrations**; its
 no-initial-pose workload is deliberately bounded. The CLI refuses to reuse a
-run-id. If interrupted, it leaves `INCOMPLETE` and `results.jsonl`, never
+run-id and refuses output outside a direct child of the dedicated Phase 3B
+experiment directory. If interrupted, it leaves `INCOMPLETE` and `results.jsonl`, never
 claims partial statistics were a completed run. Each completed output has
 `manifest.json`, `real/<tier>/{split,queries,candidates}.json`, new candidate
 PCDs, per-query PCDs, `results.jsonl`, `results.csv`, `summary.json`,
 `report.md`, and offline plots. All source checksums are validated before and
 after. No Phase 1–3A source is written.
 
-Strict/nominal/loose analytical criteria (3D translation m, absolute z m, yaw
-°): **(0.25, 0.20, 5), (0.50, 0.40, 10), (1.00, 0.70, 20)**.
-They are **not safety thresholds**. Native `fitness`/`overlap` and poses are
+Strict/nominal/loose analytical criteria (3D translation m, heading yaw °):
+**(0.20, 2), (0.50, 5), (1.00, 10)**. The reported z error is already
+included in 3D translation; there is no extra hidden z acceptance threshold.
+They are **not safety thresholds**. Pose error, including full SO(3), is
+separate from native fitness/overlap. Every real case has an explicit failure
+code when not loosely successful: NO_CONVERGENCE, WRONG_BASIN,
+INSUFFICIENT_MAP_POINTS, INSUFFICIENT_QUERY_POINTS, MAX_ITERATIONS (only if
+the backend explicitly reports it), INVALID_RESULT, TIMEOUT,
+REFERENCE_UNAVAILABLE, UNKNOWN_FAILURE, or GLOBAL FALSE_RELOCALIZATION
+against the same-session PGO reference. Native `fitness`/`overlap` and poses are
 reported when actually returned. The unchanged CLI does not export exact
 inlier counts or iteration counts: columns stay `null`. For a successful
 GLOBAL result outside loose tolerance, the report counts an incorrect backend
 success; without an independent negative session, a negative-session false
 relocation *rate* remains `NOT_RUN`. Spearman and empirical Q bins group
 repeated starts before comparison and do not calibrate Q to a probability.
+
+## Source-locked metric-only postprocess of previously completed native trials
+
+The baseline `smoke_20260927_a` and `standard_20260927_a` ran native binaries
+before the requested 0.2m/2°, 0.5m/5°, 1m/10° criteria were corrected.
+**Do not rewrite those runs or call their old success fields current results.**
+The following command reads the original JSONL and *all* candidate/query PCDs,
+validates all recorded source and binary digests, and produces an independent
+analysis directory. It performs **zero new native registrations**, verifies
+that Qt/Qr replay diagnostics agree with the original and recalculates only
+errors, failure codes, occupied XYZ coverage and weak-axis diagnostics. Its
+manifest labels `POSTPROCESS_NO_NATIVE_RERUN` and links the original SHA-256.
+**Limit:** first-generation runs recorded descriptor DB SHA, but did not hash
+all BBS coarse assets or the separately linked small_gicp/3D-BBS `.so` bytes;
+those missing historical hashes cannot be retroactively proven. New runs also
+record the external source commits, linked library SHA before/after, and SHA
+for every produced candidate GLOBAL asset. A postprocess validates such hashes
+when they exist, otherwise marks the historical verification gap explicitly.
+
+```bash
+PYTHONPATH=benchmarks/agt_map_localization_benchmark python3 -m \
+  agt_map_localization_benchmark.reanalyse \
+  --source-run /home/yangxuan/ros2_ws/experiments/agt_map_localization_phase3b_20260927/runs/standard_20260927_a \
+  --output-dir /home/yangxuan/ros2_ws/experiments/agt_map_localization_phase3b_20260927/reanalysis/standard_a_corrected_01
+```
+
+Alternatively run a fresh SMOKE and STANDARD with unique run IDs using the CLI
+above; only a fresh run is a fresh experiment. Neither mode touches the old
+runs, production maps, runtime code or `map->odom`.
 
 ## Tests
 

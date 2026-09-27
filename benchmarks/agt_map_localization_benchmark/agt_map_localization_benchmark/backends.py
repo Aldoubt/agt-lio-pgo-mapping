@@ -43,6 +43,31 @@ PROGRAMS = ('map_gicp_tracker', 'candidate_bbs_gicp_localizer',
             'build_relocalization_assets', 'build_relocalization_candidates')
 
 
+def dependency_fingerprints(ros_install: Path, src_root: Path) -> dict:
+    """Record the linked runtime library bytes AND vendored source versions.
+
+    Compiled executables link small_gicp and CPU BBS dynamically: hashing only
+    the executable does not lock the registration/search implementation.
+    Missing libraries stay null rather than claiming an unavailable backend.
+    """
+    libraries = Path(ros_install).resolve().parent / '.agt_native' / 'lib'
+    result = {}
+    for name, filename in (('small_gicp', 'libsmall_gicp.so'),
+                           ('3d_bbs_cpu', 'libcpu_bbs3d.so')):
+        path = libraries / filename
+        result[name] = {'linked_library_path': str(path),
+                        'linked_library_sha256': sha256_file(path) if path.is_file() else None}
+    for name, repo in (('small_gicp', 'small_gicp'), ('3d_bbs_cpu', '3d_bbs')):
+        path = Path(src_root) / 'external' / repo
+        try:
+            version = subprocess.check_output(['git', '-C', str(path), 'rev-parse', 'HEAD'],
+                                               text=True, stderr=subprocess.DEVNULL).strip()
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            version = None
+        result[name]['vendored_git_commit'] = version
+    return result
+
+
 @dataclass(frozen=True)
 class NativePrograms:
     paths: dict[str, Path]
@@ -70,7 +95,9 @@ def parse_backend(stdout: str, stderr: str, returncode: int, wall_ms: float) -> 
     result = None
     for line in reversed(stdout.splitlines()):
         try:
-            result = json.loads(line)
+            # C++ may print `nan` for an unavailable Hessian eigenvalue.  Do
+            # not serialize fake IEEE NaN into strict JSON output; mark it null.
+            result = json.loads(line, parse_constant=lambda _value: None)
         except (ValueError, TypeError):
             continue
         if isinstance(result, dict):
@@ -88,6 +115,8 @@ def parse_backend(stdout: str, stderr: str, returncode: int, wall_ms: float) -> 
     reason = None if success else str(result.get('message') or stderr.strip()[:500] or f'exit={returncode}')
     if result.get('success') and returncode != 0:
         reason = f'backend returned success JSON but exit={returncode}; {reason}'
+    if success and pose is None:
+        reason, success = 'invalid result pose from successful backend', False
     def finite(name: str):
         value = result.get(name)
         try:
@@ -187,7 +216,11 @@ def build_candidate_assets(native: NativePrograms, data: PgoEvidence,
     start = 0
     for i in map_indices:
         pose = data.poses[i]
-        size = data.patch_ranges[i][1] - data.patch_ranges[i][0]
+        a, b = data.patch_ranges[i]
+        # raw_map_subset filters nonfinite parent points before concatenation.
+        # Use the identical finite-point lengths for descriptor patch slicing.
+        parent = data.map_data[a:b]
+        size = int(np.isfinite(np.column_stack((parent['x'], parent['y'], parent['z']))).all(axis=1).sum())
         subset = candidate.indices[(candidate.indices >= start) & (candidate.indices < start + size)]
         start += size
         if len(subset) < GLOBAL_SETTINGS['descriptor_min_patch_points']:
@@ -198,6 +231,8 @@ def build_candidate_assets(native: NativePrograms, data: PgoEvidence,
         qw, qx, qy, qz = pose.quat_xyzw[[3, 0, 1, 2]]
         pose_rows.append(f'{pose.patch} {pose.t[0]:.17g} {pose.t[1]:.17g} '
                          f'{pose.t[2]:.17g} {qw:.17g} {qx:.17g} {qy:.17g} {qz:.17g}\n')
+    if start != len(map_points):
+        raise ValueError('candidate descriptor patch offsets differ from finite map-subset order')
     if not pose_rows:
         return {'status': 'NOT_RUN', 'reason': 'candidate has no >=300-point map-only descriptor patch',
                 'descriptor_patch_count': 0}
@@ -231,4 +266,9 @@ def build_candidate_assets(native: NativePrograms, data: PgoEvidence,
             result['status'], result['reason'] = 'NOT_RUN', 'descriptor database missing'
         else:
             result['descriptor_database_sha256'] = sha256_file(db)
+            asset_dir = destination / 'assets'
+            result['asset_files_sha256'] = {
+                str(path.relative_to(asset_dir)): sha256_file(path)
+                for path in sorted(asset_dir.rglob('*')) if path.is_file()
+            }
     return result

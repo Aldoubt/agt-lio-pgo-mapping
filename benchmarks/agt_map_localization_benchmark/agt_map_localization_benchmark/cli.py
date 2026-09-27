@@ -13,11 +13,12 @@ from pathlib import Path
 import numpy as np
 
 from .backends import (GLOBAL_SETTINGS, LOCAL_SETTINGS, NativePrograms,
-                       build_candidate_assets, global_command, invoke, local_command)
+                       build_candidate_assets, dependency_fingerprints, global_command,
+                       invoke, local_command)
 from .dataset import MAX_MAP_PATCHES_PER_CENTER, PgoEvidence, fixed_split
 from .geometry import alignment_and_recovery, query_geometry
-from .metrics import (SUCCESS_RULES, initial_pose, measure_pose, perturbations,
-                      pose_record, write_outputs)
+from .metrics import (FAILURE_CODES, SUCCESS_RULES, classify_failure, initial_pose, measure_pose,
+                      perturbations, pose_record, write_outputs)
 from .pcd import sha256_file, write_pcd
 from .selection import CONTROL_SEED, SWEEP_QUANTILES, make_candidates
 from .synthetic import run_synthetic
@@ -109,18 +110,31 @@ def _profile_plan(profile: str) -> dict:
             'global': {'tiers': ['tier1'], 'frames': [1, 5], 'centers': [175, 350]}}
 
 
-def _check_standard_predecessor(args: argparse.Namespace, source_hashes: dict) -> dict | None:
+def _check_standard_predecessor(args: argparse.Namespace, source_hashes: dict,
+                                benchmark_hashes: dict, algorithm_hashes: dict,
+                                native_hashes: dict, dependencies: dict) -> dict | None:
     if args.profile == 'smoke':
         return None
     if args.smoke_run is None:
-        raise ValueError('STANDARD requires --smoke-run from a completed SMOKE on the same source bytes')
+        raise ValueError('STANDARD requires a completed same-code-and-data SMOKE manifest')
     file = args.smoke_run / 'manifest.json'
     smoke = json.loads(file.read_text())
+    settings = smoke.get('parameters', {})
     if (smoke.get('status') != 'COMPLETED' or smoke.get('profile') != 'smoke'
+            or smoke.get('source_sha256_before') != source_hashes
             or smoke.get('source_sha256_after') != source_hashes
+            or smoke.get('benchmark_source_sha256_after') != benchmark_hashes
+            or smoke.get('algorithm_source_sha256') != algorithm_hashes
+            or smoke.get('native_executable_sha256') != native_hashes
+            or smoke.get('linked_registration_dependencies_after') != dependencies
+            or settings.get('local_native') != LOCAL_SETTINGS
+            or settings.get('global_native') != GLOBAL_SETTINGS
+            or settings.get('success_criteria_exploratory') != SUCCESS_RULES
+            or settings.get('qt_quantile_sweep_predeclared') != list(SWEEP_QUANTILES)
+            or settings.get('control_seed') != CONTROL_SEED
             or smoke.get('synthetic', {}).get('local_cases', 0) < 15
             or smoke.get('real_trial_count', 0) < 1):
-        raise ValueError('SMOKE predecessor incomplete, no synthetic tests, or source hashes differ')
+        raise ValueError('SMOKE predecessor incomplete or inputs/code/algorithms/settings differ')
     return {'manifest': str(file), 'manifest_sha256': sha256_file(file)}
 
 
@@ -155,12 +169,17 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
         candidates[tier] = {item.name: _candidate_record(item) for item in selected}
         manifest['splits'][tier] = {
             'map_keyframes': list(split.map_indices), 'heldout_keyframes': list(split.heldout_indices),
-            'query_subset_keyframes': list(split.all_query_indices),
+            'keyframes_outside_map_subset_not_all_executed': list(split.all_query_indices),
+            'reserved_query_window_keyframes': list(split.heldout_indices),
+            'actual_executed_query_keyframes': sorted({i for c in centers for f in settings['frames']
+                                                       for i in range(c - f // 2, c + f // 2 + 1)}),
             'centers': list(centers), 'radius_xy_m': split.max_map_radius_xy_m,
             'max_nearest_map_patches_per_center': MAX_MAP_PATCHES_PER_CENTER,
             'oracle_reference_centered_roi_evaluation_only': True,
             'label': 'SELF_QUERY/DATA_LEAKAGE_EXPECTED' if tier == 'tier0' else
                      'SINGLE_SESSION_PGO_AND_FULL_SESSION_EVIDENCE_LABEL_LEAKAGE',
+            'pose_graph_leakage_possible': tier == 'tier1',
+            'full_session_evidence_label_leakage_possible': True,
             'candidate_selection': raw['meta'],
         }
         manifest['candidates'][tier] = candidates[tier]
@@ -216,8 +235,11 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                                                timeout=35)
                         pose = native_result['pose']
                         final_t = np.array([pose[k] for k in ('x', 'y', 'z')]) if pose else None
-                        recovery = alignment_and_recovery(ref.t, t, final_t, geom,
-                                                          scenario['dyaw_deg'])
+                        recovery = alignment_and_recovery(
+                            ref.t, t, final_t, geom, scenario['dyaw_deg'],
+                            reference_xyzw=ref.quat_xyzw,
+                            result_xyzw=np.array([pose[k] for k in ('qx', 'qy', 'qz', 'qw')])
+                            if pose else None)
                         row = {'tier': tier, 'algorithm': 'LOCAL', 'candidate': candidate.name,
                                'center': center, 'frames': frames, 'scenario': name,
                                'reference_label': 'optimized_PGO_pose',
@@ -227,6 +249,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                                'perturbation': scenario, 'native': native_result,
                                'geometry': geom, 'weak_alignment': recovery,
                                **measure_pose(ref_pose, native_result)}
+                        row['failure_code'] = classify_failure(row)
                         append(row)
                     if len(rows) % 100 < len(settings['scenario_names']):
                         print(f'LOCAL {tier}: {len(rows)} trials; {candidate.name} '
@@ -269,6 +292,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                                    ref.t, ref.t, np.array([native_result['pose'][k] for k in ('x', 'y', 'z')])
                                    if native_result['pose'] else None, geom, 0),
                                **measure_pose(ref_pose, native_result)}
+                        row['failure_code'] = classify_failure(row)
                         append(row)
                 print(f'GLOBAL {tier}/{candidate.name}: {len(rows)} accumulated trials', flush=True)
     else:
@@ -284,14 +308,24 @@ def main(argv: list[str] | None = None) -> int:
     if not args.map_package.is_dir() or not args.geometry_source.is_dir():
         raise SystemExit('missing verified PGO/geometry source; no run created')
     native = NativePrograms.discover(args.ros_install)
+    dependencies = dependency_fingerprints(args.ros_install, Path(__file__).resolve().parents[3].parent)
     if not native.local_ready:
         raise SystemExit('runtime map_gicp_tracker is absent; LOCAL cannot use the actual implementation')
     data = PgoEvidence(args.map_package, args.confidence_source, args.geometry_source,
                        args.reviewed_source if args.reviewed_source.is_dir() else None)
     digests = data.validate_sources()
-    predecessor = _check_standard_predecessor(args, digests)
+    code_hashes = _benchmark_source_hashes()
+    algorithm_hashes = _algorithm_source_hashes()
+    predecessor = _check_standard_predecessor(
+        args, digests, code_hashes, algorithm_hashes, native.sha256, dependencies)
     use_global = args.global_backend != 'off' and native.global_ready
     root = args.output_root.resolve()
+    # This tool is never allowed to write to an input, source checkout,
+    # installed runtime, or arbitrary production/active map. Even a mistakenly
+    # supplied --output-root must remain in the dedicated experiment tree.
+    experiment_root = EXPERIMENTS.parent.resolve()
+    if root.parent != experiment_root:
+        raise SystemExit('--output-root must be a direct child of the dedicated Phase 3B experiment root')
     root.mkdir(parents=True, exist_ok=True)
     run = root / args.run_id
     if run.exists():
@@ -299,15 +333,17 @@ def main(argv: list[str] | None = None) -> int:
     run.mkdir(mode=0o755)
     plan = _profile_plan(args.profile)
     manifest = {
-        'schema_version': 1, 'status': 'IN_PROGRESS',
+        'schema_version': 2, 'status': 'IN_PROGRESS',
         'created_utc': datetime.now(timezone.utc).isoformat(),
         'run_id': args.run_id, 'profile': args.profile,
         'offline_only': True, 'publish_production_map': False,
         'mapping_source_git': _source_version(Path(__file__).resolve().parents[3]),
         'navigation_source_git': _source_version(Path('/home/yangxuan/ros2_ws/src/agt_navigation_v3')),
         'native_executable_sha256': native.sha256,
-        'algorithm_source_sha256': _algorithm_source_hashes(),
-        'benchmark_source_sha256_before': _benchmark_source_hashes(),
+        'linked_registration_dependencies_before': dependencies,
+        'linked_registration_dependencies_after': None,
+        'algorithm_source_sha256': algorithm_hashes,
+        'benchmark_source_sha256_before': code_hashes,
         'benchmark_source_sha256_after': None,
         'input_paths': {'pgo': str(data.pgo), 'v1': str(data.confidence),
                         'geometry': str(data.geometry), 'reviewed': str(data.reviewed) if data.reviewed else None},
@@ -316,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
         'parameters': {
             'local_native': LOCAL_SETTINGS, 'global_native': GLOBAL_SETTINGS,
             'success_criteria_exploratory': SUCCESS_RULES,
+            'case_failure_codes': FAILURE_CODES,
             'qt_quantile_sweep_predeclared': SWEEP_QUANTILES,
             'control_seed': CONTROL_SEED,
             'map_subset_rule': 'within 30m of fixed optimized PGO centers, i%3!=2; '
@@ -349,8 +386,12 @@ def main(argv: list[str] | None = None) -> int:
         final_digests = data.validate_sources()
         if final_digests != digests:
             raise RuntimeError('input source bytes changed during benchmark; discard this run')
-        if _algorithm_source_hashes() != manifest['algorithm_source_sha256'] or native.sha256 != NativePrograms.discover(args.ros_install).sha256:
-            raise RuntimeError('native algorithm sources/binaries changed during benchmark')
+        if (_algorithm_source_hashes() != manifest['algorithm_source_sha256']
+                or native.sha256 != NativePrograms.discover(args.ros_install).sha256
+                or dependencies != dependency_fingerprints(
+                    args.ros_install, Path(__file__).resolve().parents[3].parent)):
+            raise RuntimeError('native algorithm sources/binaries/linked dependencies changed during benchmark')
+        manifest['linked_registration_dependencies_after'] = dependencies
         code_after = _benchmark_source_hashes()
         if code_after != manifest['benchmark_source_sha256_before']:
             raise RuntimeError('benchmark source code changed during benchmark; discard this run')

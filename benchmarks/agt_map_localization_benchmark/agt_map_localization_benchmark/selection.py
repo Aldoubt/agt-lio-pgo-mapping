@@ -27,16 +27,22 @@ def xy_cells(points: np.ndarray, step: float = COVERAGE_CELL_M) -> np.ndarray:
     return np.floor(np.asarray(points)[:, :2] / np.float32(step)).astype('<i8')
 
 
-def spatial_coverage(coords: np.ndarray, reference_cells: set[tuple[int, int]]) -> dict:
+def spatial_coverage(coords: np.ndarray, reference_cells: set[tuple[int, int]],
+                     reference_xyz_cells: set[tuple[int, int, int]]) -> dict:
     if not len(coords):
         raise ValueError('empty map candidate')
     occupied = set(map(tuple, xy_cells(coords)))
+    xyz_occupied = set(map(tuple, np.floor(np.asarray(coords) / np.float32(COVERAGE_CELL_M))
+                           .astype('<i8')))
     min_xyz = np.min(coords, axis=0)
     max_xyz = np.max(coords, axis=0)
     return {
         'points': int(len(coords)),
         'occupied_xy_1m_cells': len(occupied),
+        'occupied_xyz_1m_cells': len(xyz_occupied),
         'fraction_of_raw_xy_1m_cells': len(occupied & reference_cells) / len(reference_cells),
+        'fraction_of_raw_xyz_1m_cells': len(xyz_occupied & reference_xyz_cells) / len(reference_xyz_cells),
+        'points_per_occupied_xyz_1m_cell': len(coords) / len(xyz_occupied),
         'min_xyz_m': [float(v) for v in min_xyz],
         'max_xyz_m': [float(v) for v in max_xyz],
         'xy_bounding_box_area_m2': float(np.prod(max_xyz[:2] - min_xyz[:2])),
@@ -80,6 +86,8 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
     if len(b) < 1000:
         raise ValueError(f'AUTO_STABLE map subset too sparse: {len(b)} points')
     raw_cells = set(map(tuple, xy_cells(points)))
+    raw_xyz_cells = set(map(tuple, np.floor(points / np.float32(COVERAGE_CELL_M))
+                            .astype('<i8')))
     cands = []
     output.mkdir(parents=True, exist_ok=False)
 
@@ -89,7 +97,7 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
             raise ValueError(f'empty/duplicate candidate: {name}')
         dest = output / f'{name}.pcd'
         write_pcd(dest, points[chosen], intensity[chosen])
-        stats = spatial_coverage(points[chosen], raw_cells)
+        stats = spatial_coverage(points[chosen], raw_cells, raw_xyz_cells)
         stats.update({'pcd_sha256': sha256_file(dest),
                       'source_map_keyframe_count': len(map_indices)})
         cands.append(Candidate(name, chosen, dest, detail, stats))
