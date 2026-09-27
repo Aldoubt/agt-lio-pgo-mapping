@@ -30,5 +30,13 @@ value), and `IGNORE` sets 0. Automatic recalculation does not change an
 existing manual mode/value. Defaults are 0.20 m, N0=4, S0=3, alpha=0.7,
 threshold=0.60, low value=0.05. Only one-session evidence is represented.
 
+`SpatialEvidenceBuilder::build(map_package, parameters, &stats)` consumes
+body-frame `patches/*.pcd` plus optimized `poses_timed.txt`, transforms each
+finite point into the map frame using `T_map_body`, and accumulates map-frame
+centroids, point counts, *distinct* keyframe observations, first/last indices,
+and scores. It rejects missing, duplicate, or unsafe patch references and
+invalid poses. It does not validate artifact checksums on its own: callers
+must validate the parent package first (the export CLI does this).
+
 Phase 1 deliberately does not contain a Qt UI, terrain semantics, ray-carving
 statistics, change detection, or cross-session stability estimates.
