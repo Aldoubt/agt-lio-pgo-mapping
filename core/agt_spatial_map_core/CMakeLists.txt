@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED COMPONENTS io)
+find_package(PCL REQUIRED COMPONENTS common io kdtree)
 find_package(yaml-cpp REQUIRED)
 find_package(OpenSSL REQUIRED)
 
@@ -14,7 +14,9 @@ add_library(${PROJECT_NAME} SHARED
   src/spatial_evidence.cpp
   src/spatial_evidence_builder.cpp
   src/spatial_export.cpp
-  src/spatial_review_source.cpp)
+  src/spatial_review_source.cpp
+  src/geometry_evidence.cpp
+  src/geometry_evidence_estimator.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
