@@ -102,8 +102,9 @@ def test_controls_equal_size_and_coverage_deterministic(tmp_path):
     uniq = np.unique(keys)
     v1 = np.zeros(len(uniq), dtype=[('final_confidence', 'f4'), ('override_mode', 'u4')])
     v1['final_confidence'] = .9
-    geom = np.zeros(len(uniq), dtype=[('translation_valid', 'u4'), ('translation_q', 'f4')])
-    geom['translation_valid'] = 1
+    geom = np.zeros(len(uniq), dtype=[('translation_valid', 'u4'), ('translation_q', 'f4'),
+                                      ('normal_valid', 'u4')])
+    geom['translation_valid'] = geom['normal_valid'] = 1
     geom['translation_q'] = np.linspace(.01, .9, len(uniq))
     class Dummy:
         voxel_size = .2
