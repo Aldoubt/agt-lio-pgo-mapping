@@ -101,3 +101,73 @@ modified or redirected to use the new builder.
 
 Phase 1 deliberately does not contain a Qt UI, terrain semantics, ray-carving
 statistics, change detection, or cross-session stability estimates.
+
+## Phase 3A: independent directional geometry evidence (NOT confidence_v2)
+
+The Phase 1/2 `spatial_confidence_v1` files, `geometry_score=1`, `geometry.mode=
+deferred`, automatic confidence and stable-map predicate remain frozen. The
+**new** `agt_spatial_geometry_estimate` executable consumes the already
+validated optimized PGO parent and its already verified V1 confidence
+five-file derivative. It writes **only** a separate three-file sidecar:
+`geometry_voxels.pcd`, `geometry_metadata.yaml`, `checksums.sha256`. This is
+single-session **directional** evidence, not a stability probability or a
+localization-performance claim. No map is published for navigation.
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/yangxuan/ros2_ws/install/setup.bash
+ros2 run agt_spatial_map_core agt_spatial_geometry_estimate \
+  --map-package /absolute/optimized_pgo/map_package \
+  --confidence-source /absolute/spatial_confidence_v1 \
+  --config /path/to/spatial_geometry_evidence.yaml \
+  --output-dir /separate/existing-parent/geometry_evidence
+```
+
+`--config` is optional. `config/spatial_geometry_evidence.yaml` has strict
+schema_version 1 and the defaults: raw normal radius 0.4 m/minimum 8 points;
+observability radius 0.8 m/minimum 6 **valid-normal voxels**; three distinct
+positive regularizers `epsilon.normal_covariance_m2`,
+`epsilon.translation` (dimensionless) and `epsilon.rotation_m2` (default
+1e-6 each). The *voxel_size* is taken from V1 rather than overridable. The
+same float32 transform and `voxel_for` convention as Phase 1 is used. Per
+point, `t_body_map` is its own optimized `T_map_body.translation()`; this
+makes no `base_link`, TF or URDF assumption.
+
+For each V1 voxel centroid, PCA of **raw mapped patch points** within the
+normal radius yields the sorted population-covariance eigenvalues
+`lambda_min, lambda_mid, lambda_max` in m² and the unit min eigenvector. A
+collinear neighborhood (`lambda_mid <= normal_covariance_m2`) or one with too
+few raw points is invalid. For valid normals, shape ratios are
+`linearity=(max-mid)/max`, `planarity=(mid-min)/max`,
+`scattering=min/max`. For each target voxel, consider all *valid-normal
+voxel centers* inside the observability radius. Each such voxel contributes
+one equal vote `n n^T` to dimensionless `Ht`. For every mapped raw observation
+in the contributing voxel, form `g=(p_map-t_body_map) cross n`; the **mean**
+`g g^T` within that voxel contributes one vote to `Hr` in m². Store their
+separate sorted eigenvalues, min-eigen weak map-frame axes (sign arbitrary),
+`Q=3*lambda_min/(trace+unit-specific epsilon)` and
+`condition=lambda_max/max(lambda_min,unit-specific epsilon)`. Also store raw
+normal support, contributing valid-normal **voxel** count and raw observation
+count. Insufficient support/zero trace gives `valid=0` and NaN metrics, not
+an invented zero, probability or geometry_score. No unscaled 6×6 mixture is
+constructed. Linear/planar/scatter signatures and Q are **not** point density.
+
+The sidecar records exactly the V1 VoxelKey set/centroids and voxel size,
+`map` frame, PGO `manifest.yaml` + `checksums.sha256` SHA-256 and the V1
+**derivative `checksums.sha256` SHA-256**, plus method, parameter and validity
+counts. Core validates the three-file checksum index, typed PCD field order
+and semantics, and the full V1 source before exposing evidence. The CLI
+validates the PGO parent *before and again before publishing*, verifies the
+V1 derivative (all five files), rejects symlinks/nonempty or source-overlapping
+outputs, and atomically renames a sibling staging directory. Sources are
+never written. This is a checksum-bound derivative, not a cryptographically
+signed authenticity guarantee against a malicious party controlling all files.
+
+Rigid-body covariance applies to continuous points, normals and the separate
+Ht/Hr forms (the body origin must transform with the point). For **fixed
+floor-quantized VoxelKeys** and finite-radius neighborhoods, exact
+per-voxel equality is tested under *grid-aligned* shifts and axis-aligned
+quarter turns; arbitrary shifts/rotations may change voxel membership and
+neighbor inclusion at boundaries. Do not misrepresent rasterization as exact
+covariance under arbitrary continuous transforms. Point reordering is
+compared numerically with finite-precision tolerances, not bitwise.
