@@ -166,3 +166,67 @@ PYTHONPATH=benchmarks/agt_map_localization_benchmark \
 
 Existing core/Studio regression is run via its separate, already isolated
 build/install directories; the benchmark does not modify those packages.
+
+
+## Phase 3C: coverage-preserving geometry experiment
+
+Phase 3C keeps all Phase 3B candidates as baselines/negative controls and adds
+three **B_AUTO_STABLE-derived** candidates for each within-cell retention
+fraction (25/50/75%):
+
+- `D_COVERAGE_QT_fXX`: within each occupied 1 m XY cell, rank evidence
+  voxels by valid geometry_v1 translation Qt and fill that cell's quota.
+  Invalid-Qt cells fall back deterministically rather than disappearing.
+- `CONTROL_CELL_RANDOM_fXX`: same occupied source-cell set and the exact same
+  point quota in every cell, but deterministic random sampling.
+- `CONTROL_CELL_UNIFORM_fXX`: same occupied source-cell set and exact same
+  per-cell quota, using voxel round-robin sampling.
+
+This is deliberately different from legacy `D_QT_qXX`, where `qXX` means a
+**global Qt quantile threshold** and can collapse spatial coverage.  The new
+`fXX` suffix means the **within-cell retention fraction**.
+
+Every LOCAL/GLOBAL result also carries a reference-centered diagnostic crop
+with:
+
+- candidate/B crop point, evidence-voxel and 1 m-cell counts;
+- `crop_support_ratio`;
+- valid normal-voxel count;
+- the audited runtime minimum of 1000 local-map points from
+  `map_gicp_tracker.cpp`;
+- query-conditioned Qt/Qr, spectrum condition numbers and log-condition
+  features.
+
+These diagnostics never choose the candidate map and are not fed back to the
+native runtime.  Query-conditioned evidence remains analysis-only.
+
+After the ordinary Phase 3B-style outputs are written, Phase 3C adds:
+
+```text
+coverage_field.csv
+coverage_geometry_summary.json
+coverage_geometry_report.md
+plots/phase3c_*.png
+```
+
+`coverage_field.csv` is an information/coverage table, **not** an occupancy
+or navigation map.  The exploratory logistic diagnostic uses leave-one-query-
+center-out folds only; with the current two Tier1 centers it is explicitly
+`EXPLORATORY` and its `diagnostic_score` must not be called calibrated
+probability/confidence.
+
+Default Phase 3C runs are isolated under:
+
+```text
+~/ros2_ws/experiments/agt_map_localization_phase3c_20260928/runs/
+```
+
+Use unique run IDs and the same SMOKE -> STANDARD sequencing contract as Phase
+3B.  A Phase 3B smoke run is intentionally rejected as a Phase 3C STANDARD
+predecessor because the benchmark source hash and coverage-sampling settings
+differ.
+
+Phase 3C still does **not** modify confidence_v1, geometry_v1, stable maps,
+small_gicp/3D-BBS runtime code, Nav2, map->odom, Guardian, or production map
+publication.  Tier2 independent-session validation and FULL remain NOT_RUN
+until separately approved and supplied.
