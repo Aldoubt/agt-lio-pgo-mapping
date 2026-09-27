@@ -438,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest['real_trial_count'] = len(rows)
         manifest['status'] = 'COMPLETED'
         write_outputs(run, rows, candidate_meta, manifest)
-        phase3c = write_phase3c_outputs(run, rows, coverage_rows)
+        phase3c = write_phase3c_outputs(run, rows, coverage_rows, candidate_meta)
         manifest['phase3c_analysis'] = {
             'summary': 'coverage_geometry_summary.json',
             'report': 'coverage_geometry_report.md',
