@@ -128,6 +128,23 @@ if(BUILD_TESTING)
   target_link_libraries(test_spatial_confidence_loader
     agt_spatial_map_core::agt_spatial_map_core ${PCL_LIBRARIES} yaml-cpp)
 
+  ament_add_gtest(test_geometry_color
+    test/test_geometry_color.cpp
+    src/geometry/GeometryColor.cpp src/confidence/ConfidenceColor.cpp)
+  target_include_directories(test_geometry_color PRIVATE src)
+  target_link_libraries(test_geometry_color agt_spatial_map_core::agt_spatial_map_core)
+
+  ament_add_gtest(test_geometry_loader
+    test/test_geometry_loader.cpp
+    src/geometry/GeometryEvidenceModel.cpp
+    src/geometry/GeometryEvidenceLoader.cpp
+    src/confidence/SpatialConfidenceModel.cpp
+    src/confidence/SpatialConfidenceLoader.cpp)
+  target_include_directories(test_geometry_loader PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_compile_definitions(test_geometry_loader PRIVATE ${PCL_DEFINITIONS})
+  target_link_libraries(test_geometry_loader
+    agt_spatial_map_core::agt_spatial_map_core ${PCL_LIBRARIES} yaml-cpp)
+
   ament_add_gtest(test_pcd_loader
     test/test_pcd_loader.cpp
     src/io/PCDLoader.cpp
