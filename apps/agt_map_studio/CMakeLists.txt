@@ -10,6 +10,7 @@ set(CMAKE_AUTORCC ON)
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(agt_pcd2grid_exporter REQUIRED)
+find_package(agt_spatial_map_core REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io)
@@ -29,6 +30,8 @@ endif()
 add_executable(map_viewer
   src/main.cpp
   src/io/PCDLoader.cpp
+  src/confidence/SpatialConfidenceModel.cpp
+  src/confidence/SpatialConfidenceLoader.cpp
   src/viewer/CameraController.cpp
   src/viewer/PointCloudViewer.cpp
   src/selection/SelectionBox.cpp
@@ -64,6 +67,7 @@ target_link_libraries(map_viewer
   ${QT_OPENGL_TARGET}
   yaml-cpp
   agt_pcd2grid_exporter::agt_pcd2grid_exporter
+  agt_spatial_map_core::agt_spatial_map_core
   OpenGL::GL
 )
 
@@ -77,6 +81,16 @@ install(DIRECTORY config
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_spatial_confidence_loader
+    test/test_spatial_confidence_loader.cpp
+    src/confidence/SpatialConfidenceModel.cpp
+    src/confidence/SpatialConfidenceLoader.cpp
+  )
+  target_include_directories(test_spatial_confidence_loader PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_compile_definitions(test_spatial_confidence_loader PRIVATE ${PCL_DEFINITIONS})
+  target_link_libraries(test_spatial_confidence_loader
+    agt_spatial_map_core::agt_spatial_map_core ${PCL_LIBRARIES} yaml-cpp)
+
   ament_add_gtest(test_pcd_loader
     test/test_pcd_loader.cpp
     src/io/PCDLoader.cpp
