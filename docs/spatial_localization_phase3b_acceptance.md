@@ -5,7 +5,7 @@
 ## 1. 前置检查与实现归属（OBSERVED）
 
 - Phase 3A 最终提交为 `fd980cadd42082e9c16b7ebf3fb6cf334c306a9e`；工作分支已存在 `feature/spatial-map-localization-benchmark-v1`，其原有首提交 `a82495ad5b37a84a6138b63246abb549d575f830` 的**直接父提交**就是该 Phase 3A HEAD。发现该提交时工作树干净；未重建、重置或覆盖它。修正后的 benchmark 单独提交为 `86b85c8121a36732191d585b7bf227eed8998a28`（直接接在 `a82495a` 后），然后才在干净 HEAD 上启动最终 SMOKE / STANDARD。
-- `origin/feature/spatial-map-geometry-evidence-v1` 本地跟踪引用等于 `fd980ca`，引用日志有 `update by push`。实时 `git ls-remote` 因 GitHub HTTP 低速错误未能独立在线确认远端；不能把这次联网失败写成远端核验成功。
+- `origin/feature/spatial-map-geometry-evidence-v1` 本地跟踪引用等于 `fd980ca`，引用日志有 `update by push`。此前一次 `git ls-remote` 遇到 HTTP 低速错误，**当时未将其冒称在线验证**；最终重试 `git ls-remote --heads origin` 成功，在线确认 Phase 3A 远端提交为 `fd980cadd42082e9c16b7ebf3fb6cf334c306a9e`，Phase 3B 分支已推送且指向已提交的文档/benchmark。
 - 编码前已只读检索整个 `~/ros2_ws/src`：运行中的 LOCAL 来自 `agt_navigation_v3/.../map_gicp_tracker.cpp` 的 small_gicp；GLOBAL 来自 `candidate_bbs_gicp_localizer.cpp` 的 Polar Context + CPU 3D-BBS + small_gicp，资产由 `build_relocalization_assets` 与 `build_relocalization_candidates` 生成。旧的 `agt_relocalization_benchmark` 是参数扫掠工具，不是此次地图变体实验。安装的原生 LOCAL/GLOBAL 二进制和 BBS 动态链接均可用；Phase 3B 只通过原有 CLI 作薄离线调用。
 - 当前工作只修改目标 mapping 仓库的隔离 `benchmarks/agt_map_localization_benchmark/` 与本文档。`agt_navigation_v3` 的原有未提交更改，以及 `agt_robot_hmi/install` 的跟踪删除，均未触碰。
 
