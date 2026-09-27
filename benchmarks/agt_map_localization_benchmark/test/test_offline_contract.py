@@ -332,6 +332,8 @@ def test_standard_requires_completed_same_code_native_and_linked_libraries_smoke
     from agt_map_localization_benchmark.cli import _check_standard_predecessor
     from agt_map_localization_benchmark.backends import LOCAL_SETTINGS, GLOBAL_SETTINGS
     from agt_map_localization_benchmark.selection import SWEEP_QUANTILES, CONTROL_SEED
+    from agt_map_localization_benchmark.coverage_sampling import (
+        COVERAGE_CELL_M, COVERAGE_FRACTIONS, MIN_POINTS_PER_CELL, MIN_VOXELS_PER_CELL)
     smoke = tmp_path / 'smoke'
     smoke.mkdir()
     args = Namespace(profile='standard', smoke_run=smoke)
@@ -348,7 +350,11 @@ def test_standard_requires_completed_same_code_native_and_linked_libraries_smoke
         'parameters': {'local_native': LOCAL_SETTINGS, 'global_native': GLOBAL_SETTINGS,
                        'success_criteria_exploratory': SUCCESS_RULES,
                        'qt_quantile_sweep_predeclared': list(SWEEP_QUANTILES),
-                       'control_seed': CONTROL_SEED},
+                       'control_seed': CONTROL_SEED,
+                       'coverage_cell_m': COVERAGE_CELL_M,
+                       'coverage_fractions_predeclared': list(COVERAGE_FRACTIONS),
+                       'coverage_min_points_per_cell': MIN_POINTS_PER_CELL,
+                       'coverage_min_voxels_per_cell': MIN_VOXELS_PER_CELL},
         'synthetic': {'local_cases': 15}, 'real_trial_count': 228,
     }
     file = smoke / 'manifest.json'
