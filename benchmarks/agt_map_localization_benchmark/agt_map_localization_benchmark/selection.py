@@ -1,4 +1,4 @@
-"""Predeclared non-publishing map selections and density-matched controls."""
+"""Predeclared non-publishing map selections and density/coverage-matched controls."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,12 +6,15 @@ from pathlib import Path
 
 import numpy as np
 
+from .coverage_sampling import (
+    COVERAGE_CELL_M, COVERAGE_FRACTIONS, CONTROL_SEED,
+    MIN_POINTS_PER_CELL, MIN_VOXELS_PER_CELL,
+    cell_distribution, coverage_field_rows, coverage_matched_subsets, xy_cell_keys,
+)
 from .dataset import PgoEvidence, point_keys, lookup_sorted_keys
 from .pcd import sha256_file, write_pcd
 
 SWEEP_QUANTILES = (0.25, 0.50, 0.75)  # declared before examining localization outcomes
-CONTROL_SEED = 20260927
-COVERAGE_CELL_M = 1.0
 
 
 @dataclass
@@ -24,7 +27,8 @@ class Candidate:
 
 
 def xy_cells(points: np.ndarray, step: float = COVERAGE_CELL_M) -> np.ndarray:
-    return np.floor(np.asarray(points)[:, :2] / np.float32(step)).astype('<i8')
+    """Backward-compatible Phase 3B alias."""
+    return xy_cell_keys(points, step)
 
 
 def spatial_coverage(coords: np.ndarray, reference_cells: set[tuple[int, int]],
@@ -51,7 +55,7 @@ def spatial_coverage(coords: np.ndarray, reference_cells: set[tuple[int, int]],
 
 
 def voxel_round_robin(indices: np.ndarray, coords: np.ndarray, count: int, seed: int) -> np.ndarray:
-    """Evenly pick occupied 1m XY cells, without replacement, from B only."""
+    """Legacy Phase 3B global 1m-XY balancing control."""
     if count < 1 or count > len(indices):
         raise ValueError('control count must fit source map')
     cell = xy_cells(coords[indices])
@@ -69,10 +73,11 @@ def voxel_round_robin(indices: np.ndarray, coords: np.ndarray, count: int, seed:
 
 def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Path,
                     *, controls_all_quantiles: bool = True) -> tuple[list[Candidate], dict]:
-    """All maps use ONLY the supplied map-index slices of the immutable PGO map.
+    """Build Phase 3B negative controls plus Phase 3C coverage-preserving maps.
 
+    All maps use ONLY the supplied map-index slices of the immutable PGO map.
     B/C are filtered *raw map-subset points* using verified V1/reviewed voxel
-    predicates. They are not byte-identical copies of full-session stable_map.pcd.
+    predicates. Phase 3C coverage candidates all start from B_AUTO_STABLE.
     """
     points, intensity = data.raw_map_subset(map_indices)
     keys = point_keys(points, data.voxel_size)
@@ -88,7 +93,7 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
     raw_cells = set(map(tuple, xy_cells(points)))
     raw_xyz_cells = set(map(tuple, np.floor(points / np.float32(COVERAGE_CELL_M))
                             .astype('<i8')))
-    cands = []
+    cands: list[Candidate] = []
     output.mkdir(parents=True, exist_ok=False)
 
     def add(name: str, index: np.ndarray, detail: dict) -> None:
@@ -98,6 +103,8 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
         dest = output / f'{name}.pcd'
         write_pcd(dest, points[chosen], intensity[chosen])
         stats = spatial_coverage(points[chosen], raw_cells, raw_xyz_cells)
+        if name != 'A_RAW':
+            stats.update(cell_distribution(chosen, points, b, cell_size_m=COVERAGE_CELL_M))
         stats.update({'pcd_sha256': sha256_file(dest),
                       'source_map_keyframe_count': len(map_indices)})
         cands.append(Candidate(name, chosen, dest, detail, stats))
@@ -107,9 +114,10 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
     if cmask is not None:
         add('C_REVIEWED_STABLE', np.flatnonzero(cmask),
             {'criterion': 'Phase 2B reviewed stable predicate, raw map-subset points'})
+
     eligible = b[data.geom['translation_valid'][lookup[b]] != 0]
     eligible = eligible[np.isfinite(data.geom['translation_q'][lookup[eligible]])]
-    # One vote per V1 voxel when defining cutoffs, not per raw point density.
+    # Phase 3B global Qt filtering is retained as a declared negative control.
     vxl = np.unique(lookup[eligible])
     if len(vxl) < 12:
         raise ValueError('insufficient eligible unique stable voxels for Qt sweep')
@@ -127,6 +135,10 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
         'control_source': 'B_AUTO_STABLE',
         'control_seed': CONTROL_SEED,
         'coverage_grid_xy_m': COVERAGE_CELL_M,
+        'coverage_fractions_predeclared': list(COVERAGE_FRACTIONS),
+        'coverage_min_points_per_cell': MIN_POINTS_PER_CELL,
+        'coverage_min_voxels_per_cell': MIN_VOXELS_PER_CELL,
+        'coverage_candidates': {},
     }
     for q, cutoff in zip(SWEEP_QUANTILES, cuts):
         label = f'q{int(q * 100):02d}'
@@ -135,16 +147,42 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
         extra['cutoffs'][label] = float(cutoff)
         add(f'D_QT_{label}', selected,
             {'criterion': 'B and valid geometry_v1 Qt >= predeclared unique-voxel quantile',
-             'quantile': q, 'cutoff': float(cutoff), 'note': 'not confidence_v2; no probability'})
+             'quantile': q, 'cutoff': float(cutoff),
+             'note': 'Phase 3B global-filter negative control; not confidence_v2'})
         if controls_all_quantiles or q == 0.50:
             rng = np.random.default_rng(CONTROL_SEED + int(q * 100))
             random = np.sort(rng.choice(b, size=len(selected), replace=False))
             add(f'CONTROL_RANDOM_{label}', random,
-                {'criterion': 'deterministic equal-point random subset of B',
+                {'criterion': 'legacy deterministic equal-point random subset of B',
                  'target': f'D_QT_{label}', 'seed': CONTROL_SEED + int(q * 100)})
             balanced = voxel_round_robin(b, points, len(selected), CONTROL_SEED + 1000 + int(q * 100))
             add(f'CONTROL_VOXEL_{label}', balanced,
-                {'criterion': 'deterministic spatially stratified equal-point subset of B (1m XY)',
+                {'criterion': 'legacy global 1m-XY stratified equal-point subset of B',
                  'target': f'D_QT_{label}', 'seed': CONTROL_SEED + 1000 + int(q * 100)})
+
+    # Phase 3C: lock coverage-cell set AND exact point quota per source cell.
+    for fraction in COVERAGE_FRACTIONS:
+        label = f'q{int(fraction * 100):02d}'
+        subsets, meta = coverage_matched_subsets(
+            b, points, lookup, data.geom, fraction,
+            cell_size_m=COVERAGE_CELL_M,
+            min_points_per_cell=MIN_POINTS_PER_CELL,
+            min_voxels_per_cell=MIN_VOXELS_PER_CELL,
+            seed=CONTROL_SEED + 2000 + int(fraction * 100))
+        extra['coverage_candidates'][label] = meta
+        add(f'D_COVERAGE_QT_{label}', subsets['geometry'],
+            {'criterion': 'B per-1m-cell quota, geometry_v1 Qt-ranked voxels within each cell',
+             **meta, 'note': 'coverage-preserving experimental sampler; not confidence_v2'})
+        add(f'CONTROL_CELL_RANDOM_{label}', subsets['random'],
+            {'criterion': 'same B cell set and exact per-cell point quota; deterministic random',
+             'target': f'D_COVERAGE_QT_{label}', **meta})
+        add(f'CONTROL_CELL_UNIFORM_{label}', subsets['uniform'],
+            {'criterion': 'same B cell set and exact per-cell point quota; voxel round-robin',
+             'target': f'D_COVERAGE_QT_{label}', **meta})
+
+    candidate_indices = {candidate.name: candidate.indices for candidate in cands}
+    field = coverage_field_rows(points, b, candidate_indices, lookup, data.geom,
+                                cell_size_m=COVERAGE_CELL_M)
     return cands, {'points': points, 'lookups': lookup, 'found': found,
-                   'voxel_keys': keys, 'meta': extra}
+                   'voxel_keys': keys, 'baseline_B_indices': b,
+                   'coverage_field': field, 'meta': extra}
