@@ -4,6 +4,7 @@
 #include <QtMath>
 
 #include <algorithm>
+#include <cmath>
 
 namespace agt_map_studio {
 
@@ -125,7 +126,13 @@ void CameraController::set_top() {
 
 QMatrix4x4 CameraController::view_matrix() const {
   QMatrix4x4 matrix;
-  matrix.lookAt(position_, target_, world_up_);
+  // The requested top view looks straight down the Z axis. Using Z as both
+  // the view direction and the camera up vector makes lookAt singular and
+  // can hide every point. Keep map Y up on screen only in that case.
+  const QVector3D view_up =
+      std::abs(QVector3D::dotProduct(forward(), world_up_)) > 0.999F
+          ? QVector3D(0.0F, 1.0F, 0.0F) : world_up_;
+  matrix.lookAt(position_, target_, view_up);
   return matrix;
 }
 

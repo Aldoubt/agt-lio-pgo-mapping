@@ -86,6 +86,11 @@ if(BUILD_TESTING)
     test/test_confidence_color.cpp src/confidence/ConfidenceColor.cpp)
   target_include_directories(test_confidence_color PRIVATE src)
 
+  ament_add_gtest(test_camera_controller
+    test/test_camera_controller.cpp src/viewer/CameraController.cpp)
+  target_include_directories(test_camera_controller PRIVATE src)
+  target_link_libraries(test_camera_controller ${QT_WIDGETS_TARGET})
+
   ament_add_gtest(test_spatial_confidence_loader
     test/test_spatial_confidence_loader.cpp
     src/confidence/SpatialConfidenceModel.cpp
