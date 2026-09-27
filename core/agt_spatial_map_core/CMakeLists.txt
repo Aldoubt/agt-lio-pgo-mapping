@@ -7,13 +7,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS io)
+find_package(yaml-cpp REQUIRED)
+find_package(OpenSSL REQUIRED)
 
-add_library(${PROJECT_NAME} SHARED src/spatial_evidence.cpp src/spatial_evidence_builder.cpp)
+add_library(${PROJECT_NAME} SHARED
+  src/spatial_evidence.cpp
+  src/spatial_evidence_builder.cpp
+  src/spatial_export.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_include_directories(${PROJECT_NAME} PUBLIC ${PCL_INCLUDE_DIRS})
-target_link_libraries(${PROJECT_NAME} PUBLIC Eigen3::Eigen ${PCL_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} PUBLIC Eigen3::Eigen ${PCL_LIBRARIES}
+  PRIVATE yaml-cpp OpenSSL::Crypto)
+
+add_executable(agt_spatial_map_export src/spatial_map_export_main.cpp)
+target_link_libraries(agt_spatial_map_export PRIVATE ${PROJECT_NAME})
+install(TARGETS agt_spatial_map_export RUNTIME DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS ${PROJECT_NAME}
   EXPORT export_${PROJECT_NAME}
@@ -30,6 +40,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_spatial_evidence ${PROJECT_NAME})
   ament_add_gtest(test_spatial_evidence_builder test/test_spatial_evidence_builder.cpp)
   target_link_libraries(test_spatial_evidence_builder ${PROJECT_NAME})
+  ament_add_gtest(test_spatial_export test/test_spatial_export.cpp)
+  target_link_libraries(test_spatial_export ${PROJECT_NAME} yaml-cpp)
 endif()
 
 ament_package()

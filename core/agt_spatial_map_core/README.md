@@ -38,5 +38,53 @@ and scores. It rejects missing, duplicate, or unsafe patch references and
 invalid poses. It does not validate artifact checksums on its own: callers
 must validate the parent package first (the export CLI does this).
 
+## Offline derivative export
+
+After sourcing ROS Humble and the existing mapping workspace overlay, build
+`agt_spatial_map_core` with `colcon` and run:
+
+```sh
+ros2 run agt_spatial_map_core agt_spatial_map_export \
+  --map-package /absolute/path/to/optimized_pgo/map_package \
+  --output-dir /separate/existing-parent/spatial_confidence_v1 \
+  --config /path/to/spatial_confidence.yaml
+```
+
+A navigation release without `poses_timed.txt` and `patches/` is **not** an
+input. The executable invokes the existing
+`agt_mapping_artifacts.validation.verify_artifact` twice (before reading and
+before publication); it fails closed if the Python package is not in the
+sourced overlay. It also rejects nonempty destinations, symlinks, path
+traversal, unsafe patches and invalid config values. A sibling staging folder
+is atomically renamed to the destination only after all files and checksums
+are complete. The original verified parent is never written. A nonempty
+existing output is never overwritten; an empty directory may be replaced.
+
+Optional `--manual-overrides /path/to/v1.yaml` has this input schema:
+
+```yaml
+schema_version: 1
+coordinate_system: voxel_index
+voxel_size: 0.2
+overrides:
+  - {key: [5, -2, 0], mode: FORCE_LOW, value: 0.02}
+  - {key: [6, -2, 0], mode: IGNORE}
+```
+
+The output contains **exactly** `confidence_voxels.pcd`, `stable_map.pcd`,
+`confidence_metadata.yaml`, `manual_overrides.yaml`, and `checksums.sha256`.
+The confidence PCD uses map-frame centroid `x y z`, exact-integer float64
+`voxel_x y z` (range ±2^53), integer point/observation/first/last/span counts,
+observation/persistence/geometry/auto/final float32 scores, and independent
+integer override mode/has-value plus float32 manual value. The metadata
+supplies field names, formulas, parameter snapshot, source manifest/checksum
+SHA-256, geometry=deferred, source counts and stable selection semantics.
+`stable_map.pcd` is one map-frame XYZI centroid **per selected voxel**; its
+intensity is final confidence for visualization, *not* measured LiDAR
+reflectance. `FORCE_HIGH` may include, `FORCE_LOW` and `IGNORE` always exclude,
+and `AUTO` uses the configured final-confidence threshold. If no voxel passes,
+export fails without publishing: PCL cannot read a zero-point stable PCD.
+No online master map or legacy PCD→PGM result is replaced.
+
 Phase 1 deliberately does not contain a Qt UI, terrain semantics, ray-carving
 statistics, change detection, or cross-session stability estimates.
