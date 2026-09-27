@@ -159,7 +159,58 @@ def leave_one_center_out(rows: list[dict]) -> dict:
     return output
 
 
-def analyse_phase3c(rows: list[dict]) -> dict:
+def _candidate_pareto(rows: list[dict], candidate_meta: dict) -> list[dict]:
+    local = defaultdict(list)
+    for row in rows:
+        if row.get('algorithm') == 'LOCAL':
+            local[(row['tier'], row['candidate'])].append(row)
+    output = []
+    for (tier, name), group in sorted(local.items()):
+        meta = candidate_meta.get(tier, {}).get(name, {})
+        coverage = meta.get('coverage', {})
+        runtime = _median((row.get('native') or {}).get('wall_ms_external') for row in group)
+        errors = _median(row.get('translation_3d_error_m') for row in group)
+        output.append({
+            'tier': tier, 'candidate': name,
+            'points': coverage.get('points'),
+            'occupied_xy_1m_cells': coverage.get('occupied_xy_1m_cells'),
+            'occupied_xyz_1m_cells': coverage.get('occupied_xyz_1m_cells'),
+            'empty_source_cells': coverage.get('empty_source_cells'),
+            'nominal_hits': sum(bool(row.get('nominal_success')) for row in group),
+            'trials': len(group), 'median_translation_error_m': errors,
+            'median_wall_ms': runtime,
+        })
+    return output
+
+
+def _coverage_matched_comparisons(pareto: list[dict]) -> list[dict]:
+    by = {(row['tier'], row['candidate']): row for row in pareto}
+    output = []
+    for row in pareto:
+        if not row['candidate'].startswith('D_COVERAGE_QT_'):
+            continue
+        suffix = row['candidate'].removeprefix('D_COVERAGE_QT_')
+        for control in ('CONTROL_CELL_RANDOM', 'CONTROL_CELL_UNIFORM'):
+            other = by.get((row['tier'], f'{control}_{suffix}'))
+            if other is None:
+                continue
+            output.append({
+                'tier': row['tier'], 'geometry': row['candidate'],
+                'control': other['candidate'],
+                'same_points': row['points'] == other['points'],
+                'same_xy_cells': row['occupied_xy_1m_cells'] == other['occupied_xy_1m_cells'],
+                'geometry_nominal': [row['nominal_hits'], row['trials']],
+                'control_nominal': [other['nominal_hits'], other['trials']],
+                'geometry_median_error_m': row['median_translation_error_m'],
+                'control_median_error_m': other['median_translation_error_m'],
+                'geometry_median_wall_ms': row['median_wall_ms'],
+                'control_median_wall_ms': other['median_wall_ms'],
+                'note': 'same per-cell quota by construction; descriptive, no automatic winner',
+            })
+    return output
+
+
+def analyse_phase3c(rows: list[dict], candidate_meta: dict | None = None) -> dict:
     groups = _groups(rows)
     correlations = {}
     for feature in FEATURE_NAMES:
@@ -177,6 +228,7 @@ def analyse_phase3c(rows: list[dict]) -> dict:
         by_candidate[row['candidate']]['nominal'] += int(bool(row.get('nominal_success')))
         if row.get('failure_code'):
             failure[(row['candidate'], row['failure_code'])] += 1
+    pareto = _candidate_pareto(rows, candidate_meta or {})
     return {
         'semantics': 'offline same-session descriptive analysis; NOT confidence and NOT calibrated',
         'group_count': len(groups),
@@ -184,6 +236,8 @@ def analyse_phase3c(rows: list[dict]) -> dict:
         'crop_support_stratified_qr': stratified_qr(groups),
         'leave_one_center_out_diagnostic': leave_one_center_out(rows),
         'candidate_nominal': dict(by_candidate),
+        'pareto': pareto,
+        'coverage_matched_comparisons': _coverage_matched_comparisons(pareto),
         'failure_by_candidate': [
             {'candidate': candidate, 'failure_code': code, 'count': count}
             for (candidate, code), count in sorted(failure.items())
@@ -191,8 +245,9 @@ def analyse_phase3c(rows: list[dict]) -> dict:
     }
 
 
-def write_phase3c_outputs(run: Path, rows: list[dict], coverage_rows: list[dict]) -> dict:
-    summary = analyse_phase3c(rows)
+def write_phase3c_outputs(run: Path, rows: list[dict], coverage_rows: list[dict],
+                          candidate_meta: dict | None = None) -> dict:
+    summary = analyse_phase3c(rows, candidate_meta)
     (run / 'coverage_field.csv').parent.mkdir(parents=True, exist_ok=True)
     write_coverage_field(run / 'coverage_field.csv', coverage_rows)
     (run / 'coverage_geometry_summary.json').write_text(
@@ -206,6 +261,24 @@ def write_phase3c_outputs(run: Path, rows: list[dict], coverage_rows: list[dict]
     ]
     for name, item in sorted(summary['candidate_nominal'].items()):
         lines.append(f"| {name} | {item['nominal']} | {item['trials']} |")
+    lines += ['', '## Coverage-matched comparisons', '',
+              '| Geometry | Control | Same points | Same XY cells | Geometry nominal | Control nominal |',
+              '|---|---|---|---|---:|---:|']
+    for item in summary['coverage_matched_comparisons']:
+        lines.append(
+            f"| {item['geometry']} | {item['control']} | {item['same_points']} | "
+            f"{item['same_xy_cells']} | {item['geometry_nominal'][0]}/{item['geometry_nominal'][1]} | "
+            f"{item['control_nominal'][0]}/{item['control_nominal'][1]} |")
+    lines += ['', '## Pareto observations', '',
+              '| Tier | Candidate | Points | XYZ cells | Nominal | Median error m | Median wall ms |',
+              '|---|---|---:|---:|---:|---:|---:|']
+    for item in summary['pareto']:
+        def fmtp(value):
+            return 'NA' if value is None else f'{value:.3f}' if isinstance(value, float) else str(value)
+        lines.append(
+            f"| {item['tier']} | {item['candidate']} | {fmtp(item['points'])} | "
+            f"{fmtp(item['occupied_xyz_1m_cells'])} | {item['nominal_hits']}/{item['trials']} | "
+            f"{fmtp(item['median_translation_error_m'])} | {fmtp(item['median_wall_ms'])} |")
     lines += ['', '## Exploratory feature association', '',
               '| Feature | rho vs nominal fraction | rho vs median translation error | rho vs median yaw error |',
               '|---|---:|---:|---:|']
@@ -242,6 +315,43 @@ def write_phase3c_outputs(run: Path, rows: list[dict], coverage_rows: list[dict]
             ax.set_title('Phase 3C LOCAL — coverage controls')
             fig.tight_layout()
             fig.savefig(plots / 'phase3c_success_vs_candidate.png', dpi=130)
+            plt.close(fig)
+
+        groups = _groups(rows)
+        support_x = [g['quality_features'].get('crop_support_ratio') for g in groups]
+        nominal_y = [g['nominal_fraction'] for g in groups]
+        valid = [(x, y) for x, y in zip(support_x, nominal_y) if x is not None]
+        if valid:
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.scatter([x for x, _ in valid], [y for _, y in valid])
+            ax.set(xlabel='Reference-crop support ratio vs B',
+                   ylabel='Observed nominal fraction',
+                   title='Same-session diagnostic; NOT calibrated')
+            fig.tight_layout()
+            fig.savefig(plots / 'phase3c_success_vs_crop_coverage.png', dpi=130)
+            plt.close(fig)
+
+        for feature, filename in (('Qr_query', 'phase3c_qr_query_vs_success.png'),
+                                  ('Qt_query', 'phase3c_qt_query_vs_success.png')):
+            valid = [(g['quality_features'].get(feature), g['nominal_fraction']) for g in groups]
+            valid = [(x, y) for x, y in valid if x is not None]
+            if valid:
+                fig, ax = plt.subplots(figsize=(6, 4))
+                ax.scatter([x for x, _ in valid], [y for _, y in valid])
+                ax.set(xlabel=feature, ylabel='Observed nominal fraction',
+                       title='Same-session diagnostic; NOT calibrated')
+                fig.tight_layout()
+                fig.savefig(plots / filename, dpi=130)
+                plt.close(fig)
+
+        pareto = [p for p in summary['pareto'] if p['points'] is not None and p['median_wall_ms'] is not None]
+        if pareto:
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.scatter([p['points'] for p in pareto], [p['median_wall_ms'] for p in pareto])
+            ax.set(xlabel='Candidate map input points', ylabel='Median external wall time (ms)',
+                   title='Runtime vs points; attribution not implied')
+            fig.tight_layout()
+            fig.savefig(plots / 'phase3c_runtime_vs_points.png', dpi=130)
             plt.close(fig)
     except ImportError:
         (run / 'phase3c_plots_not_run.txt').write_text('matplotlib unavailable\n', encoding='utf-8')
