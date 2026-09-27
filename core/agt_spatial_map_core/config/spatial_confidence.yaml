@@ -1,0 +1,11 @@
+schema_version: 1
+voxel_size: 0.20
+confidence:
+  observation_reference: 4
+  keyframe_span_reference: 3
+  persistence_alpha: 0.7
+  geometry_score:
+    status: deferred
+  force_low_value: 0.05
+stable_map:
+  confidence_threshold: 0.60
