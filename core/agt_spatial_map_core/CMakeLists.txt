@@ -42,6 +42,16 @@ if(BUILD_TESTING)
   target_link_libraries(test_spatial_evidence_builder ${PROJECT_NAME})
   ament_add_gtest(test_spatial_export test/test_spatial_export.cpp)
   target_link_libraries(test_spatial_export ${PROJECT_NAME} yaml-cpp)
+
+  # Compile the actual unchanged legacy implementation into a regression-only
+  # executable: no new dependency or behavior change in the old exporter.
+  set(LEGACY_PCD2GRID_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../exporters/agt_pcd2grid_exporter")
+  ament_add_gtest(test_temporal_filter_compat
+    test/test_temporal_filter_compat.cpp
+    "${LEGACY_PCD2GRID_ROOT}/src/TemporalPersistenceFilter.cpp")
+  target_include_directories(test_temporal_filter_compat PRIVATE
+    "${LEGACY_PCD2GRID_ROOT}/include")
+  target_link_libraries(test_temporal_filter_compat ${PROJECT_NAME})
 endif()
 
 ament_package()

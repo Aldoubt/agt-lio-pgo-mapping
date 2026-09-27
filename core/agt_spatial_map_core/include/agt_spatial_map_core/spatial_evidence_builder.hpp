@@ -19,8 +19,8 @@ struct EvidenceBuildStats {
 // the same T_map_body + floor(float32 / float32) convention as the legacy
 // temporal filter. Does not modify or replace that filter / traversability.
 //
-// This aggregation API checks input contracts but does not verify the signed
-// mapping artifact manifest. The CLI invokes the existing artifact validator
+// This aggregation API checks input contracts but does not verify the parent
+// manifest/checksum index. The CLI invokes the existing artifact validator
 // before calling build(); other callers must verify their parent separately.
 class SpatialEvidenceBuilder {
 public:

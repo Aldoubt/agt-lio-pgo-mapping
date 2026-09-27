@@ -86,5 +86,18 @@ and `AUTO` uses the configured final-confidence threshold. If no voxel passes,
 export fails without publishing: PCL cannot read a zero-point stable PCD.
 No online master map or legacy PCD→PGM result is replaced.
 
+## Legacy compatibility boundary
+
+`test_temporal_filter_compat` builds the **unchanged** source of
+`agt_pcd2grid_exporter/TemporalPersistenceFilter.cpp` into a regression-only
+test target. With identical voxel size, minimum independent observations and
+minimum keyframe-index span, the legacy retained *voxel keys and point
+counts* match those selected from the new evidence on a rotated/transformed
+patch fixture (including many duplicate points within a keyframe). The new
+continuous confidence threshold is a different criterion; this test does
+**not** assert that arbitrary confidence thresholds are equivalent to the
+legacy hard-count/span filter. Neither that filter nor traversability is
+modified or redirected to use the new builder.
+
 Phase 1 deliberately does not contain a Qt UI, terrain semantics, ray-carving
 statistics, change detection, or cross-session stability estimates.
