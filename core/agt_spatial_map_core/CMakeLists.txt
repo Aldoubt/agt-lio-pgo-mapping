@@ -16,7 +16,8 @@ add_library(${PROJECT_NAME} SHARED
   src/spatial_export.cpp
   src/spatial_review_source.cpp
   src/geometry_evidence.cpp
-  src/geometry_evidence_estimator.cpp)
+  src/geometry_evidence_estimator.cpp
+  src/geometry_evidence_io.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -27,6 +28,10 @@ target_link_libraries(${PROJECT_NAME} PUBLIC Eigen3::Eigen ${PCL_LIBRARIES}
 add_executable(agt_spatial_map_export src/spatial_map_export_main.cpp)
 target_link_libraries(agt_spatial_map_export PRIVATE ${PROJECT_NAME})
 install(TARGETS agt_spatial_map_export RUNTIME DESTINATION lib/${PROJECT_NAME})
+
+add_executable(agt_spatial_geometry_estimate src/spatial_geometry_main.cpp)
+target_link_libraries(agt_spatial_geometry_estimate PRIVATE ${PROJECT_NAME})
+install(TARGETS agt_spatial_geometry_estimate RUNTIME DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS ${PROJECT_NAME}
   EXPORT export_${PROJECT_NAME}
