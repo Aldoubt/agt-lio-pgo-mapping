@@ -1,9 +1,9 @@
 #include "viewer/PointCloudViewer.hpp"
 
+#include "confidence/ConfidenceColor.hpp"
+
 #include <QPolygonF>
 #include <QVector2D>
-
-#include <algorithm>
 
 #include <QKeyEvent>
 #include <QLinearGradient>
@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <utility>
 
 namespace agt_map_studio {
@@ -23,6 +24,9 @@ namespace agt_map_studio {
 PointCloudViewer::PointCloudViewer(QWidget *parent)
     : QOpenGLWidget(parent), cloud_buffer_(QOpenGLBuffer::VertexBuffer),
       status_buffer_(QOpenGLBuffer::VertexBuffer),
+      confidence_buffer_(QOpenGLBuffer::VertexBuffer),
+      confidence_status_buffer_(QOpenGLBuffer::VertexBuffer),
+      confidence_color_buffer_(QOpenGLBuffer::VertexBuffer),
       axis_buffer_(QOpenGLBuffer::VertexBuffer) {
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
@@ -35,6 +39,9 @@ PointCloudViewer::~PointCloudViewer() {
     makeCurrent();
     cloud_buffer_.destroy();
     status_buffer_.destroy();
+    confidence_buffer_.destroy();
+    confidence_status_buffer_.destroy();
+    confidence_color_buffer_.destroy();
     axis_buffer_.destroy();
     doneCurrent();
   }
@@ -53,7 +60,7 @@ void PointCloudViewer::set_cloud(LoadedPointCloud cloud,
     upload_cloud();
     doneCurrent();
   }
-  emit stats_changed(stats_text());
+  emit_stats();
   update();
 }
 
@@ -73,7 +80,83 @@ void PointCloudViewer::set_dark_background(bool enabled) {
 }
 
 void PointCloudViewer::set_height_coloring(bool enabled) {
-  height_coloring_ = enabled;
+  set_color_mode(enabled ? PointColorMode::Height : PointColorMode::Solid);
+}
+
+bool PointCloudViewer::confidence_mode() const {
+  return has_confidence() && color_mode_ != PointColorMode::Height &&
+         color_mode_ != PointColorMode::Solid;
+}
+
+bool PointCloudViewer::showing_confidence() const { return confidence_mode(); }
+
+const std::vector<float> &PointCloudViewer::active_xyz() const {
+  return confidence_mode() ? confidence_model_->xyz() : cloud_.xyz;
+}
+
+SelectionManager *PointCloudViewer::active_selection_manager() const {
+  return confidence_mode() ? confidence_selection_manager_ : selection_manager_;
+}
+
+void PointCloudViewer::emit_stats() {
+  cached_stats_text_ = stats_text();
+  emit stats_changed(cached_stats_text_);
+}
+
+void PointCloudViewer::set_color_mode(PointColorMode mode) {
+  if (mode != PointColorMode::Height && mode != PointColorMode::Solid && !has_confidence()) return;
+  color_mode_ = mode;
+  confidence_colors_dirty_ = true;
+  confidence_status_dirty_ = true;
+  emit_stats();
+  update();
+}
+
+void PointCloudViewer::set_confidence_model(const SpatialConfidenceModel *model) {
+  confidence_model_ = model && !model->empty() ? model : nullptr;
+  confidence_status_dirty_ = true;
+  confidence_colors_dirty_ = true;
+  if (confidence_model_) {
+    confidence_min_bound_ = Eigen::Vector3f::Constant(std::numeric_limits<float>::infinity());
+    confidence_max_bound_ = -confidence_min_bound_;
+    const auto &xyz = confidence_model_->xyz();
+    for (std::size_t i = 0; i < xyz.size(); i += 3U) {
+      const Eigen::Vector3f p(xyz[i], xyz[i + 1U], xyz[i + 2U]);
+      confidence_min_bound_ = confidence_min_bound_.cwiseMin(p);
+      confidence_max_bound_ = confidence_max_bound_.cwiseMax(p);
+    }
+  } else {
+    color_mode_ = PointColorMode::Height;
+    confidence_min_bound_.setZero();
+    confidence_max_bound_.setZero();
+  }
+  if (gl_ready_) {
+    makeCurrent();
+    upload_confidence_cloud();
+    doneCurrent();
+  }
+  emit_stats();
+  update();
+}
+
+void PointCloudViewer::set_confidence_selection_manager(SelectionManager *manager) {
+  confidence_selection_manager_ = manager;
+  confidence_status_dirty_ = true;
+  emit_stats();
+  update();
+}
+
+void PointCloudViewer::set_stable_only(bool enabled) {
+  stable_only_ = enabled;
+  confidence_status_dirty_ = true;
+  emit_stats();
+  update();
+}
+
+void PointCloudViewer::refresh_confidence_preview() {
+  confidence_colors_dirty_ = true;
+  confidence_status_dirty_ = true;
+  emit_stats();
   update();
 }
 
@@ -97,7 +180,7 @@ void PointCloudViewer::set_mode(InteractionMode mode) {
   selecting_ = false;
   pending_polygon_.clear();
   if (mode_ == InteractionMode::Navigate) selection_box_ = SelectionBox();
-  emit stats_changed(stats_text());
+  emit_stats();
   update();
 }
 
@@ -106,7 +189,7 @@ void PointCloudViewer::set_selection_tool(SelectionTool tool) {
   selecting_ = false;
   pending_polygon_.clear();
   selection_box_ = SelectionBox();
-  emit stats_changed(stats_text());
+  emit_stats();
   update();
 }
 
@@ -114,11 +197,20 @@ void PointCloudViewer::set_z_window(bool enabled, double z_min, double z_max) {
   z_window_enabled_ = enabled;
   z_window_min_ = std::min(z_min, z_max);
   z_window_max_ = std::max(z_min, z_max);
-  emit stats_changed(stats_text());
+  emit_stats();
 }
 
 bool PointCloudViewer::passes_z_window(float z) const {
   return !z_window_enabled_ || (z >= z_window_min_ && z <= z_window_max_);
+}
+
+bool PointCloudViewer::visible_for_selection(std::size_t index) const {
+  const auto *manager = active_selection_manager();
+  if (!manager || index >= manager->statuses().size()) return false;
+  if (confidence_mode()) {
+    return !stable_only_ || confidence_model_->is_stable_preview(index);
+  }
+  return manager->statuses()[index] != PointStatus::DELETED;
 }
 
 void PointCloudViewer::cancel_pending_polygon() {
@@ -127,9 +219,23 @@ void PointCloudViewer::cancel_pending_polygon() {
   update();
 }
 
+void PointCloudViewer::signal_confidence_selection() {
+  if (!confidence_mode()) return;
+  const auto *manager = active_selection_manager();
+  const auto index = manager && !manager->selected_indices().empty()
+                         ? manager->selected_indices().front()
+                         : static_cast<std::size_t>(-1);
+  emit confidence_voxel_selected(index);
+}
+
 void PointCloudViewer::mark_edit_state_dirty() {
-  status_buffer_dirty_ = true;
-  emit stats_changed(stats_text());
+  if (confidence_mode()) {
+    confidence_status_dirty_ = true;
+    signal_confidence_selection();
+  } else {
+    status_buffer_dirty_ = true;
+  }
+  emit_stats();
   update();
 }
 
@@ -149,7 +255,10 @@ void PointCloudViewer::top_view() {
 }
 
 void PointCloudViewer::reset_camera() {
-  if (has_cloud()) {
+  if (confidence_mode()) {
+    camera_.reset(QVector3D(confidence_min_bound_.x(), confidence_min_bound_.y(), confidence_min_bound_.z()),
+                  QVector3D(confidence_max_bound_.x(), confidence_max_bound_.y(), confidence_max_bound_.z()));
+  } else if (has_cloud()) {
     const QVector3D min_bound(cloud_.min_bound.x(), cloud_.min_bound.y(),
                               cloud_.min_bound.z());
     const QVector3D max_bound(cloud_.max_bound.x(), cloud_.max_bound.y(),
@@ -162,19 +271,28 @@ void PointCloudViewer::reset_camera() {
 }
 
 QString PointCloudViewer::stats_text() const {
-  const QString name = filename_.isEmpty() ? QStringLiteral("(none)")
-                                           : filename_;
-  const std::size_t deleted = selection_manager_ ? selection_manager_->deleted_count() : 0U;
-  const std::size_t visible = selection_manager_ ? selection_manager_->visible_count()
-                                                 : point_count();
-  const std::size_t selected = selection_manager_ ? selection_manager_->selected_count() : 0U;
-  QString text = QStringLiteral("File: %1 | Total: %2 | Selected: %3 | Deleted: %4 | Visible: %5 | Mode: %6")
-      .arg(name)
-      .arg(static_cast<qulonglong>(point_count()))
-      .arg(static_cast<qulonglong>(selected))
-      .arg(static_cast<qulonglong>(deleted))
-      .arg(static_cast<qulonglong>(visible))
-      .arg(mode_text());
+  const auto *manager = active_selection_manager();
+  const std::size_t selected = manager ? manager->selected_count() : 0U;
+  QString text;
+  if (confidence_mode()) {
+    text = QStringLiteral("Single-session confidence voxels: %1 | Selected: %2 | Stable preview: %3 | Mode: %4")
+        .arg(static_cast<qulonglong>(confidence_model_->voxels().size()))
+        .arg(static_cast<qulonglong>(selected))
+        .arg(static_cast<qulonglong>(confidence_model_->stable_preview_count()))
+        .arg(mode_text());
+    if (stable_only_) text += QStringLiteral(" | Show Stable Only");
+  } else {
+    const QString name = filename_.isEmpty() ? QStringLiteral("(none)") : filename_;
+    const std::size_t deleted = selection_manager_ ? selection_manager_->deleted_count() : 0U;
+    const std::size_t visible = selection_manager_ ? selection_manager_->visible_count() : point_count();
+    text = QStringLiteral("File: %1 | Total: %2 | Selected: %3 | Deleted: %4 | Visible: %5 | Mode: %6")
+        .arg(name)
+        .arg(static_cast<qulonglong>(point_count()))
+        .arg(static_cast<qulonglong>(selected))
+        .arg(static_cast<qulonglong>(deleted))
+        .arg(static_cast<qulonglong>(visible))
+        .arg(mode_text());
+  }
   if (mode_ != InteractionMode::Navigate) text += QStringLiteral(" / %1").arg(tool_text());
   if (z_window_enabled_) {
     text += QStringLiteral(" | Z [%1, %2]").arg(z_window_min_, 0, 'f', 2).arg(z_window_max_, 0, 'f', 2);
@@ -222,8 +340,16 @@ bool PointCloudViewer::save_view(const QString &path, QString *error) const {
   emitter << YAML::Key << "point_size" << YAML::Value << point_size_;
   emitter << YAML::Key << "show_axis" << YAML::Value << show_axis_;
   emitter << YAML::Key << "dark_background" << YAML::Value << dark_background_;
-  emitter << YAML::Key << "color_mode" << YAML::Value
-          << (height_coloring_ ? "height" : "solid");
+  const char *color = "height";
+  switch (color_mode_) {
+    case PointColorMode::Height: color = "height"; break;
+    case PointColorMode::Solid: color = "solid"; break;
+    case PointColorMode::AutoConfidence: color = "auto_confidence"; break;
+    case PointColorMode::FinalConfidence: color = "final_confidence"; break;
+    case PointColorMode::ObservationScore: color = "observation_score"; break;
+    case PointColorMode::PersistenceScore: color = "persistence_score"; break;
+  }
+  emitter << YAML::Key << "color_mode" << YAML::Value << color;
   emitter << YAML::EndMap << YAML::EndMap;
   stream << emitter.c_str() << '\n';
   if (!stream.good()) {
@@ -242,24 +368,29 @@ void PointCloudViewer::initializeGL() {
   const char *vertex_shader = R"glsl(
     attribute vec3 a_position;
     attribute float a_status;
+    attribute vec3 a_rgb;
     uniform mat4 u_mvp;
     uniform float u_point_size;
     varying float v_height;
     varying float v_status;
+    varying vec3 v_rgb;
     void main() {
       gl_Position = u_mvp * vec4(a_position, 1.0);
       gl_PointSize = u_point_size;
       v_height = a_position.z;
       v_status = a_status;
+      v_rgb = a_rgb;
     }
   )glsl";
   const char *fragment_shader = R"glsl(
     uniform vec4 u_color;
     uniform int u_height_coloring;
+    uniform int u_confidence_mode;
     uniform float u_z_min;
     uniform float u_z_max;
     varying float v_height;
     varying float v_status;
+    varying vec3 v_rgb;
 
     vec3 height_color(float value) {
       float range = max(u_z_max - u_z_min, 0.000001);
@@ -277,6 +408,8 @@ void PointCloudViewer::initializeGL() {
         gl_FragColor = vec4(0.9, 0.05, 0.05, 0.85);
       } else if (v_status > 0.5) {
         gl_FragColor = vec4(1.0, 0.75, 0.05, 1.0);
+      } else if (u_confidence_mode == 1) {
+        gl_FragColor = vec4(v_rgb, 1.0);
       } else {
         gl_FragColor = u_height_coloring == 1
             ? vec4(height_color(v_height), 1.0)
@@ -294,6 +427,9 @@ void PointCloudViewer::initializeGL() {
 
   cloud_buffer_.create();
   status_buffer_.create();
+  confidence_buffer_.create();
+  confidence_status_buffer_.create();
+  confidence_color_buffer_.create();
   axis_buffer_.create();
   const float axis[] = {
       0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
@@ -306,6 +442,9 @@ void PointCloudViewer::initializeGL() {
   gl_ready_ = true;
   upload_cloud();
   upload_statuses();
+  upload_confidence_cloud();
+  upload_confidence_statuses();
+  upload_confidence_colors();
 }
 
 void PointCloudViewer::resizeGL(int width, int height) {
@@ -320,32 +459,48 @@ void PointCloudViewer::paintGL() {
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   const QMatrix4x4 mvp = camera_.projection_matrix() * camera_.view_matrix();
-  if (status_buffer_dirty_) upload_statuses();
+  const bool confidence = confidence_mode();
+  if (confidence) {
+    if (confidence_status_dirty_) upload_confidence_statuses();
+    if (confidence_colors_dirty_) upload_confidence_colors();
+  } else if (status_buffer_dirty_) {
+    upload_statuses();
+  }
   if (shader_) {
     shader_->bind();
     shader_->setUniformValue("u_mvp", mvp);
     shader_->setUniformValue("u_point_size", point_size_);
-    shader_->setUniformValue("u_height_coloring", height_coloring_ ? 1 : 0);
+    shader_->setUniformValue("u_height_coloring", color_mode_ == PointColorMode::Height ? 1 : 0);
+    shader_->setUniformValue("u_confidence_mode", confidence ? 1 : 0);
     shader_->setUniformValue("u_z_min", cloud_.min_bound.z());
     shader_->setUniformValue("u_z_max", cloud_.max_bound.z());
     shader_->setUniformValue(
         "u_color", dark_background_ ? QVector4D(1.0F, 1.0F, 1.0F, 1.0F)
                                      : QVector4D(0.12F, 0.12F, 0.12F, 1.0F));
-    if (cloud_.xyz.empty() == false && cloud_buffer_.isCreated() &&
-        status_buffer_.isCreated()) {
-      cloud_buffer_.bind();
+    QOpenGLBuffer &positions = confidence ? confidence_buffer_ : cloud_buffer_;
+    QOpenGLBuffer &statuses = confidence ? confidence_status_buffer_ : status_buffer_;
+    if (!active_xyz().empty() && positions.isCreated() && statuses.isCreated() &&
+        (!confidence || confidence_color_buffer_.isCreated())) {
+      positions.bind();
       shader_->enableAttributeArray("a_position");
       shader_->setAttributeBuffer("a_position", GL_FLOAT, 0, 3);
-      cloud_buffer_.release();
-      status_buffer_.bind();
+      positions.release();
+      statuses.bind();
       shader_->enableAttributeArray("a_status");
       shader_->setAttributeBuffer("a_status", GL_FLOAT, 0, 1);
-      status_buffer_.release();
-      cloud_buffer_.bind();
-      glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(cloud_.point_count()));
+      statuses.release();
+      if (confidence) {
+        confidence_color_buffer_.bind();
+        shader_->enableAttributeArray("a_rgb");
+        shader_->setAttributeBuffer("a_rgb", GL_FLOAT, 0, 3);
+        confidence_color_buffer_.release();
+      }
+      positions.bind();
+      glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(active_xyz().size() / 3U));
       shader_->disableAttributeArray("a_position");
       shader_->disableAttributeArray("a_status");
-      cloud_buffer_.release();
+      if (confidence) shader_->disableAttributeArray("a_rgb");
+      positions.release();
     }
     if (show_axis_ && axis_buffer_.isCreated()) {
       draw_axes(mvp);
@@ -361,12 +516,12 @@ void PointCloudViewer::paintGL() {
            static_cast<float>(elapsed);
     frame_count_ = 0;
     fps_timer_.restart();
-    emit stats_changed(stats_text());
+    emit_stats();
   }
 
   QPainter painter(this);
   painter.setPen(dark_background_ ? Qt::white : Qt::black);
-  painter.drawText(12, 22, stats_text());
+  painter.drawText(12, 22, cached_stats_text_.isEmpty() ? stats_text() : cached_stats_text_);
   if (selecting_ && tool_ == SelectionTool::ScreenRect && selection_box_.is_valid()) {
     QPen pen(QColor(30, 120, 255), 2, Qt::DashLine);
     painter.setPen(pen);
@@ -392,24 +547,41 @@ void PointCloudViewer::paintGL() {
     painter.drawText(last_mouse_position_ + QPoint(16, 4),
                      QStringLiteral("click: sphere r=%1 m").arg(sphere_radius_, 0, 'f', 2));
   }
-  if (height_coloring_ && has_cloud()) {
+  if (confidence || (color_mode_ == PointColorMode::Height && has_cloud())) {
     const int legend_width = 180;
     const int legend_height = 12;
     const int legend_x = std::max(12, width() - legend_width - 18);
     const int legend_y = 14;
-    QLinearGradient gradient(legend_x, legend_y,
-                              legend_x + legend_width, legend_y);
-    gradient.setColorAt(0.0, QColor(45, 60, 220));
-    gradient.setColorAt(0.25, QColor(0, 190, 220));
-    gradient.setColorAt(0.5, QColor(40, 190, 80));
-    gradient.setColorAt(0.75, QColor(245, 210, 35));
-    gradient.setColorAt(1.0, QColor(220, 35, 35));
+    QLinearGradient gradient(legend_x, legend_y, legend_x + legend_width, legend_y);
+    if (confidence) {
+      for (int step = 0; step <= 4; ++step) {
+        const float fraction = step / 4.0F;
+        const auto c = confidence_color(fraction);
+        gradient.setColorAt(fraction, QColor::fromRgbF(c.r, c.g, c.b));
+      }
+    } else {
+      gradient.setColorAt(0.0, QColor(45, 60, 220));
+      gradient.setColorAt(0.25, QColor(0, 190, 220));
+      gradient.setColorAt(0.5, QColor(40, 190, 80));
+      gradient.setColorAt(0.75, QColor(245, 210, 35));
+      gradient.setColorAt(1.0, QColor(220, 35, 35));
+    }
     painter.fillRect(legend_x, legend_y, legend_width, legend_height, gradient);
     painter.drawRect(legend_x, legend_y, legend_width, legend_height);
-    painter.drawText(legend_x, legend_y + 30,
-                     QStringLiteral("Z low: %1").arg(cloud_.min_bound.z(), 0, 'f', 2));
-    painter.drawText(legend_x + 105, legend_y + 30,
-                     QStringLiteral("high: %1").arg(cloud_.max_bound.z(), 0, 'f', 2));
+    if (confidence) {
+      painter.drawText(legend_x, legend_y + 30, QStringLiteral("0.0 low"));
+      painter.drawText(legend_x + 120, legend_y + 30, QStringLiteral("1.0 high"));
+      const char *name = "Auto Confidence";
+      if (color_mode_ == PointColorMode::FinalConfidence) name = "Final Confidence";
+      if (color_mode_ == PointColorMode::ObservationScore) name = "Observation Score";
+      if (color_mode_ == PointColorMode::PersistenceScore) name = "Persistence Evidence";
+      painter.drawText(legend_x, legend_y + 46, QString::fromLatin1(name));
+    } else {
+      painter.drawText(legend_x, legend_y + 30,
+                       QStringLiteral("Z low: %1").arg(cloud_.min_bound.z(), 0, 'f', 2));
+      painter.drawText(legend_x + 105, legend_y + 30,
+                       QStringLiteral("high: %1").arg(cloud_.max_bound.z(), 0, 'f', 2));
+    }
   }
   painter.end();
 }
@@ -418,6 +590,7 @@ void PointCloudViewer::draw_axes(const QMatrix4x4 &mvp) {
   shader_->setUniformValue("u_mvp", mvp);
   shader_->setUniformValue("u_point_size", 1.0F);
   shader_->setUniformValue("u_height_coloring", 0);
+  shader_->setUniformValue("u_confidence_mode", 0);
   axis_buffer_.bind();
   shader_->enableAttributeArray("a_position");
   shader_->setAttributeBuffer("a_position", GL_FLOAT, 0, 3);
@@ -469,6 +642,66 @@ void PointCloudViewer::upload_statuses() {
   status_buffer_dirty_ = false;
 }
 
+void PointCloudViewer::upload_confidence_cloud() {
+  if (!gl_ready_ || !confidence_buffer_.isCreated()) return;
+  const auto *xyz = confidence_model_ ? &confidence_model_->xyz() : nullptr;
+  confidence_buffer_.bind();
+  confidence_buffer_.setUsagePattern(QOpenGLBuffer::StaticDraw);
+  confidence_buffer_.allocate(!xyz || xyz->empty() ? nullptr : xyz->data(),
+                              xyz ? static_cast<int>(xyz->size() * sizeof(float)) : 0);
+  confidence_buffer_.release();
+}
+
+void PointCloudViewer::upload_confidence_statuses() {
+  if (!gl_ready_ || !confidence_status_buffer_.isCreated()) return;
+  const auto count = confidence_model_ ? confidence_model_->voxels().size() : 0U;
+  std::vector<float> statuses(count, 0.0F);
+  const bool matched = confidence_selection_manager_ &&
+                       confidence_selection_manager_->statuses().size() == count;
+  const bool isolate = matched && confidence_selection_manager_->isolate_selected() &&
+                       confidence_selection_manager_->selected_count() != 0U;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (stable_only_ && !confidence_model_->is_stable_preview(i)) {
+      statuses[i] = 3.0F;  // hidden; not part of formal stable_map.pcd
+    } else if (matched) {
+      const auto state = confidence_selection_manager_->statuses()[i];
+      statuses[i] = isolate && state != PointStatus::SELECTED ? 3.0F
+                    : static_cast<float>(state);
+    }
+  }
+  confidence_status_buffer_.bind();
+  confidence_status_buffer_.setUsagePattern(QOpenGLBuffer::DynamicDraw);
+  confidence_status_buffer_.allocate(statuses.empty() ? nullptr : statuses.data(),
+                                     static_cast<int>(statuses.size() * sizeof(float)));
+  confidence_status_buffer_.release();
+  confidence_status_dirty_ = false;
+}
+
+void PointCloudViewer::upload_confidence_colors() {
+  if (!gl_ready_ || !confidence_color_buffer_.isCreated()) return;
+  std::vector<float> colors;
+  if (confidence_model_) {
+    colors.reserve(confidence_model_->voxels().size() * 3U);
+    for (const auto &v : confidence_model_->voxels()) {
+      float score = v.auto_confidence;
+      switch (color_mode_) {
+        case PointColorMode::FinalConfidence: score = v.final_confidence; break;
+        case PointColorMode::ObservationScore: score = v.observation_score; break;
+        case PointColorMode::PersistenceScore: score = v.persistence_score; break;
+        default: break;
+      }
+      const auto c = confidence_color(score);
+      colors.insert(colors.end(), {c.r, c.g, c.b});
+    }
+  }
+  confidence_color_buffer_.bind();
+  confidence_color_buffer_.setUsagePattern(QOpenGLBuffer::DynamicDraw);
+  confidence_color_buffer_.allocate(colors.empty() ? nullptr : colors.data(),
+                                    static_cast<int>(colors.size() * sizeof(float)));
+  confidence_color_buffer_.release();
+  confidence_colors_dirty_ = false;
+}
+
 void PointCloudViewer::tick() {
   camera_.update(0.016F);
   update();
@@ -479,8 +712,8 @@ void PointCloudViewer::keyPressEvent(QKeyEvent *event) {
   // camera keys are never shadowed here.
   if (event->key() == Qt::Key_Escape) {
     cancel_pending_polygon();
-    if (selection_manager_) {
-      selection_manager_->clear_selection();
+    if (auto *manager = active_selection_manager()) {
+      manager->clear_selection();
       mark_edit_state_dirty();
     }
     event->accept();
@@ -504,6 +737,12 @@ void PointCloudViewer::keyPressEvent(QKeyEvent *event) {
   }
   if (event->key() == Qt::Key_2) {
     top_view();
+    event->accept();
+    return;
+  }
+  if (event->key() == Qt::Key_Delete && confidence_mode()) {
+    // Confidence voxels are never deleted from map.pcd or from the evidence.
+    emit delete_requested_outside_delete_mode();
     event->accept();
     return;
   }
@@ -543,6 +782,12 @@ void PointCloudViewer::keyReleaseEvent(QKeyEvent *event) {
 void PointCloudViewer::mousePressEvent(QMouseEvent *event) {
   setFocus();
   last_mouse_position_ = event->pos();
+  if (confidence_mode() && event->button() == Qt::LeftButton &&
+      (event->modifiers() & Qt::ControlModifier)) {
+    pick_confidence_voxel(event->pos());
+    event->accept();
+    return;
+  }
   left_drag_ = event->button() == Qt::LeftButton &&
                mode_ == InteractionMode::Navigate;
   right_drag_ = event->button() == Qt::RightButton;
@@ -596,9 +841,35 @@ void PointCloudViewer::mouseReleaseEvent(QMouseEvent *event) {
   event->accept();
 }
 
+void PointCloudViewer::pick_confidence_voxel(const QPoint &screen) {
+  left_drag_ = false;
+  selecting_ = false;
+  if (!confidence_mode() || !confidence_selection_manager_) return;
+  const QMatrix4x4 mvp = camera_.projection_matrix() * camera_.view_matrix();
+  std::size_t best = static_cast<std::size_t>(-1);
+  int best_distance = 12 * 12;
+  for (std::size_t i = 0; i < confidence_model_->voxels().size(); ++i) {
+    if (stable_only_ && !confidence_model_->is_stable_preview(i)) continue;
+    const auto p = project(i, mvp);
+    if (!p) continue;
+    const QPoint delta = *p - screen;
+    const int distance = delta.x() * delta.x() + delta.y() * delta.y();
+    if (distance < best_distance) { best_distance = distance; best = i; }
+  }
+  if (best == static_cast<std::size_t>(-1)) return;
+  SelectionGeometry geometry;
+  geometry.rule_type = "remove_box";  // reused selection geometry, not exported as a delete
+  geometry.box.valid = true;
+  geometry.box.min = confidence_model_->voxels()[best].center;
+  geometry.box.max = geometry.box.min;
+  confidence_selection_manager_->select_points({best}, geometry);
+  mark_edit_state_dirty();
+}
+
 std::optional<QPoint> PointCloudViewer::project(std::size_t i, const QMatrix4x4 &mvp) const {
-  const QVector4D clip(mvp * QVector4D(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U],
-                                       cloud_.xyz[i * 3U + 2U], 1.0F));
+  const auto &xyz = active_xyz();
+  const QVector4D clip(mvp * QVector4D(xyz[i * 3U], xyz[i * 3U + 1U],
+                                       xyz[i * 3U + 2U], 1.0F));
   if (clip.w() <= 0.0F) return std::nullopt;
   const QVector3D ndc = clip.toVector3DAffine();
   return QPoint(qRound((ndc.x() + 1.0F) * 0.5F * width()),
@@ -642,42 +913,46 @@ void grow_box(AxisAlignedBoundingBox &box, const Eigen::Vector3f &point) {
 }  // namespace
 
 void PointCloudViewer::select_screen_rect(const SelectionBox &box) {
-  if (!selection_manager_ || !box.is_valid() || cloud_.xyz.empty() ||
-      selection_manager_->statuses().size() != cloud_.point_count()) {
+  auto *manager = active_selection_manager();
+  const auto &xyz = active_xyz();
+  if (!manager || !box.is_valid() || xyz.empty() ||
+      manager->statuses().size() != (xyz.size() / 3U)) {
     return;
   }
   const QMatrix4x4 mvp = camera_.projection_matrix() * camera_.view_matrix();
   std::vector<std::size_t> indices;
   SelectionGeometry geometry;
   geometry.rule_type = "remove_box";
-  for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
-    const float z = cloud_.xyz[i * 3U + 2U];
+  for (std::size_t i = 0; i < (xyz.size() / 3U); ++i) {
+    const float z = xyz[i * 3U + 2U];
     if (!passes_z_window(z)) continue;
     const auto screen = project(i, mvp);
     if (!screen || !box.contains(*screen)) continue;
-    if (selection_manager_->statuses()[i] == PointStatus::DELETED) continue;
+    if (!visible_for_selection(i)) continue;
     indices.push_back(i);
-    grow_box(geometry.box, Eigen::Vector3f(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U], z));
+    grow_box(geometry.box, Eigen::Vector3f(xyz[i * 3U], xyz[i * 3U + 1U], z));
   }
   if (z_window_enabled_ && geometry.box.valid) {
     geometry.box.min.z() = static_cast<float>(z_window_min_);
     geometry.box.max.z() = static_cast<float>(z_window_max_);
   }
-  selection_manager_->select_points(indices, geometry);
+  manager->select_points(indices, geometry);
   mark_edit_state_dirty();
 }
 
 void PointCloudViewer::rebuild_selection_box_from_points() {
-  if (!selection_manager_ || selection_manager_->statuses().size() != cloud_.point_count()) return;
+  auto *manager = active_selection_manager();
+  const auto &xyz = active_xyz();
+  if (!manager || manager->statuses().size() != (xyz.size() / 3U)) return;
   SelectionGeometry geometry;
   geometry.rule_type = "remove_box";
-  const auto &statuses = selection_manager_->statuses();
+  const auto &statuses = manager->statuses();
   for (std::size_t i = 0; i < statuses.size(); ++i) {
     if (statuses[i] != PointStatus::SELECTED) continue;
-    grow_box(geometry.box, Eigen::Vector3f(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U],
-                                           cloud_.xyz[i * 3U + 2U]));
+    grow_box(geometry.box, Eigen::Vector3f(xyz[i * 3U], xyz[i * 3U + 1U],
+                                           xyz[i * 3U + 2U]));
   }
-  selection_manager_->set_selection_geometry(geometry);
+  manager->set_selection_geometry(geometry);
   mark_edit_state_dirty();
 }
 
@@ -690,8 +965,10 @@ void PointCloudViewer::finish_polygon_selection() {
 }
 
 void PointCloudViewer::select_screen_polygon(const QPolygon &polygon) {
-  if (!selection_manager_ || polygon.size() < 3 || cloud_.xyz.empty() ||
-      selection_manager_->statuses().size() != cloud_.point_count()) {
+  auto *manager = active_selection_manager();
+  const auto &xyz = active_xyz();
+  if (!manager || polygon.size() < 3 || xyz.empty() ||
+      manager->statuses().size() != (xyz.size() / 3U)) {
     return;
   }
   const QMatrix4x4 mvp = camera_.projection_matrix() * camera_.view_matrix();
@@ -702,7 +979,7 @@ void PointCloudViewer::select_screen_polygon(const QPolygon &polygon) {
   // height so the rule is reproducible outside this camera pose. This is
   // exact for the top view and an approximation for oblique views; the
   // exported rule therefore also carries the measured point AABB.
-  const float ground_z = cloud_.min_bound.z();
+  const float ground_z = (confidence_mode() ? confidence_min_bound_ : cloud_.min_bound).z();
   bool footprint_ok = true;
   for (const QPoint &vertex : polygon) {
     const auto hit = unproject_to_ground(vertex, ground_z);
@@ -712,14 +989,14 @@ void PointCloudViewer::select_screen_polygon(const QPolygon &polygon) {
     }
     geometry.polygon_xy.emplace_back(hit->x(), hit->y());
   }
-  for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
-    const float z = cloud_.xyz[i * 3U + 2U];
+  for (std::size_t i = 0; i < (xyz.size() / 3U); ++i) {
+    const float z = xyz[i * 3U + 2U];
     if (!passes_z_window(z)) continue;
     const auto screen = project(i, mvp);
     if (!screen || !polygon.containsPoint(*screen, Qt::OddEvenFill)) continue;
-    if (selection_manager_->statuses()[i] == PointStatus::DELETED) continue;
+    if (!visible_for_selection(i)) continue;
     indices.push_back(i);
-    grow_box(geometry.box, Eigen::Vector3f(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U], z));
+    grow_box(geometry.box, Eigen::Vector3f(xyz[i * 3U], xyz[i * 3U + 1U], z));
   }
   if (!footprint_ok || geometry.polygon_xy.size() < 3U) {
     geometry.rule_type = "remove_box";
@@ -731,13 +1008,15 @@ void PointCloudViewer::select_screen_polygon(const QPolygon &polygon) {
     geometry.z_max = z_window_enabled_ ? z_window_max_
                                        : (geometry.box.valid ? geometry.box.max.z() : 0.0);
   }
-  selection_manager_->select_points(indices, geometry);
+  manager->select_points(indices, geometry);
   mark_edit_state_dirty();
 }
 
 void PointCloudViewer::select_height_band(double z_min, double z_max) {
-  if (!selection_manager_ || cloud_.xyz.empty() ||
-      selection_manager_->statuses().size() != cloud_.point_count()) {
+  auto *manager = active_selection_manager();
+  const auto &xyz = active_xyz();
+  if (!manager || xyz.empty() ||
+      manager->statuses().size() != (xyz.size() / 3U)) {
     return;
   }
   const double low = std::min(z_min, z_max);
@@ -748,32 +1027,34 @@ void PointCloudViewer::select_height_band(double z_min, double z_max) {
   geometry.z_min = low;
   geometry.z_max = high;
   geometry.has_z_range = true;
-  geometry.box.min = cloud_.min_bound;
-  geometry.box.max = cloud_.max_bound;
+  geometry.box.min = (confidence_mode() ? confidence_min_bound_ : cloud_.min_bound);
+  geometry.box.max = (confidence_mode() ? confidence_max_bound_ : cloud_.max_bound);
   geometry.box.min.z() = static_cast<float>(low);
   geometry.box.max.z() = static_cast<float>(high);
   geometry.box.valid = true;
-  for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
-    const float z = cloud_.xyz[i * 3U + 2U];
+  for (std::size_t i = 0; i < (xyz.size() / 3U); ++i) {
+    const float z = xyz[i * 3U + 2U];
     if (z < low || z > high) continue;
-    if (selection_manager_->statuses()[i] == PointStatus::DELETED) continue;
+    if (!visible_for_selection(i)) continue;
     indices.push_back(i);
   }
-  selection_manager_->select_points(indices, geometry);
+  manager->select_points(indices, geometry);
   mark_edit_state_dirty();
 }
 
 void PointCloudViewer::select_sphere_at(const QPoint &screen, double radius_m) {
-  if (!selection_manager_ || cloud_.xyz.empty() || radius_m <= 0.0 ||
-      selection_manager_->statuses().size() != cloud_.point_count()) {
+  auto *manager = active_selection_manager();
+  const auto &xyz = active_xyz();
+  if (!manager || xyz.empty() || radius_m <= 0.0 ||
+      manager->statuses().size() != (xyz.size() / 3U)) {
     return;
   }
   // Pick the nearest visible point under the cursor as the sphere centre.
   const QMatrix4x4 mvp = camera_.projection_matrix() * camera_.view_matrix();
   std::optional<std::size_t> best;
   int best_distance = 12 * 12;
-  for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
-    if (selection_manager_->statuses()[i] == PointStatus::DELETED) continue;
+  for (std::size_t i = 0; i < (xyz.size() / 3U); ++i) {
+    if (!visible_for_selection(i)) continue;
     const auto projected = project(i, mvp);
     if (!projected) continue;
     const QPoint delta = *projected - screen;
@@ -784,8 +1065,8 @@ void PointCloudViewer::select_sphere_at(const QPoint &screen, double radius_m) {
     }
   }
   if (!best) return;
-  const Eigen::Vector3f center(cloud_.xyz[*best * 3U], cloud_.xyz[*best * 3U + 1U],
-                               cloud_.xyz[*best * 3U + 2U]);
+  const Eigen::Vector3f center(xyz[*best * 3U], xyz[*best * 3U + 1U],
+                               xyz[*best * 3U + 2U]);
   const float radius = static_cast<float>(radius_m);
   std::vector<std::size_t> indices;
   SelectionGeometry geometry;
@@ -795,13 +1076,13 @@ void PointCloudViewer::select_sphere_at(const QPoint &screen, double radius_m) {
   geometry.box.min = (center.array() - radius).matrix();
   geometry.box.max = (center.array() + radius).matrix();
   geometry.box.valid = true;
-  for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
-    if (selection_manager_->statuses()[i] == PointStatus::DELETED) continue;
-    const Eigen::Vector3f point(cloud_.xyz[i * 3U], cloud_.xyz[i * 3U + 1U],
-                                cloud_.xyz[i * 3U + 2U]);
+  for (std::size_t i = 0; i < (xyz.size() / 3U); ++i) {
+    if (!visible_for_selection(i)) continue;
+    const Eigen::Vector3f point(xyz[i * 3U], xyz[i * 3U + 1U],
+                                xyz[i * 3U + 2U]);
     if ((point - center).squaredNorm() <= radius * radius) indices.push_back(i);
   }
-  selection_manager_->select_points(indices, geometry);
+  manager->select_points(indices, geometry);
   mark_edit_state_dirty();
 }
 

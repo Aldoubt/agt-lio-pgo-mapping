@@ -39,6 +39,7 @@ public:
   // A mapping package directory (map.pcd + manifest.yaml ...) or a v3 map
   // package directory (localization/global_map.pcd + navigation/map.yaml).
   bool open_mapping_package(const QString &directory, QString *error = nullptr);
+  bool open_spatial_confidence(const QString &directory, QString *error = nullptr);
   bool open_occupancy_map(const QString &path, QString *error = nullptr);
   bool open_session(const QString &session_file, QString *error = nullptr);
   // Lightweight post-mapping review: keep the PCD as provenance, but load
@@ -52,6 +53,8 @@ protected:
 private slots:
   void open_pcd_dialog();
   void open_mapping_package_dialog();
+  void open_spatial_confidence_dialog();
+  void inspect_confidence_voxel(std::size_t index);
   void open_occupancy_map_dialog();
   void open_session_dialog();
   void save_view_dialog();
@@ -78,7 +81,6 @@ private slots:
   void set_occupancy_mode(OccupancyInteractionMode mode);
   void toggle_axis(bool checked);
   void toggle_background(bool checked);
-  void toggle_height_coloring(bool checked);
   void show_controls();
   void show_workflow_help();
   void show_stats(const QString &text);
@@ -97,6 +99,9 @@ private:
 
   void create_actions();
   void create_workflow_dock();
+  void create_confidence_dock();
+  void clear_confidence_view();
+  void set_point_color_mode(PointColorMode mode);
   void load_config(const QString &path);
   void apply_erase_rectangle(double min_x, double min_y, double max_x, double max_y);
   void apply_obstacle_line(double start_x, double start_y, double end_x, double end_y,
@@ -124,6 +129,9 @@ private:
   QToolBar *toolbar_3d_ = nullptr;
   QToolBar *occupancy_toolbar_ = nullptr;
   QDockWidget *workflow_dock_ = nullptr;
+  QDockWidget *confidence_dock_ = nullptr;
+  QLabel *confidence_details_label_ = nullptr;
+  QLabel *confidence_status_label_ = nullptr;
   WorkflowPanel *workflow_panel_ = nullptr;
   QComboBox *selection_tool_combo_ = nullptr;
   QCheckBox *z_window_check_ = nullptr;
@@ -135,9 +143,15 @@ private:
   QAction *show_axis_action_ = nullptr;
   QAction *dark_background_action_ = nullptr;
   QAction *height_coloring_action_ = nullptr;
+  QAction *solid_coloring_action_ = nullptr;
+  QAction *show_3d_action_ = nullptr;
+  QAction *show_2d_action_ = nullptr;
+  QAction *stable_only_action_ = nullptr;
+  QVector<QAction *> confidence_color_actions_;
   QAction *mode_navigate_action_ = nullptr;
   QAction *mode_select_action_ = nullptr;
   QAction *mode_delete_action_ = nullptr;
+  QAction *delete_points_action_ = nullptr;
   QLabel *edit_state_label_ = nullptr;
   QMenu *view_menu_ = nullptr;
   QMenu *tools_menu_ = nullptr;
@@ -145,6 +159,9 @@ private:
 
   RefinementModel refinement_model_;
   SelectionManager selection_manager_;
+  SpatialConfidenceModel confidence_model_;
+  SelectionManager confidence_selection_manager_;
+  QString confidence_derivative_dir_;
   WorkflowSession session_;
   ExternalToolRunner tool_runner_;
   std::function<void(const ToolResult &)> tool_callback_;

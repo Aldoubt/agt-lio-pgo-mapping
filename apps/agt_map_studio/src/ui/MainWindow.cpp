@@ -1,6 +1,7 @@
 #include "ui/MainWindow.hpp"
 
 #include "io/PCDLoader.hpp"
+#include "confidence/SpatialConfidenceLoader.hpp"
 #include "occupancy/MapYamlLoader.hpp"
 #include "occupancy/commands/DrawObstacleCommand.hpp"
 #include "occupancy/commands/EraseRectangleCommand.hpp"
@@ -15,6 +16,7 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
@@ -33,7 +35,10 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPixmap>
+#include <QProcess>
 #include <QProcessEnvironment>
+#include <QScrollArea>
+#include <QSignalBlocker>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QUrl>
@@ -41,6 +46,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <exception>
 #include <fstream>
 #include <limits>
@@ -58,6 +64,33 @@ constexpr const char *kRelocTool = "build_relocalization_assets";
 constexpr const char *kConverterPackage = "agt_map_converter";
 constexpr const char *kManagerPackage = "agt_map_manager";
 
+bool validate_mapping_parent(const QString &directory, QString *error) {
+  // Same validator invoked by agt_spatial_map_export. No shell, no write,
+  // fail closed on non-PGO / incomplete / invalid-checksum packages.
+  QProcess process;
+  process.setProgram(QStringLiteral("python3"));
+  process.setArguments({QStringLiteral("-m"),
+                        QStringLiteral("agt_mapping_artifacts.validation"), directory});
+  process.start();
+  if (!process.waitForStarted(5000)) {
+    if (error) *error = QStringLiteral("Could not start mapping package validator: %1")
+                            .arg(process.errorString());
+    return false;
+  }
+  if (!process.waitForFinished(180000)) {
+    process.kill();
+    process.waitForFinished(5000);
+    if (error) *error = QStringLiteral("Mapping package validation timed out");
+    return false;
+  }
+  if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+    if (error) *error = QStringLiteral("Mapping package / PGO / checksum validation failed: %1")
+                            .arg(QString::fromUtf8(process.readAllStandardError()).left(1000));
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 MainWindow::MainWindow(const QString &config_path, QWidget *parent)
@@ -71,19 +104,24 @@ MainWindow::MainWindow(const QString &config_path, QWidget *parent)
   view_stack_->setCurrentWidget(viewer_);
   setCentralWidget(view_stack_);
   viewer_->set_selection_manager(&selection_manager_);
+  viewer_->set_confidence_selection_manager(&confidence_selection_manager_);
   occupancy_viewer_->set_refinement_model(&refinement_model_);
   default_map_root_ = QProcessEnvironment::systemEnvironment().value(
       QStringLiteral("AGT_MAP_ROOT"), QDir::home().filePath(QStringLiteral("ros2_ws/maps")));
   create_actions();
   create_workflow_dock();
+  create_confidence_dock();
   load_config(config_path);
   session_.publish_target().map_root = default_map_root_;
   workflow_panel_->set_publish_target(session_.publish_target());
 
   connect(viewer_, &PointCloudViewer::stats_changed, this, &MainWindow::show_stats);
+  connect(viewer_, &PointCloudViewer::confidence_voxel_selected, this,
+          &MainWindow::inspect_confidence_voxel);
   connect(viewer_, &PointCloudViewer::delete_requested_outside_delete_mode, this, [this]() {
-    statusBar()->showMessage(
-        QStringLiteral("Switch to Delete mode (toolbar or X) before pressing Delete"), 4000);
+    statusBar()->showMessage(viewer_->showing_confidence()
+        ? QStringLiteral("Confidence voxels cannot be deleted; use override intent in the editor")
+        : QStringLiteral("Switch to Delete mode (toolbar or X) before pressing Delete"), 4000);
   });
   connect(occupancy_viewer_, &OccupancyViewer::status_changed, this, &MainWindow::show_stats);
   connect(occupancy_viewer_, &OccupancyViewer::erase_rectangle_requested, this,
@@ -123,6 +161,10 @@ void MainWindow::create_actions() {
   auto *open_package_action = new QAction(QStringLiteral("Open Mapping / Map Package..."), this);
   open_package_action->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
   connect(open_package_action, &QAction::triggered, this, &MainWindow::open_mapping_package_dialog);
+  auto *open_confidence_action = new QAction(
+      QStringLiteral("Open Spatial Confidence Derivative (read-only)..."), this);
+  connect(open_confidence_action, &QAction::triggered, this,
+          &MainWindow::open_spatial_confidence_dialog);
   auto *open_occupancy_action = new QAction(QStringLiteral("Open Occupancy Map (map.yaml)..."), this);
   connect(open_occupancy_action, &QAction::triggered, this, &MainWindow::open_occupancy_map_dialog);
   auto *open_session_action = new QAction(QStringLiteral("Open Studio Session..."), this);
@@ -161,6 +203,7 @@ void MainWindow::create_actions() {
   auto *file_menu = menuBar()->addMenu(QStringLiteral("File"));
   file_menu->addAction(open_action);
   file_menu->addAction(open_package_action);
+  file_menu->addAction(open_confidence_action);
   file_menu->addAction(open_occupancy_action);
   file_menu->addSeparator();
   file_menu->addAction(open_session_action);
@@ -185,18 +228,20 @@ void MainWindow::create_actions() {
   auto *redo_action = new QAction(QStringLiteral("Redo"), this);
   redo_action->setShortcuts({QKeySequence::Redo, QKeySequence(Qt::CTRL | Qt::Key_Y)});
   connect(redo_action, &QAction::triggered, this, &MainWindow::redo_edit);
-  auto *delete_action = new QAction(QStringLiteral("Delete Selected Points"), this);
-  delete_action->setShortcut(Qt::Key_Delete);
-  connect(delete_action, &QAction::triggered, this, &MainWindow::delete_selected);
+  delete_points_action_ = new QAction(QStringLiteral("Delete Selected Points"), this);
+  delete_points_action_->setShortcut(Qt::Key_Delete);
+  connect(delete_points_action_, &QAction::triggered, this, &MainWindow::delete_selected);
   auto *invert_action = new QAction(QStringLiteral("Invert Selection"), this);
   invert_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_I));
   connect(invert_action, &QAction::triggered, this, [this]() {
-    selection_manager_.invert_selection();
+    (viewer_->showing_confidence() ? confidence_selection_manager_
+                                   : selection_manager_).invert_selection();
     viewer_->rebuild_selection_box_from_points();
   });
   auto *clear_selection_action = new QAction(QStringLiteral("Clear Selection"), this);
   connect(clear_selection_action, &QAction::triggered, this, [this]() {
-    selection_manager_.clear_selection();
+    (viewer_->showing_confidence() ? confidence_selection_manager_
+                                   : selection_manager_).clear_selection();
     viewer_->cancel_pending_polygon();
     viewer_->mark_edit_state_dirty();
   });
@@ -214,7 +259,8 @@ void MainWindow::create_actions() {
   isolate_selection_action_->setCheckable(true);
   isolate_selection_action_->setShortcut(Qt::Key_I);
   connect(isolate_selection_action_, &QAction::toggled, this, [this](bool checked) {
-    selection_manager_.set_isolate_selected(checked);
+    (viewer_->showing_confidence() ? confidence_selection_manager_
+                                   : selection_manager_).set_isolate_selected(checked);
     viewer_->mark_edit_state_dirty();
   });
 
@@ -222,7 +268,7 @@ void MainWindow::create_actions() {
   edit_menu->addAction(undo_action);
   edit_menu->addAction(redo_action);
   edit_menu->addSeparator();
-  edit_menu->addAction(delete_action);
+  edit_menu->addAction(delete_points_action_);
   edit_menu->addAction(invert_action);
   edit_menu->addAction(clear_selection_action);
   edit_menu->addAction(height_band_action);
@@ -253,7 +299,45 @@ void MainWindow::create_actions() {
   height_coloring_action_ = new QAction(QStringLiteral("Color by Z Height"), this);
   height_coloring_action_->setCheckable(true);
   height_coloring_action_->setChecked(true);
-  connect(height_coloring_action_, &QAction::toggled, this, &MainWindow::toggle_height_coloring);
+  auto *color_group = new QActionGroup(this);
+  color_group->setExclusive(true);
+  color_group->addAction(height_coloring_action_);
+  connect(height_coloring_action_, &QAction::triggered, this,
+          [this]() { set_point_color_mode(PointColorMode::Height); });
+  solid_coloring_action_ = new QAction(QStringLiteral("Solid Point Color"), this);
+  solid_coloring_action_->setCheckable(true);
+  color_group->addAction(solid_coloring_action_);
+  connect(solid_coloring_action_, &QAction::triggered, this,
+          [this]() { set_point_color_mode(PointColorMode::Solid); });
+  const struct { const char *label; PointColorMode mode; } confidence_colors[] = {
+      {"Auto Confidence (single-session)", PointColorMode::AutoConfidence},
+      {"Final Confidence (review preview)", PointColorMode::FinalConfidence},
+      {"Observation Score (not probability)", PointColorMode::ObservationScore},
+      {"Persistence Evidence (not probability)", PointColorMode::PersistenceScore},
+  };
+  for (const auto &entry : confidence_colors) {
+    auto *action = new QAction(QString::fromLatin1(entry.label), this);
+    action->setCheckable(true);
+    action->setEnabled(false);
+    color_group->addAction(action);
+    confidence_color_actions_.push_back(action);
+    const PointColorMode mode = entry.mode;
+    connect(action, &QAction::triggered, this, [this, mode]() {
+      set_point_color_mode(mode);
+      show_3d_view();
+      if (confidence_dock_) confidence_dock_->show();
+      inspect_confidence_voxel(confidence_selection_manager_.selected_indices().empty()
+          ? static_cast<std::size_t>(-1)
+          : confidence_selection_manager_.selected_indices().front());
+    });
+  }
+  stable_only_action_ = new QAction(QStringLiteral("Show Stable Preview Only"), this);
+  stable_only_action_->setCheckable(true);
+  stable_only_action_->setEnabled(false);
+  stable_only_action_->setToolTip(QStringLiteral(
+      "Preview from final_confidence >= stable_threshold, excluding FORCE_LOW and IGNORE; "
+      "formal stable_map.pcd is only rebuilt by the spatial core"));
+  connect(stable_only_action_, &QAction::toggled, viewer_, &PointCloudViewer::set_stable_only);
   auto *increase_point_action = new QAction(QStringLiteral("Increase Point Size"), this);
   increase_point_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Plus));
   connect(increase_point_action, &QAction::triggered, this, [this]() { viewer_->adjust_point_size(0.5F); });
@@ -267,19 +351,19 @@ void MainWindow::create_actions() {
   view_menu_ = view_menu;
   auto *view_group = new QActionGroup(this);
   view_group->setExclusive(true);
-  auto *show_3d_action = new QAction(QStringLiteral("3D Point Cloud"), this);
-  auto *show_2d_action = new QAction(QStringLiteral("2D Navigation Map"), this);
-  for (auto *action : {show_3d_action, show_2d_action}) {
+  show_3d_action_ = new QAction(QStringLiteral("3D Point Cloud"), this);
+  show_2d_action_ = new QAction(QStringLiteral("2D Navigation Map"), this);
+  for (auto *action : {show_3d_action_, show_2d_action_}) {
     action->setCheckable(true);
     view_group->addAction(action);
   }
-  show_3d_action->setChecked(true);
-  show_3d_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
-  show_2d_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
-  connect(show_3d_action, &QAction::triggered, this, &MainWindow::show_3d_view);
-  connect(show_2d_action, &QAction::triggered, this, &MainWindow::show_2d_view);
-  view_menu->addAction(show_3d_action);
-  view_menu->addAction(show_2d_action);
+  show_3d_action_->setChecked(true);
+  show_3d_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
+  show_2d_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
+  connect(show_3d_action_, &QAction::triggered, this, &MainWindow::show_3d_view);
+  connect(show_2d_action_, &QAction::triggered, this, &MainWindow::show_2d_view);
+  view_menu->addAction(show_3d_action_);
+  view_menu->addAction(show_2d_action_);
   view_menu->addSeparator();
   view_menu->addAction(reset_action);
   view_menu->addAction(isometric_action);
@@ -289,6 +373,10 @@ void MainWindow::create_actions() {
   view_menu->addAction(show_axis_action_);
   view_menu->addAction(dark_background_action_);
   view_menu->addAction(height_coloring_action_);
+  view_menu->addAction(solid_coloring_action_);
+  view_menu->addSeparator();
+  for (auto *action : confidence_color_actions_) view_menu->addAction(action);
+  view_menu->addAction(stable_only_action_);
   auto *point_menu = view_menu->addMenu(QStringLiteral("Point Size"));
   point_menu->addAction(increase_point_action);
   point_menu->addAction(decrease_point_action);
@@ -395,7 +483,7 @@ void MainWindow::create_actions() {
   toolbar_3d_->addSeparator();
   toolbar_3d_->addAction(hide_deleted_action_);
   toolbar_3d_->addAction(isolate_selection_action_);
-  toolbar_3d_->addAction(delete_action);
+  toolbar_3d_->addAction(delete_points_action_);
 
   // 2D toolbar
   occupancy_toolbar_ = addToolBar(QStringLiteral("2D Edit"));
@@ -483,6 +571,126 @@ void MainWindow::create_workflow_dock() {
   });
 }
 
+void MainWindow::create_confidence_dock() {
+  confidence_dock_ = new QDockWidget(QStringLiteral("Spatial Confidence Evidence"), this);
+  confidence_dock_->setObjectName(QStringLiteral("spatial_confidence_dock"));
+  confidence_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+  auto *scroll = new QScrollArea(confidence_dock_);
+  scroll->setWidgetResizable(true);
+  auto *panel = new QWidget(scroll);
+  auto *layout = new QVBoxLayout(panel);
+  confidence_status_label_ = new QLabel(panel);
+  confidence_status_label_->setText(QStringLiteral(
+      "Single-session observation evidence only. NOT long-term stability "
+      "probability. Geometry score is deferred; LOW_GEOMETRY is a manual "
+      "reason, not a semantic classifier. No online update or navigation use."));
+  confidence_status_label_->setWordWrap(true);
+  confidence_status_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  layout->addWidget(confidence_status_label_);
+  confidence_details_label_ = new QLabel(panel);
+  confidence_details_label_->setWordWrap(true);
+  confidence_details_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  layout->addWidget(confidence_details_label_);
+  layout->addStretch();
+  scroll->setWidget(panel);
+  confidence_dock_->setWidget(scroll);
+  addDockWidget(Qt::RightDockWidgetArea, confidence_dock_);
+  confidence_dock_->setMinimumWidth(360);
+  confidence_dock_->hide();
+  if (view_menu_) {
+    auto *toggle = confidence_dock_->toggleViewAction();
+    toggle->setText(QStringLiteral("Spatial Confidence Evidence Panel"));
+    view_menu_->addAction(toggle);
+  }
+}
+
+void MainWindow::set_point_color_mode(PointColorMode mode) {
+  const bool confidence = mode == PointColorMode::AutoConfidence ||
+                          mode == PointColorMode::FinalConfidence ||
+                          mode == PointColorMode::ObservationScore ||
+                          mode == PointColorMode::PersistenceScore;
+  if (confidence && confidence_model_.empty()) return;
+  if (confidence && viewer_->mode() == InteractionMode::Delete) set_mode_select();
+  viewer_->set_color_mode(mode);
+  mode_delete_action_->setEnabled(!confidence);
+  delete_points_action_->setEnabled(!confidence);
+  hide_deleted_action_->setEnabled(!confidence);
+  {
+    const QSignalBlocker blocker(isolate_selection_action_);
+    isolate_selection_action_->setChecked((confidence ? confidence_selection_manager_
+                                                      : selection_manager_).isolate_selected());
+  }
+}
+
+void MainWindow::clear_confidence_view() {
+  if (confidence_model_.empty() && confidence_derivative_dir_.isEmpty()) return;
+  set_point_color_mode(PointColorMode::Height);
+  height_coloring_action_->setChecked(true);
+  viewer_->set_confidence_model(nullptr);
+  confidence_model_.clear();
+  confidence_derivative_dir_.clear();
+  confidence_selection_manager_.reset(0);
+  if (stable_only_action_) {
+    stable_only_action_->setChecked(false);
+    stable_only_action_->setEnabled(false);
+  }
+  for (auto *action : confidence_color_actions_) action->setEnabled(false);
+  mode_delete_action_->setEnabled(true);
+  delete_points_action_->setEnabled(true);
+  hide_deleted_action_->setEnabled(true);
+  if (confidence_dock_) confidence_dock_->hide();
+}
+
+void MainWindow::inspect_confidence_voxel(std::size_t index) {
+  if (confidence_model_.empty() || !confidence_details_label_) return;
+  const auto &info = confidence_model_.info();
+  const QString header = QStringLiteral(
+      "Verified derivative: %1\nSource PGO package: %2\n"
+      "Evidence voxels: %3\nKeyframes: %4\n"
+      "Stable threshold: %5\nStable preview: %6 (not a formal rebuild)\n\n")
+      .arg(confidence_derivative_dir_)
+      .arg(QString::fromStdString(info.source_package.string()))
+      .arg(static_cast<qulonglong>(confidence_model_.voxels().size()))
+      .arg(static_cast<qulonglong>(info.source_keyframes))
+      .arg(info.stable_threshold, 0, 'f', 3)
+      .arg(static_cast<qulonglong>(confidence_model_.stable_preview_count()));
+  if (index >= confidence_model_.voxels().size()) {
+    confidence_details_label_->setText(header + QStringLiteral(
+        "Ctrl+click a voxel center, or select a region using the existing "
+        "Rectangle / Polygon / Sphere tools, to inspect its evidence. "
+        "Raw PCD point indices are never voxel indices."));
+    return;
+  }
+  const auto &v = confidence_model_.voxels()[index];
+  confidence_details_label_->setText(header + QStringLiteral(
+      "Voxel [%1, %2, %3]  (voxel index %4)\n"
+      "Center [x, y, z]: %5, %6, %7 m\n"
+      "Source points: %8\nObserved keyframes: %9\n"
+      "First / last / span: %10 / %11 / %12\n"
+      "Observation score: %13\nPersistence evidence: %14\n"
+      "Geometry score: %15 (deferred)\n"
+      "Auto confidence: %16 (single-session evidence)\n"
+      "Override mode: %17\nManual value: %18\n"
+      "Final confidence: %19 (preview from original derivative)\n"
+      "Stable preview: %20")
+      .arg(v.key.x).arg(v.key.y).arg(v.key.z)
+      .arg(static_cast<qulonglong>(index))
+      .arg(v.center.x(), 0, 'f', 3).arg(v.center.y(), 0, 'f', 3)
+      .arg(v.center.z(), 0, 'f', 3)
+      .arg(v.point_count).arg(v.observed_keyframes)
+      .arg(v.first_keyframe).arg(v.last_keyframe).arg(v.keyframe_span)
+      .arg(v.observation_score, 0, 'f', 4)
+      .arg(v.persistence_score, 0, 'f', 4)
+      .arg(v.geometry_score, 0, 'f', 4)
+      .arg(v.auto_confidence, 0, 'f', 4)
+      .arg(QString::fromLatin1(agt_spatial_map_core::override_mode_name(v.override_mode)))
+      .arg(v.has_manual_value ? QString::number(v.manual_value, 'f', 4)
+                              : QStringLiteral("none"))
+      .arg(v.final_confidence, 0, 'f', 4)
+      .arg(confidence_model_.is_stable_preview(index) ? QStringLiteral("yes")
+                                                     : QStringLiteral("no")));
+}
+
 void MainWindow::load_config(const QString &path) {
   if (path.isEmpty()) return;
   try {
@@ -498,7 +706,9 @@ void MainWindow::load_config(const QString &path) {
       dark_background_action_->setChecked(background == "dark");
       show_axis_action_->setChecked(viewer["show_axis"].as<bool>(true));
       const std::string color_mode = viewer["color_mode"].as<std::string>("height");
-      height_coloring_action_->setChecked(color_mode == "height");
+      const bool height = color_mode == "height";
+      (height ? height_coloring_action_ : solid_coloring_action_)->setChecked(true);
+      viewer_->set_height_coloring(height);
     }
     const YAML::Node workflow = root["workflow"];
     if (workflow) {
@@ -528,6 +738,7 @@ void MainWindow::load_config(const QString &path) {
 // Sources
 
 void MainWindow::set_source(const QString &pcd_path, const QString &package_dir) {
+  clear_confidence_view();
   session_.set_work_dir(QString());
   session_.reset(pcd_path, package_dir);
   QString base;
@@ -610,6 +821,50 @@ bool MainWindow::open_mapping_package(const QString &directory, QString *error) 
                             "package (localization/global_map.pcd)").arg(directory);
   }
   return false;
+}
+
+bool MainWindow::open_spatial_confidence(const QString &directory, QString *error) {
+  if (!session_.source_is_mapping_package()) {
+    if (error) *error = QStringLiteral(
+        "Open its original optimized PGO mapping package first (map.pcd + manifest.yaml); "
+        "navigation releases and arbitrary PCDs have no keyframe evidence.");
+    return false;
+  }
+  const QString parent = session_.source_package_dir();
+  statusBar()->showMessage(QStringLiteral("Validating mapping parent and confidence checksums..."));
+  QApplication::setOverrideCursor(Qt::WaitCursor);
+  QString validation_error;
+  const bool validated = validate_mapping_parent(parent, &validation_error);
+  SpatialConfidenceModel loaded;
+  std::string loader_error;
+  const bool loaded_ok = validated && SpatialConfidenceLoader::load(
+      directory.toStdString(), parent.toStdString(), &loaded, &loader_error);
+  QApplication::restoreOverrideCursor();
+  if (!validated || !loaded_ok) {
+    if (error) *error = validated ? QString::fromStdString(loader_error) : validation_error;
+    return false;  // previous confidence model and view remain intact
+  }
+  // Raw PCD and voxel representatives have disjoint indices and selection
+  // histories. No spatial core evidence or source PCD value is mutated here.
+  if (viewer_->mode() == InteractionMode::Delete) set_mode_select();
+  set_point_color_mode(PointColorMode::Height);
+  viewer_->set_confidence_model(nullptr);
+  confidence_model_ = std::move(loaded);
+  confidence_derivative_dir_ = QFileInfo(directory).canonicalFilePath();
+  confidence_selection_manager_.reset(confidence_model_.voxels().size());
+  viewer_->set_confidence_model(&confidence_model_);
+  stable_only_action_->setChecked(false);
+  viewer_->set_stable_only(false);
+  for (auto *action : confidence_color_actions_) action->setEnabled(true);
+  stable_only_action_->setEnabled(true);
+  confidence_color_actions_.front()->setChecked(true);
+  set_point_color_mode(PointColorMode::AutoConfidence);
+  show_3d_view();
+  confidence_dock_->show();
+  inspect_confidence_voxel(static_cast<std::size_t>(-1));
+  statusBar()->showMessage(QStringLiteral("Verified %1 confidence voxels (single-session evidence)")
+                               .arg(static_cast<qulonglong>(confidence_model_.voxels().size())), 8000);
+  return true;
 }
 
 bool MainWindow::load_navigation_dir_into_2d(const QString &directory, QString *error) {
@@ -771,6 +1026,22 @@ void MainWindow::open_mapping_package_dialog() {
   QString error;
   if (!open_mapping_package(directory, &error)) {
     QMessageBox::critical(this, QStringLiteral("Open package failed"), error);
+  }
+}
+
+void MainWindow::open_spatial_confidence_dialog() {
+  if (!session_.source_is_mapping_package()) {
+    QMessageBox::warning(this, QStringLiteral("Open PGO source first"),
+        QStringLiteral("Open the original optimized PGO mapping package before its "
+                       "spatial confidence derivative. A navigation release is not a PGO source."));
+    return;
+  }
+  const QString directory = QFileDialog::getExistingDirectory(
+      this, QStringLiteral("Open spatial confidence derivative (five verified artifacts)"));
+  if (directory.isEmpty()) return;
+  QString error;
+  if (!open_spatial_confidence(directory, &error)) {
+    QMessageBox::critical(this, QStringLiteral("Open confidence derivative failed"), error);
   }
 }
 
@@ -1024,7 +1295,7 @@ void MainWindow::confirm_mapping_review() {
 }
 
 void MainWindow::select_height_band_dialog() {
-  if (!viewer_->has_cloud()) return;
+  if (!viewer_->has_cloud() && !viewer_->has_confidence()) return;
   QDialog dialog(this);
   dialog.setWindowTitle(QStringLiteral("Select height band"));
   auto *form = new QFormLayout(&dialog);
@@ -1034,12 +1305,21 @@ void MainWindow::select_height_band_dialog() {
     spin->setRange(-1000.0, 1000.0);
     spin->setDecimals(2);
   }
-  min_spin->setValue(viewer_->cloud().min_bound.z());
-  max_spin->setValue(viewer_->cloud().min_bound.z() + 0.2);
+  float min_z = viewer_->cloud().min_bound.z();
+  if (viewer_->showing_confidence()) {
+    min_z = std::numeric_limits<float>::infinity();
+    for (const auto &voxel : confidence_model_.voxels()) {
+      min_z = std::min(min_z, voxel.center.z());
+    }
+  }
+  min_spin->setValue(min_z);
+  max_spin->setValue(min_z + 0.2);
   form->addRow(QStringLiteral("Z min (m)"), min_spin);
   form->addRow(QStringLiteral("Z max (m)"), max_spin);
-  auto *note = new QLabel(QStringLiteral("Selects every visible point with min <= z <= max\n"
-                                         "(e.g. ceiling band or ground noise). Then press Delete in Delete mode."), &dialog);
+  auto *note = new QLabel(viewer_->showing_confidence()
+      ? QStringLiteral("Selects voxel representatives; Delete is disabled. Inspect or override evidence.")
+      : QStringLiteral("Selects every visible point with min <= z <= max\n"
+                       "(e.g. ceiling band or ground noise). Then press Delete in Delete mode."), &dialog);
   form->addRow(note);
   auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
   form->addRow(buttons);
@@ -1048,8 +1328,12 @@ void MainWindow::select_height_band_dialog() {
   if (dialog.exec() != QDialog::Accepted) return;
   if (viewer_->mode() == InteractionMode::Navigate) set_mode_select();
   viewer_->select_height_band(min_spin->value(), max_spin->value());
-  statusBar()->showMessage(QStringLiteral("Height band selected: %1 points")
-                               .arg(static_cast<qulonglong>(selection_manager_.selected_count())), 5000);
+  statusBar()->showMessage(QStringLiteral("Height band selected: %1 %2")
+                               .arg(static_cast<qulonglong>(viewer_->showing_confidence()
+                                   ? confidence_selection_manager_.selected_count()
+                                   : selection_manager_.selected_count()))
+                               .arg(viewer_->showing_confidence() ? QStringLiteral("voxels")
+                                                                  : QStringLiteral("points")), 5000);
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,6 +1344,8 @@ void MainWindow::reset_camera() { viewer_->reset_camera(); }
 void MainWindow::undo_edit() {
   if (view_stack_->currentWidget() == occupancy_viewer_) {
     if (refinement_model_.undo()) refresh_occupancy_view();
+  } else if (viewer_->showing_confidence()) {
+    statusBar()->showMessage(QStringLiteral("No confidence override edits yet"), 3000);
   } else if (selection_manager_.undo()) {
     viewer_->mark_edit_state_dirty();
     sync_edit_fingerprints();
@@ -1069,6 +1355,8 @@ void MainWindow::undo_edit() {
 void MainWindow::redo_edit() {
   if (view_stack_->currentWidget() == occupancy_viewer_) {
     if (refinement_model_.redo()) refresh_occupancy_view();
+  } else if (viewer_->showing_confidence()) {
+    statusBar()->showMessage(QStringLiteral("No confidence override edits yet"), 3000);
   } else if (selection_manager_.redo()) {
     viewer_->mark_edit_state_dirty();
     sync_edit_fingerprints();
@@ -1077,6 +1365,10 @@ void MainWindow::redo_edit() {
 
 void MainWindow::delete_selected() {
   if (view_stack_->currentWidget() != viewer_) return;
+  if (viewer_->showing_confidence()) {
+    statusBar()->showMessage(QStringLiteral("Voxel deletion is disabled: use manual override intent"), 5000);
+    return;
+  }
   if (viewer_->mode() != InteractionMode::Delete) {
     statusBar()->showMessage(QStringLiteral("Switch to Delete mode (toolbar or X) first"), 3000);
     return;
@@ -1096,6 +1388,11 @@ void MainWindow::set_mode_select() {
   mode_select_action_->setChecked(true);
 }
 void MainWindow::set_mode_delete() {
+  if (viewer_->showing_confidence()) {
+    set_mode_select();
+    statusBar()->showMessage(QStringLiteral("Voxel deletion is disabled: use manual override intent"), 5000);
+    return;
+  }
   viewer_->set_mode(InteractionMode::Delete);
   mode_delete_action_->setChecked(true);
 }
@@ -1105,6 +1402,7 @@ void MainWindow::set_top_view() { viewer_->top_view(); }
 
 void MainWindow::show_3d_view() {
   view_stack_->setCurrentWidget(viewer_);
+  if (show_3d_action_) show_3d_action_->setChecked(true);
   if (occupancy_toolbar_) occupancy_toolbar_->setVisible(false);
   if (toolbar_3d_) toolbar_3d_->setVisible(true);
   statusBar()->showMessage(viewer_->stats_text());
@@ -1112,6 +1410,7 @@ void MainWindow::show_3d_view() {
 
 void MainWindow::show_2d_view() {
   view_stack_->setCurrentWidget(occupancy_viewer_);
+  if (show_2d_action_) show_2d_action_->setChecked(true);
   if (occupancy_toolbar_) occupancy_toolbar_->setVisible(true);
   if (toolbar_3d_) toolbar_3d_->setVisible(false);
   statusBar()->showMessage(refinement_model_.has_map()
@@ -1588,7 +1887,6 @@ void MainWindow::run_publish() {
 
 void MainWindow::toggle_axis(bool checked) { viewer_->set_show_axis(checked); }
 void MainWindow::toggle_background(bool checked) { viewer_->set_dark_background(checked); }
-void MainWindow::toggle_height_coloring(bool checked) { viewer_->set_height_coloring(checked); }
 
 void MainWindow::show_controls() {
   QMessageBox::information(

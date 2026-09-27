@@ -1,5 +1,6 @@
 #pragma once
 
+#include "confidence/SpatialConfidenceModel.hpp"
 #include "io/PCDLoader.hpp"
 #include "selection/SelectionBox.h"
 #include "selection/SelectionManager.h"
@@ -21,10 +22,15 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
 
 namespace agt_map_studio {
 
 enum class InteractionMode { Navigate, Select, Delete };
+enum class PointColorMode {
+  Height, Solid, AutoConfidence, FinalConfidence,
+  ObservationScore, PersistenceScore,
+};
 
 // How a selection is drawn in Select/Delete mode.
 enum class SelectionTool { ScreenRect, PolygonPrism, Sphere };
@@ -43,6 +49,15 @@ public:
   void set_show_axis(bool enabled);
   void set_dark_background(bool enabled);
   void set_height_coloring(bool enabled);
+  void set_color_mode(PointColorMode mode);
+  PointColorMode color_mode() const { return color_mode_; }
+  void set_confidence_model(const SpatialConfidenceModel *model);
+  void set_confidence_selection_manager(SelectionManager *manager);
+  void set_stable_only(bool enabled);
+  bool stable_only() const { return stable_only_; }
+  bool has_confidence() const { return confidence_model_ && !confidence_model_->empty(); }
+  bool showing_confidence() const;
+  void refresh_confidence_preview();  // override or selection changed; GPU dirty, not per-frame
   void adjust_point_size(float delta);
   void set_point_size(float size);
   void set_selection_manager(SelectionManager *manager);
@@ -77,6 +92,7 @@ public:
 signals:
   void stats_changed(const QString &text);
   void delete_requested_outside_delete_mode();
+  void confidence_voxel_selected(std::size_t index);
 
 protected:
   void initializeGL() override;
@@ -96,12 +112,22 @@ private slots:
 private:
   void upload_cloud();
   void upload_statuses();
+  void upload_confidence_cloud();
+  void upload_confidence_statuses();
+  void upload_confidence_colors();
+  bool confidence_mode() const;
+  const std::vector<float> &active_xyz() const;
+  SelectionManager *active_selection_manager() const;
+  void signal_confidence_selection();
+  void emit_stats();
+  void pick_confidence_voxel(const QPoint &screen);
   void draw_axes(const QMatrix4x4 &mvp);
   QString mode_text() const;
   QString tool_text() const;
   std::optional<QPoint> project(std::size_t index, const QMatrix4x4 &mvp) const;
   std::optional<Eigen::Vector3f> unproject_to_ground(const QPoint &screen, float z) const;
   bool passes_z_window(float z) const;
+  bool visible_for_selection(std::size_t index) const;
   void finish_polygon_selection();
 
   LoadedPointCloud cloud_;
@@ -109,6 +135,9 @@ private:
   CameraController camera_;
   QOpenGLBuffer cloud_buffer_;
   QOpenGLBuffer status_buffer_;
+  QOpenGLBuffer confidence_buffer_;
+  QOpenGLBuffer confidence_status_buffer_;
+  QOpenGLBuffer confidence_color_buffer_;
   QOpenGLBuffer axis_buffer_;
   std::unique_ptr<QOpenGLShaderProgram> shader_;
   QTimer timer_;
@@ -118,7 +147,15 @@ private:
   float point_size_ = 2.0F;
   bool show_axis_ = true;
   bool dark_background_ = false;
-  bool height_coloring_ = true;
+  PointColorMode color_mode_ = PointColorMode::Height;
+  const SpatialConfidenceModel *confidence_model_ = nullptr;  // owned by MainWindow
+  SelectionManager *confidence_selection_manager_ = nullptr;
+  Eigen::Vector3f confidence_min_bound_ = Eigen::Vector3f::Zero();
+  Eigen::Vector3f confidence_max_bound_ = Eigen::Vector3f::Zero();
+  bool stable_only_ = false;
+  bool confidence_status_dirty_ = true;
+  bool confidence_colors_dirty_ = true;
+  QString cached_stats_text_;
   bool gl_ready_ = false;
   bool left_drag_ = false;
   bool right_drag_ = false;

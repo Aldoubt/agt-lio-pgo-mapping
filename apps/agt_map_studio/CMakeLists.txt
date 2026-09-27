@@ -32,6 +32,7 @@ add_executable(map_viewer
   src/io/PCDLoader.cpp
   src/confidence/SpatialConfidenceModel.cpp
   src/confidence/SpatialConfidenceLoader.cpp
+  src/confidence/ConfidenceColor.cpp
   src/viewer/CameraController.cpp
   src/viewer/PointCloudViewer.cpp
   src/selection/SelectionBox.cpp
@@ -81,6 +82,10 @@ install(DIRECTORY config
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_confidence_color
+    test/test_confidence_color.cpp src/confidence/ConfidenceColor.cpp)
+  target_include_directories(test_confidence_color PRIVATE src)
+
   ament_add_gtest(test_spatial_confidence_loader
     test/test_spatial_confidence_loader.cpp
     src/confidence/SpatialConfidenceModel.cpp

@@ -33,6 +33,12 @@ int main(int argc, char **argv) {
       QStringLiteral("Open a mapping package or a maps/<id>/<version> map package directory."),
       QStringLiteral("dir"));
   parser.addOption(package_option);
+  const QCommandLineOption confidence_option(
+      QStringLiteral("spatial-confidence"),
+      QStringLiteral("Open a verified Phase 1 confidence derivative after --package "
+                     "(single-session evidence; no production publication)."),
+      QStringLiteral("dir"));
+  parser.addOption(confidence_option);
   const QCommandLineOption session_option(
       {QStringLiteral("s"), QStringLiteral("session")},
       QStringLiteral("Restore a studio_session.yaml."), QStringLiteral("path"));
@@ -110,6 +116,14 @@ int main(int argc, char **argv) {
     if (!window.open_session(QFileInfo(session_path).absoluteFilePath(), &error)) {
       window.show();
       QMessageBox::critical(&window, QStringLiteral("Open session failed"), error);
+    }
+  }
+  const QString confidence_path = parser.value(confidence_option);
+  if (!review_requested && !confidence_path.isEmpty()) {
+    QString error;
+    if (!window.open_spatial_confidence(QFileInfo(confidence_path).absoluteFilePath(), &error)) {
+      window.show();
+      QMessageBox::critical(&window, QStringLiteral("Open spatial confidence failed"), error);
     }
   }
   const QString map_path = parser.value(map_option);
