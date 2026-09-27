@@ -226,6 +226,33 @@ Use unique run IDs and the same SMOKE -> STANDARD sequencing contract as Phase
 predecessor because the benchmark source hash and coverage-sampling settings
 differ.
 
+A local validation run should use a separate overlay, for example:
+
+```bash
+E=~/ros2_ws/experiments/agt_map_localization_phase3c_20260928
+cd ~/ros2_ws
+colcon --log-base "$E/log" build \
+  --base-paths src/agt_mapping_framework/benchmarks/agt_map_localization_benchmark \
+  --packages-select agt_map_localization_benchmark \
+  --build-base "$E/build" --install-base "$E/install" --symlink-install
+source "$E/install/setup.bash"
+
+ros2 run agt_map_localization_benchmark agt_map_localization_benchmark \
+  --profile smoke --run-id smoke_phase3c_01
+
+ros2 run agt_map_localization_benchmark agt_map_localization_benchmark \
+  --profile standard --run-id standard_phase3c_01 \
+  --smoke-run "$E/runs/smoke_phase3c_01"
+```
+
+Run the pure-Python contracts first:
+
+```bash
+PYTHONPATH=src/agt_mapping_framework/benchmarks/agt_map_localization_benchmark \
+  python3 -m pytest -q \
+  src/agt_mapping_framework/benchmarks/agt_map_localization_benchmark/test
+```
+
 Phase 3C still does **not** modify confidence_v1, geometry_v1, stable maps,
 small_gicp/3D-BBS runtime code, Nav2, map->odom, Guardian, or production map
 publication.  Tier2 independent-session validation and FULL remain NOT_RUN
