@@ -3,6 +3,7 @@
 #include "io/PCDLoader.hpp"
 #include "confidence/SpatialConfidenceLoader.hpp"
 #include "confidence/SpatialConfidenceIntentIO.hpp"
+#include "geometry/GeometryEvidenceLoader.hpp"
 #include "occupancy/MapYamlLoader.hpp"
 #include "occupancy/commands/DrawObstacleCommand.hpp"
 #include "occupancy/commands/EraseRectangleCommand.hpp"
@@ -228,6 +229,10 @@ void MainWindow::create_actions() {
   confidence_rebuild_action_->setEnabled(false);
   connect(confidence_rebuild_action_, &QAction::triggered,
           this, &MainWindow::rebuild_confidence_review_dialog);
+  auto *open_geometry_action = new QAction(
+      QStringLiteral("Open Geometry Evidence Sidecar (read-only)..."), this);
+  connect(open_geometry_action, &QAction::triggered, this,
+          &MainWindow::open_geometry_evidence_dialog);
   auto *open_occupancy_action = new QAction(QStringLiteral("Open Occupancy Map (map.yaml)..."), this);
   connect(open_occupancy_action, &QAction::triggered, this, &MainWindow::open_occupancy_map_dialog);
   auto *open_session_action = new QAction(QStringLiteral("Open Studio Session..."), this);
@@ -267,6 +272,7 @@ void MainWindow::create_actions() {
   file_menu->addAction(open_action);
   file_menu->addAction(open_package_action);
   file_menu->addAction(open_confidence_action);
+  file_menu->addAction(open_geometry_action);
   file_menu->addAction(confidence_save_action_);
   file_menu->addAction(confidence_rebuild_action_);
   file_menu->addAction(open_occupancy_action);
@@ -396,6 +402,29 @@ void MainWindow::create_actions() {
           : confidence_selection_manager_.selected_indices().front());
     });
   }
+  const struct { const char *label; PointColorMode mode; } geometry_colors[] = {
+      {"Geometry PCA shape (RGB: linearity/planarity/scattering)", PointColorMode::GeometryNormalShape},
+      {"Geometry Ht Q (directional diversity, not confidence)", PointColorMode::GeometryTranslationQ},
+      {"Geometry Hr Q (rotation diversity, not confidence)", PointColorMode::GeometryRotationQ},
+      {"Geometry Ht weak axis (RGB: map |x/y/z|)", PointColorMode::GeometryTranslationWeak},
+      {"Geometry Hr weak axis (RGB: map |x/y/z|)", PointColorMode::GeometryRotationWeak},
+  };
+  for (const auto &entry : geometry_colors) {
+    auto *action = new QAction(QString::fromLatin1(entry.label), this);
+    action->setCheckable(true);
+    action->setEnabled(false);
+    color_group->addAction(action);
+    geometry_color_actions_.push_back(action);
+    const PointColorMode mode = entry.mode;
+    connect(action, &QAction::triggered, this, [this, mode]() {
+      set_point_color_mode(mode);
+      show_3d_view();
+      if (confidence_dock_) confidence_dock_->show();
+      inspect_confidence_voxel(confidence_selection_manager_.selected_indices().empty()
+          ? static_cast<std::size_t>(-1)
+          : confidence_selection_manager_.selected_indices().front());
+    });
+  }
   stable_only_action_ = new QAction(QStringLiteral("Show Stable Preview Only"), this);
   stable_only_action_->setCheckable(true);
   stable_only_action_->setEnabled(false);
@@ -441,6 +470,8 @@ void MainWindow::create_actions() {
   view_menu->addAction(solid_coloring_action_);
   view_menu->addSeparator();
   for (auto *action : confidence_color_actions_) view_menu->addAction(action);
+  view_menu->addSeparator();
+  for (auto *action : geometry_color_actions_) view_menu->addAction(action);
   view_menu->addAction(stable_only_action_);
   auto *point_menu = view_menu->addMenu(QStringLiteral("Point Size"));
   point_menu->addAction(increase_point_action);
@@ -652,6 +683,13 @@ void MainWindow::create_confidence_dock() {
   confidence_status_label_->setWordWrap(true);
   confidence_status_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   layout->addWidget(confidence_status_label_);
+  geometry_summary_label_ = new QLabel(QStringLiteral(
+      "Geometry sidecar: not loaded. Optional read-only directional evidence; "
+      "V1 geometry_score remains 1 (deferred)."), panel);
+  geometry_summary_label_->setObjectName(QStringLiteral("geometry_readonly_status"));
+  geometry_summary_label_->setWordWrap(true);
+  geometry_summary_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  layout->addWidget(geometry_summary_label_);
   confidence_edit_state_label_ = new QLabel(QStringLiteral("No confidence derivative loaded"), panel);
   confidence_edit_state_label_->setWordWrap(true);
   layout->addWidget(confidence_edit_state_label_);
@@ -752,11 +790,9 @@ void MainWindow::create_confidence_dock() {
 }
 
 void MainWindow::set_point_color_mode(PointColorMode mode) {
-  const bool confidence = mode == PointColorMode::AutoConfidence ||
-                          mode == PointColorMode::FinalConfidence ||
-                          mode == PointColorMode::ObservationScore ||
-                          mode == PointColorMode::PersistenceScore;
+  const bool confidence = mode != PointColorMode::Height && mode != PointColorMode::Solid;
   if (confidence && confidence_model_.empty()) return;
+  if (is_geometry_color_mode(mode) && geometry_model_.empty()) return;
   if (confidence && viewer_->mode() == InteractionMode::Delete) set_mode_select();
   viewer_->set_color_mode(mode);
   mode_delete_action_->setEnabled(!confidence);
@@ -834,7 +870,23 @@ bool MainWindow::confirm_discard_confidence_edits() {
       QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Discard;
 }
 
+void MainWindow::clear_geometry_view() {
+  if (geometry_model_.empty()) return;
+  if (is_geometry_color_mode(viewer_->color_mode())) {
+    set_point_color_mode(confidence_model_.empty() ? PointColorMode::Height
+                                                   : PointColorMode::AutoConfidence);
+    if (!confidence_model_.empty()) confidence_color_actions_.front()->setChecked(true);
+  }
+  viewer_->set_geometry_model(nullptr);
+  geometry_model_.clear();
+  for (auto *action : geometry_color_actions_) action->setEnabled(false);
+  if (geometry_summary_label_) geometry_summary_label_->setText(QStringLiteral(
+      "Geometry sidecar: not loaded. Optional read-only directional evidence; "
+      "V1 geometry_score remains 1 (deferred)."));
+}
+
 void MainWindow::clear_confidence_view() {
+  clear_geometry_view();
   if (confidence_model_.empty() && confidence_derivative_dir_.isEmpty()) return;
   set_point_color_mode(PointColorMode::Height);
   height_coloring_action_->setChecked(true);
@@ -874,6 +926,10 @@ void MainWindow::inspect_confidence_voxel(std::size_t index) {
       .arg(info.stable_threshold, 0, 'f', 3)
       .arg(static_cast<qulonglong>(confidence_editor_.stable_preview_count()));
   if (index >= confidence_model_.voxels().size()) {
+    if (!geometry_model_.empty()) text += QStringLiteral(
+        "Geometry sidecar (read-only): %1\nHt unitless; Hr m^2; "
+        "invalid evidence shown explicitly.\n")
+        .arg(QString::fromStdString(geometry_model_.sidecar_directory().string()));
     confidence_details_label_->setText(text + QStringLiteral(
         "Ctrl+click a voxel center for its evidence, or select multiple voxels "
         "with Rectangle / Polygon / Sphere. Raw PCD point indices are never "
@@ -918,6 +974,53 @@ void MainWindow::inspect_confidence_voxel(std::size_t index) {
                                            : QString::fromStdString(intent->audit.editor))
         .arg(intent->audit.edited_at.empty() ? QStringLiteral("unspecified")
                                               : QString::fromStdString(intent->audit.edited_at));
+  }
+  if (!geometry_model_.empty()) {
+    const auto *g = geometry_model_.at_confidence_index(index);
+    if (!g) {
+      text += QStringLiteral("\nGeometry: no matching voxel (invalid model).\n");
+    } else {
+      const auto vec = [](const Eigen::Vector3f &x) {
+        return QStringLiteral("[%1, %2, %3]")
+            .arg(QString::number(x.x(), 'g', 6))
+            .arg(QString::number(x.y(), 'g', 6))
+            .arg(QString::number(x.z(), 'g', 6));
+      };
+      text += QStringLiteral("\nGEOMETRY EVIDENCE (read-only; not V1 confidence)\n"
+                             "Raw points for local PCA: %1; valid-normal voxels: %2; "
+                             "contributing raw observations: %3\n")
+          .arg(g->normal_support_points)
+          .arg(g->valid_normal_voxels)
+          .arg(static_cast<qulonglong>(g->supporting_observations));
+      if (!g->normal_valid) {
+        text += QStringLiteral("Normal: INVALID (insufficient/collinear raw points); "
+                               "no PCA shape score.\n");
+      } else {
+        text += QStringLiteral("Normal (map, sign arbitrary): %1\n"
+                               "PCA lambda [min,mid,max] (m^2): %2\n"
+                               "Linearity / planarity / scattering: %3 / %4 / %5\n")
+            .arg(vec(g->normal)).arg(vec(g->covariance_eigenvalues))
+            .arg(g->linearity, 0, 'f', 4).arg(g->planarity, 0, 'f', 4)
+            .arg(g->scattering, 0, 'f', 4);
+      }
+      const auto append_spectrum = [&text, &vec](const char *name,
+          const agt_spatial_map_core::GeometrySpectrum &s, const char *units) {
+        if (!s.valid) {
+          text += QStringLiteral("%1: INVALID (insufficient valid normals or zero trace).\n")
+              .arg(QString::fromLatin1(name));
+        } else {
+          text += QStringLiteral("%1: lambda [min,mid,max] (%2): %3\n"
+                                 "Weak axis (map): %4; Q: %5; condition: %6\n")
+              .arg(QString::fromLatin1(name)).arg(QString::fromLatin1(units))
+              .arg(vec(s.eigenvalues)).arg(vec(s.weak_direction))
+              .arg(s.isotropy, 0, 'f', 4).arg(QString::number(s.condition, 'g', 6));
+        }
+      };
+      append_spectrum("Ht (translation)", g->translation, "dimensionless");
+      append_spectrum("Hr (rotation; T_map_body origin)", g->rotation, "m^2");
+      text += QStringLiteral("Q describes directional diversity, not point density, "
+                             "stability probability, or localization improvement.\n");
+    }
   }
   confidence_details_label_->setText(text);
 }
@@ -1306,6 +1409,7 @@ bool MainWindow::open_spatial_confidence(const QString &directory, QString *erro
     if (error) *error = QString::fromUtf8(exception.what());
     return false;
   }
+  clear_geometry_view(); // never retain a sidecar bound to the old derivative
   // Raw PCD and voxel representatives have disjoint indices and selection
   // histories. No spatial core evidence or source PCD value is mutated here.
   if (viewer_->mode() == InteractionMode::Delete) set_mode_select();
@@ -1335,6 +1439,60 @@ bool MainWindow::open_spatial_confidence(const QString &directory, QString *erro
   inspect_confidence_voxel(static_cast<std::size_t>(-1));
   statusBar()->showMessage(QStringLiteral("Verified %1 confidence voxels (single-session evidence)")
                                .arg(static_cast<qulonglong>(confidence_model_.voxels().size())), 8000);
+  return true;
+}
+
+bool MainWindow::open_geometry_evidence(const QString &directory, QString *error) {
+  if (!session_.source_is_mapping_package() || confidence_model_.empty() ||
+      confidence_derivative_dir_.isEmpty()) {
+    if (error) *error = QStringLiteral(
+        "Open the verified optimized PGO parent AND its V1 confidence derivative first.");
+    return false;
+  }
+  const QString parent = session_.source_package_dir();
+  statusBar()->showMessage(QStringLiteral("Validating PGO / V1 source and geometry sidecar..."));
+  QApplication::setOverrideCursor(Qt::WaitCursor);
+  QString validation_error;
+  const bool validated = validate_mapping_parent(parent, &validation_error);
+  GeometryEvidenceModel loaded;
+  std::string loader_error;
+  bool loaded_ok = false;
+  if (validated) {
+    try {
+      const auto digest = agt_spatial_map_core::sha256_file(
+          confidence_model_.info().derivative_dir / "checksums.sha256");
+      if (QString::fromStdString(digest) != loaded_confidence_checksums_sha256_) {
+        throw std::runtime_error("loaded V1 derivative changed; reopen confidence before geometry");
+      }
+      loaded_ok = GeometryEvidenceLoader::load(directory.toStdString(), parent.toStdString(),
+          confidence_derivative_dir_.toStdString(), confidence_model_, &loaded, &loader_error);
+    } catch (const std::exception &exception) {
+      loader_error = exception.what();
+    }
+  }
+  QApplication::restoreOverrideCursor();
+  if (!validated || !loaded_ok) {
+    if (error) *error = validated ? QString::fromStdString(loader_error) : validation_error;
+    return false; // preserve previous geometry model and any DIRTY confidence intent
+  }
+  clear_geometry_view();
+  if (viewer_->mode() == InteractionMode::Delete) set_mode_select();
+  geometry_model_ = std::move(loaded);
+  viewer_->set_geometry_model(&geometry_model_);
+  for (auto *action : geometry_color_actions_) action->setEnabled(true);
+  geometry_color_actions_.front()->setChecked(true);
+  set_point_color_mode(PointColorMode::GeometryNormalShape);
+  geometry_summary_label_->setText(QStringLiteral(
+      "Verified %1 geometry voxels from %2 (read-only). "
+      "Ht is dimensionless; Hr is m^2. No geometry score or V1 change.")
+      .arg(static_cast<qulonglong>(geometry_model_.evidence().voxels.size()))
+      .arg(directory));
+  show_3d_view();
+  confidence_dock_->show();
+  confidence_dock_->raise();
+  inspect_confidence_voxel(static_cast<std::size_t>(-1));
+  statusBar()->showMessage(QStringLiteral("Verified %1 read-only geometry evidence voxels")
+      .arg(static_cast<qulonglong>(geometry_model_.evidence().voxels.size())), 8000);
   return true;
 }
 
@@ -1517,6 +1675,22 @@ void MainWindow::open_spatial_confidence_dialog() {
   QString error;
   if (!open_spatial_confidence(directory, &error)) {
     QMessageBox::critical(this, QStringLiteral("Open confidence derivative failed"), error);
+  }
+}
+
+void MainWindow::open_geometry_evidence_dialog() {
+  if (!session_.source_is_mapping_package() || confidence_model_.empty()) {
+    QMessageBox::warning(this, QStringLiteral("Open verified sources first"),
+        QStringLiteral("Open the optimized PGO mapping package and its matching "
+                       "V1 confidence derivative before geometry evidence."));
+    return;
+  }
+  const QString directory = QFileDialog::getExistingDirectory(
+      this, QStringLiteral("Open geometry evidence sidecar (three verified files; read-only)"));
+  if (directory.isEmpty()) return;
+  QString error;
+  if (!open_geometry_evidence(directory, &error)) {
+    QMessageBox::critical(this, QStringLiteral("Open geometry sidecar failed"), error);
   }
 }
 

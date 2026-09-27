@@ -1,6 +1,7 @@
 #pragma once
 
 #include "confidence/SpatialConfidenceModel.hpp"
+#include "geometry/GeometryEvidenceModel.hpp"
 #include "confidence/SpatialConfidenceEditor.hpp"
 #include "io/PCDLoader.hpp"
 #include "selection/SelectionBox.h"
@@ -31,7 +32,17 @@ enum class InteractionMode { Navigate, Select, Delete };
 enum class PointColorMode {
   Height, Solid, AutoConfidence, FinalConfidence,
   ObservationScore, PersistenceScore,
+  GeometryNormalShape, GeometryTranslationQ, GeometryRotationQ,
+  GeometryTranslationWeak, GeometryRotationWeak,
 };
+
+inline bool is_geometry_color_mode(PointColorMode mode) {
+  return mode == PointColorMode::GeometryNormalShape ||
+         mode == PointColorMode::GeometryTranslationQ ||
+         mode == PointColorMode::GeometryRotationQ ||
+         mode == PointColorMode::GeometryTranslationWeak ||
+         mode == PointColorMode::GeometryRotationWeak;
+}
 
 // How a selection is drawn in Select/Delete mode.
 enum class SelectionTool { ScreenRect, PolygonPrism, Sphere };
@@ -53,6 +64,7 @@ public:
   void set_color_mode(PointColorMode mode);
   PointColorMode color_mode() const { return color_mode_; }
   void set_confidence_model(const SpatialConfidenceModel *model);
+  void set_geometry_model(const GeometryEvidenceModel *model);
   void set_confidence_editor(const SpatialConfidenceEditor *editor);
   void set_confidence_selection_manager(SelectionManager *manager);
   void set_stable_only(bool enabled);
@@ -153,6 +165,7 @@ private:
   bool dark_background_ = false;
   PointColorMode color_mode_ = PointColorMode::Height;
   const SpatialConfidenceModel *confidence_model_ = nullptr;  // owned by MainWindow
+  const GeometryEvidenceModel *geometry_model_ = nullptr; // read-only, owned by MainWindow
   const SpatialConfidenceEditor *confidence_editor_ = nullptr;  // intent preview, separate
   SelectionManager *confidence_selection_manager_ = nullptr;
   Eigen::Vector3f confidence_min_bound_ = Eigen::Vector3f::Zero();

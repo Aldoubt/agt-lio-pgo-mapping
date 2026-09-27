@@ -1,5 +1,6 @@
 #pragma once
 
+#include "geometry/GeometryEvidenceModel.hpp"
 #include "occupancy/GridMap.hpp"
 #include "occupancy/OccupancyViewer.hpp"
 #include "occupancy/RefinementModel.hpp"
@@ -41,6 +42,7 @@ public:
   // package directory (localization/global_map.pcd + navigation/map.yaml).
   bool open_mapping_package(const QString &directory, QString *error = nullptr);
   bool open_spatial_confidence(const QString &directory, QString *error = nullptr);
+  bool open_geometry_evidence(const QString &directory, QString *error = nullptr);
   // Save v1 intent YAML only; never modifies the opened derivative. The core
   // reviewed rebuild is a distinct asynchronous operation below.
   bool save_confidence_overrides(const QString &path, bool allow_replace = false,
@@ -60,6 +62,7 @@ private slots:
   void open_pcd_dialog();
   void open_mapping_package_dialog();
   void open_spatial_confidence_dialog();
+  void open_geometry_evidence_dialog();
   void inspect_confidence_voxel(std::size_t index);
   void apply_confidence_override();
   void restore_confidence_auto();
@@ -113,6 +116,7 @@ private:
   void create_workflow_dock();
   void create_confidence_dock();
   void clear_confidence_view();
+  void clear_geometry_view();
   void set_point_color_mode(PointColorMode mode);
   void refresh_confidence_editor_ui();
   void update_edit_state_label();
@@ -146,6 +150,7 @@ private:
   QDockWidget *workflow_dock_ = nullptr;
   QDockWidget *confidence_dock_ = nullptr;
   QLabel *confidence_details_label_ = nullptr;
+  QLabel *geometry_summary_label_ = nullptr;
   QLabel *confidence_status_label_ = nullptr;
   QLabel *confidence_edit_state_label_ = nullptr;
   QComboBox *confidence_override_mode_combo_ = nullptr;
@@ -176,6 +181,7 @@ private:
   QAction *show_2d_action_ = nullptr;
   QAction *stable_only_action_ = nullptr;
   QVector<QAction *> confidence_color_actions_;
+  QVector<QAction *> geometry_color_actions_;
   QAction *mode_navigate_action_ = nullptr;
   QAction *mode_select_action_ = nullptr;
   QAction *mode_delete_action_ = nullptr;
@@ -188,6 +194,7 @@ private:
   RefinementModel refinement_model_;
   SelectionManager selection_manager_;
   SpatialConfidenceModel confidence_model_;
+  GeometryEvidenceModel geometry_model_;
   SpatialConfidenceEditor confidence_editor_;
   SelectionManager confidence_selection_manager_;
   QString confidence_derivative_dir_;

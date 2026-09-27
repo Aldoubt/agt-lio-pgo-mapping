@@ -35,6 +35,9 @@ add_executable(map_viewer
   src/confidence/ConfidenceColor.cpp
   src/confidence/SpatialConfidenceEditor.cpp
   src/confidence/SpatialConfidenceIntentIO.cpp
+  src/geometry/GeometryEvidenceModel.cpp
+  src/geometry/GeometryEvidenceLoader.cpp
+  src/geometry/GeometryColor.cpp
   src/viewer/CameraController.cpp
   src/viewer/PointCloudViewer.cpp
   src/selection/SelectionBox.cpp

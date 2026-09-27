@@ -1,6 +1,7 @@
 #include "viewer/PointCloudViewer.hpp"
 
 #include "confidence/ConfidenceColor.hpp"
+#include "geometry/GeometryColor.hpp"
 
 #include <QPolygonF>
 #include <QVector2D>
@@ -18,6 +19,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace agt_map_studio {
@@ -106,6 +108,7 @@ void PointCloudViewer::emit_stats() {
 
 void PointCloudViewer::set_color_mode(PointColorMode mode) {
   if (mode != PointColorMode::Height && mode != PointColorMode::Solid && !has_confidence()) return;
+  if (is_geometry_color_mode(mode) && (!geometry_model_ || geometry_model_->empty())) return;
   color_mode_ = mode;
   confidence_colors_dirty_ = true;
   confidence_status_dirty_ = true;
@@ -136,6 +139,16 @@ void PointCloudViewer::set_confidence_model(const SpatialConfidenceModel *model)
     upload_confidence_cloud();
     doneCurrent();
   }
+  emit_stats();
+  update();
+}
+
+void PointCloudViewer::set_geometry_model(const GeometryEvidenceModel *model) {
+  geometry_model_ = model && !model->empty() ? model : nullptr;
+  if (!geometry_model_ && is_geometry_color_mode(color_mode_)) {
+    color_mode_ = has_confidence() ? PointColorMode::AutoConfidence : PointColorMode::Height;
+  }
+  confidence_colors_dirty_ = true;
   emit_stats();
   update();
 }
@@ -297,6 +310,7 @@ QString PointCloudViewer::stats_text() const {
         .arg(static_cast<qulonglong>(confidence_stable_count()))
         .arg(mode_text());
     if (stable_only_) text += QStringLiteral(" | Show Stable Only");
+    if (is_geometry_color_mode(color_mode_)) text += QStringLiteral(" | Geometry read-only (not confidence)");
   } else {
     const QString name = filename_.isEmpty() ? QStringLiteral("(none)") : filename_;
     const std::size_t deleted = selection_manager_ ? selection_manager_->deleted_count() : 0U;
@@ -569,7 +583,14 @@ void PointCloudViewer::paintGL() {
     const int legend_x = std::max(12, width() - legend_width - 18);
     const int legend_y = 14;
     QLinearGradient gradient(legend_x, legend_y, legend_x + legend_width, legend_y);
-    if (confidence) {
+    const bool axes_legend = color_mode_ == PointColorMode::GeometryNormalShape ||
+                             color_mode_ == PointColorMode::GeometryTranslationWeak ||
+                             color_mode_ == PointColorMode::GeometryRotationWeak;
+    if (confidence && axes_legend) {
+      gradient.setColorAt(0.0, QColor(235, 50, 50));
+      gradient.setColorAt(0.5, QColor(50, 230, 50));
+      gradient.setColorAt(1.0, QColor(50, 80, 235));
+    } else if (confidence) {
       for (int step = 0; step <= 4; ++step) {
         const float fraction = step / 4.0F;
         const auto c = confidence_color(fraction);
@@ -585,13 +606,23 @@ void PointCloudViewer::paintGL() {
     painter.fillRect(legend_x, legend_y, legend_width, legend_height, gradient);
     painter.drawRect(legend_x, legend_y, legend_width, legend_height);
     if (confidence) {
-      painter.drawText(legend_x, legend_y + 30, QStringLiteral("0.0 low"));
-      painter.drawText(legend_x + 120, legend_y + 30, QStringLiteral("1.0 high"));
+      painter.drawText(legend_x, legend_y + 30,
+          axes_legend ? QStringLiteral("R                 G                 B")
+                      : QStringLiteral("0.0 low"));
+      if (!axes_legend) painter.drawText(legend_x + 120, legend_y + 30, QStringLiteral("1.0 high"));
       const char *name = "Auto Confidence";
       if (color_mode_ == PointColorMode::FinalConfidence) name = "Final Confidence";
       if (color_mode_ == PointColorMode::ObservationScore) name = "Observation Score";
       if (color_mode_ == PointColorMode::PersistenceScore) name = "Persistence Evidence";
-      painter.drawText(legend_x, legend_y + 46, QString::fromLatin1(name));
+      if (color_mode_ == PointColorMode::GeometryNormalShape) name = "PCA: R=linearity G=planarity B=scattering";
+      if (color_mode_ == PointColorMode::GeometryTranslationQ) name = "Ht Q: directional diversity (not confidence)";
+      if (color_mode_ == PointColorMode::GeometryRotationQ) name = "Hr Q: rotational diversity (not confidence)";
+      if (color_mode_ == PointColorMode::GeometryTranslationWeak) name = "Ht weak axis: |map x/y/z|";
+      if (color_mode_ == PointColorMode::GeometryRotationWeak) name = "Hr weak axis: |map x/y/z|";
+      painter.drawText(legend_x - 140, legend_y + 46, QString::fromLatin1(name));
+      if (is_geometry_color_mode(color_mode_)) {
+        painter.drawText(legend_x, legend_y + 62, QStringLiteral("gray = insufficient evidence"));
+      }
     } else {
       painter.drawText(legend_x, legend_y + 30,
                        QStringLiteral("Z low: %1").arg(cloud_.min_bound.z(), 0, 'f', 2));
@@ -700,17 +731,32 @@ void PointCloudViewer::upload_confidence_colors() {
     colors.reserve(confidence_model_->voxels().size() * 3U);
     for (std::size_t i = 0; i < confidence_model_->voxels().size(); ++i) {
       const auto &v = confidence_model_->voxels()[i];
-      float score = v.auto_confidence;
-      switch (color_mode_) {
-        case PointColorMode::FinalConfidence:
-          score = confidence_editor_ ? confidence_editor_->preview_final(i)
-                                     : v.final_confidence;
-          break;
-        case PointColorMode::ObservationScore: score = v.observation_score; break;
-        case PointColorMode::PersistenceScore: score = v.persistence_score; break;
-        default: break;
+      ConfidenceRgb c;
+      if (is_geometry_color_mode(color_mode_) && geometry_model_) {
+        const auto *g = geometry_model_->at_confidence_index(i);
+        if (!g) throw std::logic_error("geometry/confidence index correspondence lost");
+        GeometryColorMode channel = GeometryColorMode::NormalShape;
+        switch (color_mode_) {
+          case PointColorMode::GeometryTranslationQ: channel = GeometryColorMode::TranslationQ; break;
+          case PointColorMode::GeometryRotationQ: channel = GeometryColorMode::RotationQ; break;
+          case PointColorMode::GeometryTranslationWeak: channel = GeometryColorMode::TranslationWeak; break;
+          case PointColorMode::GeometryRotationWeak: channel = GeometryColorMode::RotationWeak; break;
+          default: break;
+        }
+        c = geometry_color(*g, channel);
+      } else {
+        float score = v.auto_confidence;
+        switch (color_mode_) {
+          case PointColorMode::FinalConfidence:
+            score = confidence_editor_ ? confidence_editor_->preview_final(i)
+                                       : v.final_confidence;
+            break;
+          case PointColorMode::ObservationScore: score = v.observation_score; break;
+          case PointColorMode::PersistenceScore: score = v.persistence_score; break;
+          default: break;
+        }
+        c = confidence_color(score);
       }
-      const auto c = confidence_color(score);
       colors.insert(colors.end(), {c.r, c.g, c.b});
     }
   }

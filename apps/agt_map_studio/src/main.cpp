@@ -39,6 +39,12 @@ int main(int argc, char **argv) {
                      "(single-session evidence; no production publication)."),
       QStringLiteral("dir"));
   parser.addOption(confidence_option);
+  const QCommandLineOption geometry_option(
+      QStringLiteral("spatial-geometry"),
+      QStringLiteral("Open a Phase 3A read-only geometry sidecar after --package "
+                     "and --spatial-confidence."),
+      QStringLiteral("dir"));
+  parser.addOption(geometry_option);
   const QCommandLineOption session_option(
       {QStringLiteral("s"), QStringLiteral("session")},
       QStringLiteral("Restore a studio_session.yaml."), QStringLiteral("path"));
@@ -124,6 +130,14 @@ int main(int argc, char **argv) {
     if (!window.open_spatial_confidence(QFileInfo(confidence_path).absoluteFilePath(), &error)) {
       window.show();
       QMessageBox::critical(&window, QStringLiteral("Open spatial confidence failed"), error);
+    }
+  }
+  const QString geometry_path = parser.value(geometry_option);
+  if (!review_requested && !geometry_path.isEmpty()) {
+    QString error;
+    if (!window.open_geometry_evidence(QFileInfo(geometry_path).absoluteFilePath(), &error)) {
+      window.show();
+      QMessageBox::critical(&window, QStringLiteral("Open spatial geometry failed"), error);
     }
   }
   const QString map_path = parser.value(map_option);
