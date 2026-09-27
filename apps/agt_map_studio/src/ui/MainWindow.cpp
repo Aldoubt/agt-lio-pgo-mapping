@@ -2,6 +2,7 @@
 
 #include "io/PCDLoader.hpp"
 #include "confidence/SpatialConfidenceLoader.hpp"
+#include "confidence/SpatialConfidenceIntentIO.hpp"
 #include "occupancy/MapYamlLoader.hpp"
 #include "occupancy/commands/DrawObstacleCommand.hpp"
 #include "occupancy/commands/EraseRectangleCommand.hpp"
@@ -12,6 +13,7 @@
 #include <agt_pcd2grid_exporter/OccupancyGridWriter.hpp>
 #include <agt_pcd2grid_exporter/PCDProjector.hpp>
 #include <agt_pcd2grid_exporter/ParameterLoader.hpp>
+#include <agt_spatial_map_core/spatial_export.hpp>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include <QAction>
@@ -31,12 +33,15 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QImage>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QStatusBar>
@@ -47,7 +52,9 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -148,6 +155,52 @@ MainWindow::MainWindow(const QString &config_path, QWidget *parent)
     if (callback) callback(result);
     refresh_workflow();
   });
+  connect(&confidence_review_runner_, &ExternalToolRunner::started, this,
+          [this](const QString &) {
+    statusBar()->showMessage(QStringLiteral("Core is rebuilding a separate reviewed derivative..."));
+    refresh_confidence_editor_ui();
+  });
+  connect(&confidence_review_runner_, &ExternalToolRunner::output_appended,
+          workflow_panel_, &WorkflowPanel::append_log);
+  connect(&confidence_review_runner_, &ExternalToolRunner::finished, this,
+          [this](const ToolResult &result) {
+    const QString output = std::exchange(pending_review_target_, QString());
+    const QString parent = std::exchange(pending_review_parent_, QString());
+    const std::size_t expected = pending_review_stable_count_;
+    pending_review_stable_count_ = 0;
+    refresh_confidence_editor_ui();
+    if (!result.ok) {
+      const QString detail = result.error_summary.isEmpty()
+          ? QStringLiteral("Core exited without a success result") : result.error_summary;
+      statusBar()->showMessage(QStringLiteral("Core review failed; original files unchanged"), 10000);
+      QMessageBox::critical(this, QStringLiteral("Reviewed derivative rebuild failed"),
+          detail + QStringLiteral("\n\nNo production or navigation map was published."));
+      return;
+    }
+    SpatialConfidenceModel checked;
+    std::string validation_error;
+    if (!SpatialConfidenceLoader::load(output.toStdString(), parent.toStdString(),
+                                       &checked, &validation_error) ||
+        checked.stable_preview_count() != expected) {
+      statusBar()->showMessage(QStringLiteral("Core wrote derivative; verification needs attention: %1")
+                                   .arg(output), 12000);
+      QMessageBox::warning(this, QStringLiteral("Reviewed output verification failed"),
+          QStringLiteral("Core reported success at %1, but Studio could not verify its "
+                         "checksum-covered content / preview count (%2 expected): %3. "
+                         "Do not use this derivative until investigated.")
+              .arg(output).arg(static_cast<qulonglong>(expected))
+              .arg(QString::fromStdString(validation_error)));
+      return;
+    }
+    statusBar()->showMessage(QStringLiteral("Verified reviewed derivative: %1 (stable %2)")
+                                 .arg(output).arg(static_cast<qulonglong>(expected)), 12000);
+    QMessageBox::information(this, QStringLiteral("Reviewed derivative verified"),
+        QStringLiteral("Core created and Studio re-verified a NEW reviewed derivative:\n%1\n"
+                       "Stable voxels: %2\n\nThe source derivative, PGO package and "
+                       "production navigation maps were not replaced or published. "
+                       "Open the new derivative explicitly to inspect it.")
+            .arg(output).arg(static_cast<qulonglong>(expected)));
+  });
   statusBar()->showMessage(viewer_->stats_text());
   edit_state_label_ = new QLabel(this);
   statusBar()->addPermanentWidget(edit_state_label_);
@@ -162,9 +215,19 @@ void MainWindow::create_actions() {
   open_package_action->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
   connect(open_package_action, &QAction::triggered, this, &MainWindow::open_mapping_package_dialog);
   auto *open_confidence_action = new QAction(
-      QStringLiteral("Open Spatial Confidence Derivative (read-only)..."), this);
+      QStringLiteral("Open Spatial Confidence Derivative (source read-only)..."), this);
   connect(open_confidence_action, &QAction::triggered, this,
           &MainWindow::open_spatial_confidence_dialog);
+  confidence_save_action_ = new QAction(
+      QStringLiteral("Save Spatial Override Intent YAML..."), this);
+  confidence_save_action_->setEnabled(false);
+  connect(confidence_save_action_, &QAction::triggered,
+          this, &MainWindow::save_confidence_overrides_dialog);
+  confidence_rebuild_action_ = new QAction(
+      QStringLiteral("Rebuild Reviewed Spatial Derivative (core, new directory)..."), this);
+  confidence_rebuild_action_->setEnabled(false);
+  connect(confidence_rebuild_action_, &QAction::triggered,
+          this, &MainWindow::rebuild_confidence_review_dialog);
   auto *open_occupancy_action = new QAction(QStringLiteral("Open Occupancy Map (map.yaml)..."), this);
   connect(open_occupancy_action, &QAction::triggered, this, &MainWindow::open_occupancy_map_dialog);
   auto *open_session_action = new QAction(QStringLiteral("Open Studio Session..."), this);
@@ -204,6 +267,8 @@ void MainWindow::create_actions() {
   file_menu->addAction(open_action);
   file_menu->addAction(open_package_action);
   file_menu->addAction(open_confidence_action);
+  file_menu->addAction(confidence_save_action_);
+  file_menu->addAction(confidence_rebuild_action_);
   file_menu->addAction(open_occupancy_action);
   file_menu->addSeparator();
   file_menu->addAction(open_session_action);
@@ -587,6 +652,84 @@ void MainWindow::create_confidence_dock() {
   confidence_status_label_->setWordWrap(true);
   confidence_status_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   layout->addWidget(confidence_status_label_);
+  confidence_edit_state_label_ = new QLabel(QStringLiteral("No confidence derivative loaded"), panel);
+  confidence_edit_state_label_->setWordWrap(true);
+  layout->addWidget(confidence_edit_state_label_);
+  auto *edit_form = new QFormLayout();
+  confidence_override_mode_combo_ = new QComboBox(panel);
+  for (const auto mode : {agt_spatial_map_core::ManualOverrideMode::AUTO,
+                          agt_spatial_map_core::ManualOverrideMode::FORCE_HIGH,
+                          agt_spatial_map_core::ManualOverrideMode::FORCE_LOW,
+                          agt_spatial_map_core::ManualOverrideMode::IGNORE}) {
+    confidence_override_mode_combo_->addItem(
+        QString::fromLatin1(agt_spatial_map_core::override_mode_name(mode)),
+        static_cast<int>(mode));
+  }
+  edit_form->addRow(QStringLiteral("Intent"), confidence_override_mode_combo_);
+  confidence_reason_combo_ = new QComboBox(panel);
+  for (const char *tag : {"PARKING_AREA", "VEGETATION", "TEMPORARY_OBJECT",
+                          "CONSTRUCTION", "MOVING_OBJECT_PRONE", "LOW_GEOMETRY",
+                          "MANUAL_ANCHOR", "OTHER"}) {
+    confidence_reason_combo_->addItem(QString::fromLatin1(tag));
+  }
+  confidence_reason_combo_->setToolTip(QStringLiteral(
+      "Reason records human judgment; LOW_GEOMETRY does not change geometry_score"));
+  edit_form->addRow(QStringLiteral("Reason"), confidence_reason_combo_);
+  confidence_custom_low_check_ = new QCheckBox(QStringLiteral("Custom FORCE_LOW value"), panel);
+  confidence_low_value_spin_ = new QDoubleSpinBox(panel);
+  confidence_low_value_spin_->setRange(0.0, 1.0);
+  confidence_low_value_spin_->setDecimals(4);
+  confidence_low_value_spin_->setSingleStep(0.01);
+  confidence_low_value_spin_->setValue(0.05);
+  confidence_low_value_spin_->setEnabled(false);
+  edit_form->addRow(confidence_custom_low_check_);
+  edit_form->addRow(QStringLiteral("Value [0,1]"), confidence_low_value_spin_);
+  layout->addLayout(edit_form);
+  auto *edit_buttons = new QHBoxLayout();
+  confidence_apply_button_ = new QPushButton(QStringLiteral("Apply to selected"), panel);
+  confidence_restore_button_ = new QPushButton(QStringLiteral("Restore Auto"), panel);
+  edit_buttons->addWidget(confidence_apply_button_);
+  edit_buttons->addWidget(confidence_restore_button_);
+  layout->addLayout(edit_buttons);
+  auto *history_buttons = new QHBoxLayout();
+  confidence_undo_button_ = new QPushButton(QStringLiteral("Undo override"), panel);
+  confidence_redo_button_ = new QPushButton(QStringLiteral("Redo override"), panel);
+  history_buttons->addWidget(confidence_undo_button_);
+  history_buttons->addWidget(confidence_redo_button_);
+  layout->addLayout(history_buttons);
+  confidence_save_button_ = new QPushButton(QStringLiteral("Save Overrides YAML (intent only)"), panel);
+  confidence_save_button_->setObjectName(QStringLiteral("confidence_save_intent"));
+  confidence_rebuild_button_ = new QPushButton(
+      QStringLiteral("Core rebuild reviewed derivative (new directory)"), panel);
+  confidence_rebuild_button_->setObjectName(QStringLiteral("confidence_core_rebuild"));
+  confidence_rebuild_button_->setToolTip(QStringLiteral(
+      "Separate from Save Overrides; copies verified auto evidence, applies saved intent "
+      "in the core, creates new checksum-covered artifacts. Never publishes a navigation map."));
+  layout->addWidget(confidence_save_button_);
+  layout->addWidget(confidence_rebuild_button_);
+  connect(confidence_save_button_, &QPushButton::clicked,
+          this, &MainWindow::save_confidence_overrides_dialog);
+  connect(confidence_rebuild_button_, &QPushButton::clicked,
+          this, &MainWindow::rebuild_confidence_review_dialog);
+  connect(confidence_apply_button_, &QPushButton::clicked,
+          this, &MainWindow::apply_confidence_override);
+  connect(confidence_restore_button_, &QPushButton::clicked,
+          this, &MainWindow::restore_confidence_auto);
+  connect(confidence_undo_button_, &QPushButton::clicked,
+          this, &MainWindow::undo_confidence_override);
+  connect(confidence_redo_button_, &QPushButton::clicked,
+          this, &MainWindow::redo_confidence_override);
+  const auto update_low_value = [this]() {
+    const bool low = confidence_override_mode_combo_->currentData().toInt() ==
+        static_cast<int>(agt_spatial_map_core::ManualOverrideMode::FORCE_LOW);
+    confidence_custom_low_check_->setEnabled(low);
+    confidence_low_value_spin_->setEnabled(low && confidence_custom_low_check_->isChecked());
+  };
+  connect(confidence_override_mode_combo_, qOverload<int>(&QComboBox::currentIndexChanged),
+          this, [update_low_value](int) { update_low_value(); });
+  connect(confidence_custom_low_check_, &QCheckBox::toggled, this,
+          [update_low_value](bool) { update_low_value(); });
+  update_low_value();
   confidence_details_label_ = new QLabel(panel);
   confidence_details_label_->setWordWrap(true);
   confidence_details_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -595,6 +738,10 @@ void MainWindow::create_confidence_dock() {
   scroll->setWidget(panel);
   confidence_dock_->setWidget(scroll);
   addDockWidget(Qt::RightDockWidgetArea, confidence_dock_);
+  // The full-height editor shares the dock area with the legacy publish workflow.
+  // Stacking them vertically hid Apply/Undo/Save below the viewport on 900px
+  // screens; a tab keeps both workflows reachable without publishing a map.
+  tabifyDockWidget(workflow_dock_, confidence_dock_);
   confidence_dock_->setMinimumWidth(360);
   confidence_dock_->hide();
   if (view_menu_) {
@@ -620,15 +767,85 @@ void MainWindow::set_point_color_mode(PointColorMode mode) {
     isolate_selection_action_->setChecked((confidence ? confidence_selection_manager_
                                                       : selection_manager_).isolate_selected());
   }
+  refresh_confidence_editor_ui();
+}
+
+void MainWindow::refresh_confidence_editor_ui() {
+  if (!confidence_edit_state_label_) return;
+  if (confidence_model_.empty()) {
+    confidence_edit_state_label_->setText(QStringLiteral("No confidence derivative loaded"));
+    for (auto *button : {confidence_apply_button_, confidence_restore_button_,
+                         confidence_undo_button_, confidence_redo_button_,
+                         confidence_save_button_, confidence_rebuild_button_}) {
+      if (button) button->setEnabled(false);
+    }
+    if (confidence_save_action_) confidence_save_action_->setEnabled(false);
+    if (confidence_rebuild_action_) confidence_rebuild_action_->setEnabled(false);
+    if (!review_mode_) setWindowTitle(QStringLiteral("AGT Map Studio"));
+    update_edit_state_label();
+    return;
+  }
+  const bool active = viewer_->showing_confidence();
+  const bool busy = confidence_review_runner_.is_running();
+  const auto selected = confidence_selection_manager_.selected_count();
+  const bool dirty = confidence_editor_.dirty();
+  confidence_edit_state_label_->setText(QStringLiteral(
+      "%1 | %2 voxel(s) selected | %3 current overrides | stable preview %4.\n"
+      "Saved intent: %5\n%6\n"
+      "Source derivative is unchanged; only the in-memory final preview changes "
+      "until an EXPLICIT core rebuild to a new directory. No navigation publication.")
+      .arg(dirty ? QStringLiteral("DIRTY (unsaved intent)") : QStringLiteral("Intent unchanged"))
+      .arg(static_cast<qulonglong>(selected))
+      .arg(static_cast<qulonglong>(confidence_editor_.override_count()))
+      .arg(static_cast<qulonglong>(confidence_editor_.stable_preview_count()))
+      .arg(saved_confidence_intent_path_.isEmpty()
+               ? QStringLiteral("none — Save Overrides before rebuilding")
+               : saved_confidence_intent_path_)
+      .arg(busy ? QStringLiteral("CORE REBUILD RUNNING — edits/source changes locked")
+                : QStringLiteral("Review is a separate action")));
+  confidence_apply_button_->setEnabled(active && !busy && selected != 0U);
+  confidence_restore_button_->setEnabled(active && !busy && selected != 0U);
+  confidence_undo_button_->setEnabled(active && !busy && confidence_editor_.can_undo());
+  confidence_redo_button_->setEnabled(active && !busy && confidence_editor_.can_redo());
+  const bool can_save = !busy;
+  const bool can_review = !busy && !dirty && !saved_confidence_intent_path_.isEmpty();
+  confidence_save_button_->setEnabled(can_save);
+  confidence_rebuild_button_->setEnabled(can_review);
+  confidence_save_action_->setEnabled(can_save);
+  confidence_rebuild_action_->setEnabled(can_review);
+  if (!review_mode_) {
+    setWindowTitle(dirty ? QStringLiteral("AGT Map Studio — DIRTY spatial overrides")
+                         : QStringLiteral("AGT Map Studio"));
+  }
+  update_edit_state_label();
+}
+
+bool MainWindow::confirm_discard_confidence_edits() {
+  if (confidence_review_runner_.is_running()) {
+    QMessageBox::warning(this, QStringLiteral("Core review running"),
+        QStringLiteral("Wait until the separate core review finishes before switching "
+                       "mapping sources; its immutable input snapshot must remain available."));
+    return false;
+  }
+  if (!confidence_editor_.dirty()) return true;
+  return QMessageBox::warning(this, QStringLiteral("DIRTY spatial overrides"),
+      QStringLiteral("Unsaved manual confidence override intent would be lost. "
+                     "Discard edits? The source map and verified derivative are unchanged."),
+      QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Discard;
 }
 
 void MainWindow::clear_confidence_view() {
   if (confidence_model_.empty() && confidence_derivative_dir_.isEmpty()) return;
   set_point_color_mode(PointColorMode::Height);
   height_coloring_action_->setChecked(true);
+  viewer_->set_confidence_editor(nullptr);
+  confidence_editor_.set_model(nullptr);
   viewer_->set_confidence_model(nullptr);
   confidence_model_.clear();
   confidence_derivative_dir_.clear();
+  loaded_confidence_checksums_sha256_.clear();
+  saved_confidence_intent_path_.clear();
+  saved_confidence_intent_sha256_.clear();
   confidence_selection_manager_.reset(0);
   if (stable_only_action_) {
     stable_only_action_->setChecked(false);
@@ -639,56 +856,285 @@ void MainWindow::clear_confidence_view() {
   delete_points_action_->setEnabled(true);
   hide_deleted_action_->setEnabled(true);
   if (confidence_dock_) confidence_dock_->hide();
+  refresh_confidence_editor_ui();
 }
 
 void MainWindow::inspect_confidence_voxel(std::size_t index) {
   if (confidence_model_.empty() || !confidence_details_label_) return;
+  refresh_confidence_editor_ui();
   const auto &info = confidence_model_.info();
-  const QString header = QStringLiteral(
+  QString text = QStringLiteral(
       "Verified derivative: %1\nSource PGO package: %2\n"
-      "Evidence voxels: %3\nKeyframes: %4\n"
-      "Stable threshold: %5\nStable preview: %6 (not a formal rebuild)\n\n")
+      "Evidence voxels: %3; keyframes: %4\n"
+      "Stable threshold: %5; preview selected: %6 (not a formal rebuild)\n\n")
       .arg(confidence_derivative_dir_)
       .arg(QString::fromStdString(info.source_package.string()))
       .arg(static_cast<qulonglong>(confidence_model_.voxels().size()))
       .arg(static_cast<qulonglong>(info.source_keyframes))
       .arg(info.stable_threshold, 0, 'f', 3)
-      .arg(static_cast<qulonglong>(confidence_model_.stable_preview_count()));
+      .arg(static_cast<qulonglong>(confidence_editor_.stable_preview_count()));
   if (index >= confidence_model_.voxels().size()) {
-    confidence_details_label_->setText(header + QStringLiteral(
-        "Ctrl+click a voxel center, or select a region using the existing "
-        "Rectangle / Polygon / Sphere tools, to inspect its evidence. "
-        "Raw PCD point indices are never voxel indices."));
+    confidence_details_label_->setText(text + QStringLiteral(
+        "Ctrl+click a voxel center for its evidence, or select multiple voxels "
+        "with Rectangle / Polygon / Sphere. Raw PCD point indices are never "
+        "voxel indices. No manual intent is written to the source files."));
     return;
   }
   const auto &v = confidence_model_.voxels()[index];
-  confidence_details_label_->setText(header + QStringLiteral(
-      "Voxel [%1, %2, %3]  (voxel index %4)\n"
-      "Center [x, y, z]: %5, %6, %7 m\n"
-      "Source points: %8\nObserved keyframes: %9\n"
-      "First / last / span: %10 / %11 / %12\n"
-      "Observation score: %13\nPersistence evidence: %14\n"
-      "Geometry score: %15 (deferred)\n"
-      "Auto confidence: %16 (single-session evidence)\n"
-      "Override mode: %17\nManual value: %18\n"
-      "Final confidence: %19 (preview from original derivative)\n"
-      "Stable preview: %20")
-      .arg(v.key.x).arg(v.key.y).arg(v.key.z)
-      .arg(static_cast<qulonglong>(index))
+  const auto *intent = confidence_editor_.intent(index);
+  text += QStringLiteral("Voxel key [%1, %2, %3]  (#%4)\n")
+      .arg(v.key.x).arg(v.key.y).arg(v.key.z).arg(static_cast<qulonglong>(index));
+  text += QStringLiteral("Center [x,y,z]: %1, %2, %3 m\n")
       .arg(v.center.x(), 0, 'f', 3).arg(v.center.y(), 0, 'f', 3)
-      .arg(v.center.z(), 0, 'f', 3)
-      .arg(v.point_count).arg(v.observed_keyframes)
-      .arg(v.first_keyframe).arg(v.last_keyframe).arg(v.keyframe_span)
+      .arg(v.center.z(), 0, 'f', 3);
+  text += QStringLiteral("Source point count: %1; observed keyframes: %2\n")
+      .arg(v.point_count).arg(v.observed_keyframes);
+  text += QStringLiteral("First / last / span (keyframe index): %1 / %2 / %3\n")
+      .arg(v.first_keyframe).arg(v.last_keyframe).arg(v.keyframe_span);
+  text += QStringLiteral("Observation score: %1; persistence evidence: %2\n")
       .arg(v.observation_score, 0, 'f', 4)
-      .arg(v.persistence_score, 0, 'f', 4)
-      .arg(v.geometry_score, 0, 'f', 4)
-      .arg(v.auto_confidence, 0, 'f', 4)
+      .arg(v.persistence_score, 0, 'f', 4);
+  text += QStringLiteral("Geometry score: %1 (deferred; not edited)\n")
+      .arg(v.geometry_score, 0, 'f', 4);
+  text += QStringLiteral("Auto confidence: %1 (single-session evidence)\n")
+      .arg(v.auto_confidence, 0, 'f', 4);
+  text += QStringLiteral("Source derivative: %1; final %2\n")
       .arg(QString::fromLatin1(agt_spatial_map_core::override_mode_name(v.override_mode)))
-      .arg(v.has_manual_value ? QString::number(v.manual_value, 'f', 4)
-                              : QStringLiteral("none"))
-      .arg(v.final_confidence, 0, 'f', 4)
-      .arg(confidence_model_.is_stable_preview(index) ? QStringLiteral("yes")
-                                                     : QStringLiteral("no")));
+      .arg(v.final_confidence, 0, 'f', 4);
+  text += QStringLiteral("In-memory preview: %1; final %2; stable %3\n")
+      .arg(QString::fromLatin1(agt_spatial_map_core::override_mode_name(
+          confidence_editor_.effective_mode(index))))
+      .arg(confidence_editor_.preview_final(index), 0, 'f', 4)
+      .arg(confidence_editor_.stable_preview(index) ? QStringLiteral("yes")
+                                                   : QStringLiteral("no"));
+  if (intent) {
+    text += QStringLiteral("Custom FORCE_LOW value: %1\n")
+        .arg(intent->has_manual_value
+            ? QString::number(intent->manual_value, 'f', 4) : QStringLiteral("none"));
+    text += QStringLiteral("Reason: %1; editor: %2; edited (UTC): %3\n")
+        .arg(intent->audit.reason.empty() ? QStringLiteral("legacy / unspecified")
+                                           : QString::fromStdString(intent->audit.reason))
+        .arg(intent->audit.editor.empty() ? QStringLiteral("unspecified")
+                                           : QString::fromStdString(intent->audit.editor))
+        .arg(intent->audit.edited_at.empty() ? QStringLiteral("unspecified")
+                                              : QString::fromStdString(intent->audit.edited_at));
+  }
+  confidence_details_label_->setText(text);
+}
+
+void MainWindow::apply_confidence_override() {
+  if (confidence_review_runner_.is_running()) return;
+  if (!viewer_->showing_confidence() || confidence_model_.empty() ||
+      confidence_selection_manager_.selected_indices().empty()) return;
+  const auto mode = static_cast<agt_spatial_map_core::ManualOverrideMode>(
+      confidence_override_mode_combo_->currentData().toInt());
+  if (mode == agt_spatial_map_core::ManualOverrideMode::AUTO) {
+    restore_confidence_auto();
+    return;
+  }
+  ConfidenceOverrideIntent intent;
+  intent.mode = mode;
+  intent.has_manual_value = mode == agt_spatial_map_core::ManualOverrideMode::FORCE_LOW &&
+                            confidence_custom_low_check_->isChecked();
+  if (intent.has_manual_value) {
+    intent.manual_value = static_cast<float>(confidence_low_value_spin_->value());
+  }
+  intent.audit.reason = confidence_reason_combo_->currentText().toStdString();
+  intent.audit.edited_at = QDateTime::currentDateTimeUtc()
+      .toString(QStringLiteral("yyyy-MM-ddTHH:mm:ss'Z'")).toStdString();
+  QString editor = qEnvironmentVariable("USER");
+  editor.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_.@-]")), QStringLiteral("_"));
+  if (editor.isEmpty()) editor = QStringLiteral("map_studio");
+  intent.audit.editor = editor.left(64).toStdString();
+  std::string error;
+  const auto &indices = confidence_selection_manager_.selected_indices();
+  if (!confidence_editor_.apply(indices, intent, &error)) {
+    statusBar()->showMessage(error.empty() ? QStringLiteral("No override state changed")
+                                          : QString::fromStdString(error), 6000);
+    return;
+  }
+  viewer_->refresh_confidence_preview();
+  inspect_confidence_voxel(indices.front());
+  statusBar()->showMessage(QStringLiteral("DIRTY: previewed manual intent for %1 voxels; "
+                                           "Save Overrides separately")
+                               .arg(static_cast<qulonglong>(indices.size())), 7000);
+}
+
+void MainWindow::restore_confidence_auto() {
+  if (confidence_review_runner_.is_running()) return;
+  if (!viewer_->showing_confidence() || confidence_model_.empty()) return;
+  std::string error;
+  const auto &indices = confidence_selection_manager_.selected_indices();
+  if (!confidence_editor_.restore_auto(indices, &error)) {
+    statusBar()->showMessage(error.empty() ? QStringLiteral("Selected voxels are already AUTO")
+                                          : QString::fromStdString(error), 5000);
+    return;
+  }
+  viewer_->refresh_confidence_preview();
+  inspect_confidence_voxel(indices.empty() ? static_cast<std::size_t>(-1) : indices.front());
+  statusBar()->showMessage(QStringLiteral("Restore Auto previewed; source evidence is unchanged"), 6000);
+}
+
+void MainWindow::undo_confidence_override() {
+  if (confidence_review_runner_.is_running()) return;
+  if (confidence_editor_.undo()) {
+    viewer_->refresh_confidence_preview();
+    const auto &indices = confidence_selection_manager_.selected_indices();
+    inspect_confidence_voxel(indices.empty() ? static_cast<std::size_t>(-1) : indices.front());
+  }
+}
+
+void MainWindow::redo_confidence_override() {
+  if (confidence_review_runner_.is_running()) return;
+  if (confidence_editor_.redo()) {
+    viewer_->refresh_confidence_preview();
+    const auto &indices = confidence_selection_manager_.selected_indices();
+    inspect_confidence_voxel(indices.empty() ? static_cast<std::size_t>(-1) : indices.front());
+  }
+}
+
+bool MainWindow::save_confidence_overrides(const QString &path, bool allow_replace,
+                                           QString *error) {
+  if (confidence_model_.empty() || confidence_review_runner_.is_running()) {
+    if (error) *error = QStringLiteral("Open a derivative and wait for any core review to finish");
+    return false;
+  }
+  try {
+    if (QString::fromStdString(agt_spatial_map_core::sha256_file(
+            confidence_model_.info().derivative_dir / "checksums.sha256")) !=
+        loaded_confidence_checksums_sha256_) {
+      throw std::runtime_error("source derivative changed after it was loaded; reload before saving");
+    }
+    std::string io_error;
+    if (!SpatialConfidenceIntentIO::save(path.toStdString(), confidence_model_,
+                                         confidence_editor_, allow_replace, &io_error)) {
+      if (error) *error = QString::fromStdString(io_error);
+      return false;
+    }
+    const QString written = QFileInfo(path).canonicalFilePath();
+    const QString digest = QString::fromStdString(agt_spatial_map_core::sha256_file(
+        written.toStdString()));
+    saved_confidence_intent_path_ = written;
+    saved_confidence_intent_sha256_ = digest;
+    confidence_editor_.mark_saved();
+    refresh_confidence_editor_ui();
+    statusBar()->showMessage(QStringLiteral("Saved override INTENT only: %1; "
+                                            "no reviewed map has been rebuilt").arg(written), 9000);
+    return true;
+  } catch (const std::exception &exception) {
+    if (error) *error = QString::fromUtf8(exception.what());
+    return false;
+  }
+}
+
+void MainWindow::save_confidence_overrides_dialog() {
+  if (confidence_model_.empty()) return;
+  const QString suggested = saved_confidence_intent_path_.isEmpty()
+      ? QDir(QFileInfo(confidence_derivative_dir_).absolutePath()).filePath(
+            QStringLiteral("spatial_override_intent_%1.yaml").arg(stamp()))
+      : saved_confidence_intent_path_;
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("Save OVERRIDE INTENT ONLY (outside source package/derivative)"),
+      suggested, QStringLiteral("YAML intent (*.yaml *.yml);;All files (*)"));
+  if (path.isEmpty()) return;
+  const bool exists = QFileInfo::exists(path);
+  if (exists && QMessageBox::question(this, QStringLiteral("Replace saved intent YAML?"),
+        QStringLiteral("Replace only this separate intent file?\n%1\n\nThe source derivative "
+                       "and PGO map will never be replaced.").arg(path),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+  QString error;
+  if (!save_confidence_overrides(path, exists, &error)) {
+    QMessageBox::critical(this, QStringLiteral("Save Overrides failed"), error);
+  }
+}
+
+bool MainWindow::start_confidence_review(const QString &new_directory, QString *error) {
+  if (confidence_model_.empty() || saved_confidence_intent_path_.isEmpty()) {
+    if (error) *error = QStringLiteral("Open a verified derivative and Save Overrides YAML first");
+    return false;
+  }
+  if (confidence_review_runner_.is_running() || tool_runner_.is_running() ||
+      confidence_editor_.dirty()) {
+    if (error) *error = QStringLiteral("Finish running tools and Save DIRTY override intent first");
+    return false;
+  }
+  if (confidence_editor_.stable_preview_count() == 0) {
+    if (error) *error = QStringLiteral("No stable voxels: core cannot publish an empty PCD");
+    return false;
+  }
+  const std::filesystem::path target(new_directory.toStdString());
+  try {
+    if (new_directory.isEmpty() || target.filename().empty() || target.filename() == "." ||
+        target.filename() == ".." || !std::filesystem::is_directory(target.parent_path()) ||
+        std::filesystem::is_symlink(std::filesystem::symlink_status(target)) ||
+        (std::filesystem::exists(target) &&
+         (!std::filesystem::is_directory(target) || !std::filesystem::is_empty(target)))) {
+      throw std::invalid_argument("review target must be a NEW or empty directory with an existing parent");
+    }
+    if (QString::fromStdString(agt_spatial_map_core::sha256_file(
+            confidence_model_.info().derivative_dir / "checksums.sha256")) !=
+        loaded_confidence_checksums_sha256_) {
+      throw std::runtime_error("source derivative changed after loading; reopen it before review");
+    }
+    if (QString::fromStdString(agt_spatial_map_core::sha256_file(
+            saved_confidence_intent_path_.toStdString())) !=
+        saved_confidence_intent_sha256_) {
+      throw std::runtime_error("saved override YAML changed since Save Overrides; save again");
+    }
+  } catch (const std::exception &exception) {
+    if (error) *error = QString::fromUtf8(exception.what());
+    return false;
+  }
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_spatial_map_core/agt_spatial_map_export")}, &missing)) {
+    if (error) *error = QStringLiteral("Core CLI unavailable: %1").arg(missing);
+    return false;
+  }
+  const QString absolute_target = QFileInfo(new_directory).absoluteFilePath();
+  pending_review_target_ = absolute_target;
+  pending_review_parent_ = QString::fromStdString(confidence_model_.info().source_package.string());
+  pending_review_stable_count_ = confidence_editor_.stable_preview_count();
+  ToolInvocation invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("review spatial confidence (no navigation publish)"),
+      QStringLiteral("agt_spatial_map_core"), QStringLiteral("agt_spatial_map_export"),
+      {QStringLiteral("--map-package"), pending_review_parent_,
+       QStringLiteral("--source-derivative"), confidence_derivative_dir_,
+       QStringLiteral("--manual-overrides"), saved_confidence_intent_path_,
+       QStringLiteral("--output-dir"), absolute_target});
+  // Separate runner from the old 3D/2D/navigation workflow: core alone
+  // computes final/stable/checksums and never writes the current derivative.
+  confidence_review_runner_.start(invocation);
+  refresh_confidence_editor_ui();
+  return true;
+}
+
+void MainWindow::rebuild_confidence_review_dialog() {
+  if (confidence_model_.empty()) return;
+  if (confidence_editor_.dirty() || saved_confidence_intent_path_.isEmpty()) {
+    QMessageBox::warning(this, QStringLiteral("Save Overrides first"),
+        QStringLiteral("Save current intent YAML separately before the formal core rebuild."));
+    return;
+  }
+  const QString suggested = QDir(QFileInfo(confidence_derivative_dir_).absolutePath()).filePath(
+      QStringLiteral("reviewed_spatial_confidence_%1").arg(stamp()));
+  const QString output = QFileDialog::getSaveFileName(
+      this, QStringLiteral("Choose a NEW reviewed derivative DIRECTORY (not an existing file)"),
+      suggested);
+  if (output.isEmpty()) return;
+  if (QMessageBox::question(this, QStringLiteral("Run formal core review?"),
+      QStringLiteral("Source derivative (unchanged): %1\nPGO package (unchanged): %2\n"
+                     "Saved intent YAML: %3\nNEW reviewed derivative directory: %4\n\n"
+                     "Core preserves single-session automatic evidence, applies only your saved "
+                     "override intent, rebuilds stable PCD and checksums. This does NOT publish "
+                     "a navigation or production map. Continue?")
+          .arg(confidence_derivative_dir_,
+               QString::fromStdString(confidence_model_.info().source_package.string()),
+               saved_confidence_intent_path_, output),
+      QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+  QString error;
+  if (!start_confidence_review(output, &error)) {
+    QMessageBox::critical(this, QStringLiteral("Core review not started"), error);
+  }
 }
 
 void MainWindow::load_config(const QString &path) {
@@ -765,6 +1211,10 @@ bool MainWindow::open_pcd(const QString &path, QString *error) {
   std::string loader_error;
   if (!PCDLoader::load(path.toStdString(), &loaded, &loader_error)) {
     if (error) *error = QString::fromStdString(loader_error);
+    return false;
+  }
+  if (!confirm_discard_confidence_edits()) {
+    if (error) *error = QStringLiteral("Source change cancelled: spatial overrides are DIRTY");
     return false;
   }
   selection_manager_.reset(loaded.point_count());
@@ -844,15 +1294,35 @@ bool MainWindow::open_spatial_confidence(const QString &directory, QString *erro
     if (error) *error = validated ? QString::fromStdString(loader_error) : validation_error;
     return false;  // previous confidence model and view remain intact
   }
+  if (!confirm_discard_confidence_edits()) {
+    if (error) *error = QStringLiteral("Confidence source change cancelled: overrides DIRTY or core review running");
+    return false;
+  }
+  QString source_checksum_hash;
+  try {
+    source_checksum_hash = QString::fromStdString(agt_spatial_map_core::sha256_file(
+        loaded.info().derivative_dir / "checksums.sha256"));
+  } catch (const std::exception &exception) {
+    if (error) *error = QString::fromUtf8(exception.what());
+    return false;
+  }
   // Raw PCD and voxel representatives have disjoint indices and selection
   // histories. No spatial core evidence or source PCD value is mutated here.
   if (viewer_->mode() == InteractionMode::Delete) set_mode_select();
   set_point_color_mode(PointColorMode::Height);
+  viewer_->set_confidence_editor(nullptr);
+  confidence_editor_.set_model(nullptr);
   viewer_->set_confidence_model(nullptr);
   confidence_model_ = std::move(loaded);
   confidence_derivative_dir_ = QFileInfo(directory).canonicalFilePath();
+  loaded_confidence_checksums_sha256_ = source_checksum_hash;
+  saved_confidence_intent_path_.clear();
+  saved_confidence_intent_sha256_.clear();
   confidence_selection_manager_.reset(confidence_model_.voxels().size());
+  confidence_editor_.set_model(&confidence_model_);
   viewer_->set_confidence_model(&confidence_model_);
+  viewer_->set_confidence_editor(&confidence_editor_);
+  confidence_low_value_spin_->setValue(confidence_model_.info().force_low_value);
   stable_only_action_->setChecked(false);
   viewer_->set_stable_only(false);
   for (auto *action : confidence_color_actions_) action->setEnabled(true);
@@ -861,6 +1331,7 @@ bool MainWindow::open_spatial_confidence(const QString &directory, QString *erro
   set_point_color_mode(PointColorMode::AutoConfidence);
   show_3d_view();
   confidence_dock_->show();
+  confidence_dock_->raise();  // foreground the evidence/editor tab, not Publish Workflow
   inspect_confidence_voxel(static_cast<std::size_t>(-1));
   statusBar()->showMessage(QStringLiteral("Verified %1 confidence voxels (single-session evidence)")
                                .arg(static_cast<qulonglong>(confidence_model_.voxels().size())), 8000);
@@ -954,6 +1425,10 @@ bool MainWindow::open_mapping_review(const QString &package_dir, const QString &
   }
   if (review_output.trimmed().isEmpty()) {
     if (error) *error = QStringLiteral("Review output directory is empty");
+    return false;
+  }
+  if (!confirm_discard_confidence_edits()) {
+    if (error) *error = QStringLiteral("2D review change cancelled: spatial overrides are DIRTY");
     return false;
   }
 
@@ -1345,7 +1820,7 @@ void MainWindow::undo_edit() {
   if (view_stack_->currentWidget() == occupancy_viewer_) {
     if (refinement_model_.undo()) refresh_occupancy_view();
   } else if (viewer_->showing_confidence()) {
-    statusBar()->showMessage(QStringLiteral("No confidence override edits yet"), 3000);
+    undo_confidence_override();
   } else if (selection_manager_.undo()) {
     viewer_->mark_edit_state_dirty();
     sync_edit_fingerprints();
@@ -1356,7 +1831,7 @@ void MainWindow::redo_edit() {
   if (view_stack_->currentWidget() == occupancy_viewer_) {
     if (refinement_model_.redo()) refresh_occupancy_view();
   } else if (viewer_->showing_confidence()) {
-    statusBar()->showMessage(QStringLiteral("No confidence override edits yet"), 3000);
+    redo_confidence_override();
   } else if (selection_manager_.redo()) {
     viewer_->mark_edit_state_dirty();
     sync_edit_fingerprints();
@@ -1503,18 +1978,31 @@ void MainWindow::sync_edit_fingerprints() {
 void MainWindow::refresh_workflow() {
   if (!workflow_panel_) return;
   workflow_panel_->refresh(session_, tool_runner_.is_running());
-  if (edit_state_label_) {
-    QStringList parts;
-    if (session_.has_3d_edits()) {
-      parts << QStringLiteral("3D: %1").arg(session_.state(WorkflowSession::Refine) == StageState::Fresh
-                                                 ? QStringLiteral("refined") : QStringLiteral("unapplied"));
-    }
-    if (session_.has_2d_edits()) {
-      parts << QStringLiteral("2D: %1").arg(session_.state(WorkflowSession::Patch) == StageState::Fresh
-                                                 ? QStringLiteral("patched") : QStringLiteral("unapplied"));
-    }
-    edit_state_label_->setText(parts.isEmpty() ? QStringLiteral("no pending edits") : parts.join(QStringLiteral(" | ")));
+  update_edit_state_label();
+}
+
+void MainWindow::update_edit_state_label() {
+  if (!edit_state_label_) return;
+  QStringList parts;
+  if (session_.has_3d_edits()) {
+    parts << QStringLiteral("3D: %1").arg(session_.state(WorkflowSession::Refine) == StageState::Fresh
+                                               ? QStringLiteral("refined") : QStringLiteral("unapplied"));
   }
+  if (session_.has_2d_edits()) {
+    parts << QStringLiteral("2D: %1").arg(session_.state(WorkflowSession::Patch) == StageState::Fresh
+                                               ? QStringLiteral("patched") : QStringLiteral("unapplied"));
+  }
+  // Legacy workflow edits and confidence intent are disjoint, but neither may
+  // be silently called "no pending edits" when a human override is unsaved.
+  if (confidence_review_runner_.is_running()) {
+    parts << QStringLiteral("spatial review: core rebuilding a new derivative");
+  } else if (confidence_editor_.dirty()) {
+    parts << QStringLiteral("spatial overrides: DIRTY intent (not rebuilt)");
+  } else if (!saved_confidence_intent_path_.isEmpty()) {
+    parts << QStringLiteral("spatial overrides: saved intent (review separate)");
+  }
+  edit_state_label_->setText(parts.isEmpty() ? QStringLiteral("no pending edits")
+                                             : parts.join(QStringLiteral(" | ")));
 }
 
 // ---------------------------------------------------------------------------
@@ -1554,7 +2042,7 @@ bool MainWindow::tools_available(const QStringList &required, QString *missing) 
 }
 
 void MainWindow::run_tool(const ToolInvocation &invocation, std::function<void(const ToolResult &)> on_done) {
-  if (tool_runner_.is_running()) {
+  if (tool_runner_.is_running() || confidence_review_runner_.is_running()) {
     QMessageBox::information(this, QStringLiteral("Busy"), QStringLiteral("Another tool is still running."));
     return;
   }
@@ -1929,6 +2417,17 @@ void MainWindow::show_workflow_help() {
 void MainWindow::show_stats(const QString &text) { statusBar()->showMessage(text); }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
+  if (confidence_review_runner_.is_running()) {
+    QMessageBox::warning(this, QStringLiteral("Core review running"),
+        QStringLiteral("Wait for the core to finish its staged derivative rebuild before "
+                       "closing Studio. The source package and derivative remain unchanged."));
+    event->ignore();
+    return;
+  }
+  if (!confirm_discard_confidence_edits()) {
+    event->ignore();
+    return;
+  }
   if (tool_runner_.is_running()) {
     if (QMessageBox::question(this, QStringLiteral("Tool running"),
                               QStringLiteral("An external tool is still running. Cancel it and quit?"),

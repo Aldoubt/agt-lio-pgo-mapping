@@ -1,6 +1,7 @@
 #pragma once
 
 #include "confidence/SpatialConfidenceModel.hpp"
+#include "confidence/SpatialConfidenceEditor.hpp"
 #include "io/PCDLoader.hpp"
 #include "selection/SelectionBox.h"
 #include "selection/SelectionManager.h"
@@ -52,6 +53,7 @@ public:
   void set_color_mode(PointColorMode mode);
   PointColorMode color_mode() const { return color_mode_; }
   void set_confidence_model(const SpatialConfidenceModel *model);
+  void set_confidence_editor(const SpatialConfidenceEditor *editor);
   void set_confidence_selection_manager(SelectionManager *manager);
   void set_stable_only(bool enabled);
   bool stable_only() const { return stable_only_; }
@@ -128,6 +130,8 @@ private:
   std::optional<Eigen::Vector3f> unproject_to_ground(const QPoint &screen, float z) const;
   bool passes_z_window(float z) const;
   bool visible_for_selection(std::size_t index) const;
+  bool confidence_stable(std::size_t index) const;
+  std::size_t confidence_stable_count() const;
   void finish_polygon_selection();
 
   LoadedPointCloud cloud_;
@@ -149,6 +153,7 @@ private:
   bool dark_background_ = false;
   PointColorMode color_mode_ = PointColorMode::Height;
   const SpatialConfidenceModel *confidence_model_ = nullptr;  // owned by MainWindow
+  const SpatialConfidenceEditor *confidence_editor_ = nullptr;  // intent preview, separate
   SelectionManager *confidence_selection_manager_ = nullptr;
   Eigen::Vector3f confidence_min_bound_ = Eigen::Vector3f::Zero();
   Eigen::Vector3f confidence_max_bound_ = Eigen::Vector3f::Zero();

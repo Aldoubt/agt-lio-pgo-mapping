@@ -40,9 +40,8 @@ const ConfidenceVoxel *SpatialConfidenceModel::find(
 bool SpatialConfidenceModel::is_stable_preview(std::size_t index) const {
   const auto &v = voxels_.at(index);
   // Preview only. The published stable_map.pcd is always rebuilt by core.
-  return v.override_mode != agt_spatial_map_core::ManualOverrideMode::IGNORE &&
-         v.override_mode != agt_spatial_map_core::ManualOverrideMode::FORCE_LOW &&
-         v.final_confidence >= info_.stable_threshold;
+  return agt_spatial_map_core::stable_preview_selected(
+      v.final_confidence, v.override_mode, info_.stable_threshold);
 }
 
 std::size_t SpatialConfidenceModel::stable_preview_count() const {

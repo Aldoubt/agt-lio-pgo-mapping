@@ -23,6 +23,7 @@ class QDockWidget;
 class QDoubleSpinBox;
 class QLabel;
 class QMenu;
+class QPushButton;
 class QToolBar;
 
 namespace agt_map_studio {
@@ -40,6 +41,11 @@ public:
   // package directory (localization/global_map.pcd + navigation/map.yaml).
   bool open_mapping_package(const QString &directory, QString *error = nullptr);
   bool open_spatial_confidence(const QString &directory, QString *error = nullptr);
+  // Save v1 intent YAML only; never modifies the opened derivative. The core
+  // reviewed rebuild is a distinct asynchronous operation below.
+  bool save_confidence_overrides(const QString &path, bool allow_replace = false,
+                                 QString *error = nullptr);
+  bool start_confidence_review(const QString &new_directory, QString *error = nullptr);
   bool open_occupancy_map(const QString &path, QString *error = nullptr);
   bool open_session(const QString &session_file, QString *error = nullptr);
   // Lightweight post-mapping review: keep the PCD as provenance, but load
@@ -55,6 +61,12 @@ private slots:
   void open_mapping_package_dialog();
   void open_spatial_confidence_dialog();
   void inspect_confidence_voxel(std::size_t index);
+  void apply_confidence_override();
+  void restore_confidence_auto();
+  void undo_confidence_override();
+  void redo_confidence_override();
+  void save_confidence_overrides_dialog();
+  void rebuild_confidence_review_dialog();
   void open_occupancy_map_dialog();
   void open_session_dialog();
   void save_view_dialog();
@@ -102,6 +114,9 @@ private:
   void create_confidence_dock();
   void clear_confidence_view();
   void set_point_color_mode(PointColorMode mode);
+  void refresh_confidence_editor_ui();
+  void update_edit_state_label();
+  bool confirm_discard_confidence_edits();
   void load_config(const QString &path);
   void apply_erase_rectangle(double min_x, double min_y, double max_x, double max_y);
   void apply_obstacle_line(double start_x, double start_y, double end_x, double end_y,
@@ -132,6 +147,19 @@ private:
   QDockWidget *confidence_dock_ = nullptr;
   QLabel *confidence_details_label_ = nullptr;
   QLabel *confidence_status_label_ = nullptr;
+  QLabel *confidence_edit_state_label_ = nullptr;
+  QComboBox *confidence_override_mode_combo_ = nullptr;
+  QComboBox *confidence_reason_combo_ = nullptr;
+  QCheckBox *confidence_custom_low_check_ = nullptr;
+  QDoubleSpinBox *confidence_low_value_spin_ = nullptr;
+  QPushButton *confidence_apply_button_ = nullptr;
+  QPushButton *confidence_restore_button_ = nullptr;
+  QPushButton *confidence_undo_button_ = nullptr;
+  QPushButton *confidence_redo_button_ = nullptr;
+  QPushButton *confidence_save_button_ = nullptr;
+  QPushButton *confidence_rebuild_button_ = nullptr;
+  QAction *confidence_save_action_ = nullptr;
+  QAction *confidence_rebuild_action_ = nullptr;
   WorkflowPanel *workflow_panel_ = nullptr;
   QComboBox *selection_tool_combo_ = nullptr;
   QCheckBox *z_window_check_ = nullptr;
@@ -160,10 +188,18 @@ private:
   RefinementModel refinement_model_;
   SelectionManager selection_manager_;
   SpatialConfidenceModel confidence_model_;
+  SpatialConfidenceEditor confidence_editor_;
   SelectionManager confidence_selection_manager_;
   QString confidence_derivative_dir_;
+  QString loaded_confidence_checksums_sha256_;
+  QString saved_confidence_intent_path_;
+  QString saved_confidence_intent_sha256_;
+  QString pending_review_target_;
+  QString pending_review_parent_;
+  std::size_t pending_review_stable_count_ = 0;
   WorkflowSession session_;
   ExternalToolRunner tool_runner_;
+  ExternalToolRunner confidence_review_runner_;
   std::function<void(const ToolResult &)> tool_callback_;
   std::vector<StepFn> step_queue_;
   bool queue_running_ = false;

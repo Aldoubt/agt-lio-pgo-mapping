@@ -32,6 +32,8 @@ struct ConfidenceVoxel {
   bool has_manual_value = false;
   float manual_value = 0.0F;
   float final_confidence = 0.0F;
+  bool has_override_entry = false;  // includes an explicit AUTO in reviewed YAML
+  agt_spatial_map_core::ManualOverrideAudit audit;
 };
 
 struct ConfidenceArtifactInfo {

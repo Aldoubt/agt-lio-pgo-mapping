@@ -7,6 +7,7 @@
 #include <pcl/io/pcd_io.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -273,14 +274,17 @@ std::vector<ConfidenceVoxel> read_voxels(const fs::path &file,
                               v.final_confidence, v.manual_value}) {
       unit_value(score, "confidence PCD score");
     }
+    if (v.geometry_score != 1.0F) {
+      throw std::invalid_argument("V1 geometry_score must remain 1 (deferred)");
+    }
     validate_override_result(v, info.force_low_value);
     voxels.emplace_back(std::move(v));
   }
   return voxels;
 }
 
-void read_overrides(const fs::path &file, const ConfidenceArtifactInfo &info,
-                    const std::vector<ConfidenceVoxel> &voxels) {
+std::size_t read_overrides(const fs::path &file, const ConfidenceArtifactInfo &info,
+                           std::vector<ConfidenceVoxel> *voxels) {
   const auto root = YAML::LoadFile(file.string());
   schema_version(root, "manual_overrides");
   allowed_keys(root, {"schema_version", "coordinate_system", "voxel_size", "overrides"});
@@ -290,16 +294,17 @@ void read_overrides(const fs::path &file, const ConfidenceArtifactInfo &info,
   }
   const auto entries = root["overrides"];
   if (!entries || !entries.IsSequence()) throw std::invalid_argument("Invalid manual_overrides entries");
-  std::unordered_map<VoxelKey, const ConfidenceVoxel *, VoxelKeyHash> by_key;
-  by_key.reserve(voxels.size());
-  for (const auto &v : voxels) {
+  std::unordered_map<VoxelKey, ConfidenceVoxel *, VoxelKeyHash> by_key;
+  by_key.reserve(voxels->size());
+  for (auto &v : *voxels) {
     if (!by_key.emplace(v.key, &v).second) {
       throw std::invalid_argument("Duplicate confidence voxel key");
     }
   }
   std::unordered_set<VoxelKey, VoxelKeyHash> seen;
   for (const auto &entry : entries) {
-    allowed_keys(entry, {"key", "mode", "value"});  // exact Phase 1 v1 schema
+    allowed_keys(entry, {"key", "mode", "value", "reason", "edited_at", "editor"});
+    // Optional audit keys were explicitly added to the core v1 parser first.
     const auto key_node = entry["key"];
     if (!key_node || !key_node.IsSequence() || key_node.size() != 3 || !entry["mode"]) {
       throw std::invalid_argument("Invalid manual override key/mode");
@@ -315,33 +320,98 @@ void read_overrides(const fs::path &file, const ConfidenceArtifactInfo &info,
     } catch (const std::exception &) {
       throw std::invalid_argument("Malformed override mode: " + entry["mode"].as<std::string>());
     }
-    const auto &v = *found->second;
+    auto &v = *found->second;
     if (v.override_mode != mode || v.has_manual_value != static_cast<bool>(entry["value"]) ||
         (v.has_manual_value && !close_to(v.manual_value, entry["value"].as<float>()))) {
       throw std::invalid_argument("manual_overrides conflicts with confidence PCD values");
     }
+    const auto optional_audit = [&entry](const char *field) -> std::string {
+      const auto node = entry[field];
+      if (!node) return {};
+      if (!node.IsScalar() || node.as<std::string>().empty()) {
+        throw std::invalid_argument(std::string("invalid or empty manual override ") + field);
+      }
+      return node.as<std::string>();
+    };
+    agt_spatial_map_core::ManualOverrideAudit audit{
+        optional_audit("reason"), optional_audit("edited_at"), optional_audit("editor")};
+    agt_spatial_map_core::validate_manual_override_audit(audit);
+    v.has_override_entry = true;
+    v.audit = std::move(audit);
   }
-  for (const auto &v : voxels) {
+  for (const auto &v : *voxels) {
     if (v.override_mode != ManualOverrideMode::AUTO && !seen.count(v.key)) {
       throw std::invalid_argument("confidence PCD has an override absent from manual_overrides.yaml");
     }
   }
+  return seen.size();
 }
 
-void verify_stable_map(const fs::path &path, const YAML::Node &metadata) {
+void verify_stable_map(const fs::path &path, const YAML::Node &metadata,
+                       const std::vector<ConfidenceVoxel> &voxels, float threshold) {
   pcl::PCLPointCloud2 cloud;
   if (pcl::io::loadPCDFile(path.string(), cloud) != 0) {
     throw std::invalid_argument("Cannot load stable_map.pcd");
   }
-  const auto fields = metadata["stable_map_pcd_fields"];
-  if (!fields || !fields.IsSequence() || fields.size() != 4 ||
-      fields[0].as<std::string>() != "x" || fields[1].as<std::string>() != "y" ||
-      fields[2].as<std::string>() != "z" || fields[3].as<std::string>() != "intensity") {
+  constexpr std::array<const char *, 4> kFields{{"x", "y", "z", "intensity"}};
+  const auto declared = metadata["stable_map_pcd_fields"];
+  if (!declared || !declared.IsSequence() || declared.size() != kFields.size()) {
     throw std::invalid_argument("confidence metadata declares incompatible stable map fields");
   }
+  if (cloud.height != 1 || cloud.width == 0 || cloud.is_bigendian ||
+      cloud.data.size() != static_cast<std::size_t>(cloud.width) * cloud.point_step ||
+      cloud.row_step != cloud.width * static_cast<std::uint64_t>(cloud.point_step)) {
+    throw std::invalid_argument("invalid stable_map.pcd layout");
+  }
+  std::array<std::uint32_t, 4> offsets{};
+  std::size_t actual_count = 0;
+  for (const auto &field : cloud.fields) {
+    if (field.name == "_") continue;  // optional PCL padding, never evidence
+    if (actual_count >= kFields.size() || field.name != kFields[actual_count] ||
+        field.datatype != pcl::PCLPointField::FLOAT32 || field.count != 1 ||
+        field.offset > cloud.point_step || 4 > cloud.point_step - field.offset ||
+        !declared[actual_count].IsScalar() ||
+        declared[actual_count].as<std::string>() != kFields[actual_count]) {
+      throw std::invalid_argument("stable_map.pcd field schema mismatch");
+    }
+    offsets[actual_count++] = field.offset;
+  }
+  if (actual_count != kFields.size()) {
+    throw std::invalid_argument("stable_map.pcd missing required field");
+  }
   const auto count = metadata["counts"]["stable_voxels"].as<std::uint64_t>();
-  if (cloud.width * static_cast<std::uint64_t>(cloud.height) != count) {
+  if (cloud.width != count) {
     throw std::invalid_argument("stable_map.pcd point count conflicts with confidence metadata");
+  }
+  std::vector<const ConfidenceVoxel *> sorted;
+  sorted.reserve(voxels.size());
+  for (const auto &voxel : voxels) sorted.push_back(&voxel);
+  std::sort(sorted.begin(), sorted.end(), [](const auto *a, const auto *b) {
+    return a->key < b->key;
+  });
+  std::size_t index = 0;
+  for (const auto *voxel : sorted) {
+    if (!agt_spatial_map_core::stable_preview_selected(
+            voxel->final_confidence, voxel->override_mode, threshold)) continue;
+    if (index >= cloud.width) {
+      throw std::invalid_argument("stable_map.pcd has fewer points than its selected voxels");
+    }
+    const auto *data = cloud.data.data() + index * cloud.point_step;
+    for (std::size_t f = 0; f < kFields.size(); ++f) {
+      float value = 0.0F;
+      std::memcpy(&value, data + offsets[f], sizeof(value));
+      const float expected = f == 0 ? voxel->center.x()
+                             : f == 1 ? voxel->center.y()
+                             : f == 2 ? voxel->center.z()
+                                      : voxel->final_confidence;
+      if (!std::isfinite(value) || !close_to(value, expected)) {
+        throw std::invalid_argument("stable_map.pcd content conflicts with confidence evidence");
+      }
+    }
+    ++index;
+  }
+  if (index != cloud.width) {
+    throw std::invalid_argument("stable_map.pcd has extra points not selected by confidence evidence");
   }
 }
 
@@ -374,6 +444,12 @@ bool SpatialConfidenceLoader::load(const fs::path &derivative_dir,
     const auto parameters = metadata["parameters"];
     if (!source || !source.IsMap() || !parameters || !parameters.IsMap()) {
       throw std::invalid_argument("confidence metadata source/parameters missing");
+    }
+    const auto geometry = metadata["geometry"];
+    if (!geometry || !geometry.IsMap() || !geometry["mode"] || !geometry["score"] ||
+        geometry["mode"].as<std::string>() != "deferred" ||
+        geometry["score"].as<float>() != 1.0F) {
+      throw std::invalid_argument("V1 geometry must remain deferred with an unedited score of 1");
     }
     ConfidenceArtifactInfo info;
     info.derivative_dir = root;
@@ -408,8 +484,11 @@ bool SpatialConfidenceLoader::load(const fs::path &derivative_dir,
     if (metadata["counts"]["confidence_voxels"].as<std::uint64_t>() != voxels.size()) {
       throw std::invalid_argument("confidence PCD voxel count conflicts with metadata");
     }
-    read_overrides(root / "manual_overrides.yaml", info, voxels);
-    verify_stable_map(root / "stable_map.pcd", metadata);
+    const auto override_count = read_overrides(root / "manual_overrides.yaml", info, &voxels);
+    if (metadata["counts"]["manual_overrides"].as<std::uint64_t>() != override_count) {
+      throw std::invalid_argument("manual override count conflicts with confidence metadata");
+    }
+    verify_stable_map(root / "stable_map.pcd", metadata, voxels, info.stable_threshold);
     SpatialConfidenceModel candidate;
     candidate.assign(std::move(info), std::move(voxels));
     if (candidate.stable_preview_count() != candidate.info().stable_voxels) {

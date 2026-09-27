@@ -181,6 +181,79 @@ TEST_F(SpatialConfidenceLoaderTest, RejectsMalformedOverrideModeAndUnknownTarget
   EXPECT_NE(error.find("unknown voxel"), std::string::npos) << error;
 }
 
+TEST_F(SpatialConfidenceLoaderTest, LoadsCoreReviewedAuditAndRejectsInvalidResealedReason) {
+  core::SpatialEvidenceMap evidence;
+  auto add = [&evidence](const core::VoxelKey &key, unsigned n, unsigned span) {
+    core::SpatialVoxelEvidence v;
+    v.key = key;
+    v.centroid = Eigen::Vector3f(key.x * 0.2F + .05F, key.y * 0.2F + .05F, .05F);
+    v.point_count = n + 2;
+    v.observed_keyframes = n;
+    v.first_keyframe = 0;
+    v.last_keyframe = span;
+    v.keyframe_span = span;
+    core::calculate_confidence(&v, core::ConfidenceParameters{});
+    evidence.emplace(key, v);
+  };
+  add({-3, -2, 0}, 4, 4);
+  add({2, 0, 0}, 1, 0);
+  const auto input = root_ / "review_intents.yaml";
+  write(input, "schema_version: 1\ncoordinate_system: voxel_index\nvoxel_size: 0.2\n"
+               "overrides: [{key: [2, 0, 0], mode: FORCE_HIGH, "
+               "reason: MANUAL_ANCHOR, edited_at: '2026-09-27T12:34:56Z', editor: yangxuan}]\n");
+  core::SpatialExportOptions options;
+  options.parent_package = parent_;
+  options.output_directory = root_ / "reviewed";
+  options.manual_overrides = input;
+  options.build_stats = core::EvidenceBuildStats{5, 11, 11, 0, 2};
+  core::export_spatial_artifacts(&evidence, options);
+  SpatialConfidenceModel model;
+  std::string error;
+  ASSERT_TRUE(SpatialConfidenceLoader::load(options.output_directory, parent_, &model, &error)) << error;
+  const auto *reviewed = model.find(core::VoxelKey{2, 0, 0});
+  ASSERT_NE(reviewed, nullptr);
+  EXPECT_TRUE(reviewed->has_override_entry);
+  EXPECT_EQ(reviewed->audit.reason, "MANUAL_ANCHOR");
+  EXPECT_EQ(reviewed->audit.editor, "yangxuan");
+  EXPECT_EQ(reviewed->audit.edited_at, "2026-09-27T12:34:56Z");
+  EXPECT_FALSE(model.find(core::VoxelKey{-3, -2, 0})->has_override_entry);
+  EXPECT_EQ(model.stable_preview_count(), 2U);
+  const auto manual = options.output_directory / "manual_overrides.yaml";
+  auto yaml = read(manual);
+  const auto pos = yaml.find("MANUAL_ANCHOR");
+  ASSERT_NE(pos, std::string::npos);
+  yaml.replace(pos, std::string("MANUAL_ANCHOR").size(), "STABILITY_PROB");
+  write(manual, yaml);
+  derivative_ = options.output_directory;
+  reseal();
+  error.clear();
+  EXPECT_FALSE(SpatialConfidenceLoader::load(derivative_, parent_, &model, &error));
+  EXPECT_NE(error.find("reason"), std::string::npos) << error;
+  EXPECT_EQ(model.stable_preview_count(), 2U);  // failed load does not replace model
+}
+
+TEST_F(SpatialConfidenceLoaderTest, RejectsResealedStableContentAndUndeferredGeometry) {
+  const auto stable_path = derivative_ / "stable_map.pcd";
+  pcl::PCLPointCloud2 stable;
+  ASSERT_EQ(pcl::io::loadPCDFile(stable_path.string(), stable), 0);
+  ASSERT_EQ(stable.width, 1U);
+  float wrong_x = 9876.0F;
+  std::memcpy(stable.data.data(), &wrong_x, sizeof(wrong_x));
+  ASSERT_EQ(pcl::PCDWriter{}.writeBinary(stable_path.string(), stable), 0);
+  reseal();
+  SpatialConfidenceModel model;
+  std::string error;
+  EXPECT_FALSE(SpatialConfidenceLoader::load(derivative_, parent_, &model, &error));
+  EXPECT_NE(error.find("stable_map.pcd content conflicts"), std::string::npos) << error;
+
+  // Even if the attacker re-seals metadata, V1 cannot claim calculated
+  // geometry (or silently mutate geometry_score in the voxel PCD).
+  change_metadata([](YAML::Node &n) { n["geometry"]["mode"] = "estimated"; });
+  error.clear();
+  EXPECT_FALSE(SpatialConfidenceLoader::load(derivative_, parent_, &model, &error));
+  EXPECT_NE(error.find("geometry"), std::string::npos) << error;
+}
+
 TEST_F(SpatialConfidenceLoaderTest, RejectsDuplicateVoxelKeysInPcd) {
   const auto path = derivative_ / "confidence_voxels.pcd";
   pcl::PCLPointCloud2 cloud;

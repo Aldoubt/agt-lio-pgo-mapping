@@ -33,6 +33,8 @@ add_executable(map_viewer
   src/confidence/SpatialConfidenceModel.cpp
   src/confidence/SpatialConfidenceLoader.cpp
   src/confidence/ConfidenceColor.cpp
+  src/confidence/SpatialConfidenceEditor.cpp
+  src/confidence/SpatialConfidenceIntentIO.cpp
   src/viewer/CameraController.cpp
   src/viewer/PointCloudViewer.cpp
   src/selection/SelectionBox.cpp
@@ -90,6 +92,28 @@ if(BUILD_TESTING)
     test/test_camera_controller.cpp src/viewer/CameraController.cpp)
   target_include_directories(test_camera_controller PRIVATE src)
   target_link_libraries(test_camera_controller ${QT_WIDGETS_TARGET})
+
+  ament_add_gtest(test_confidence_editor
+    test/test_confidence_editor.cpp
+    src/confidence/SpatialConfidenceModel.cpp
+    src/confidence/SpatialConfidenceEditor.cpp)
+  target_include_directories(test_confidence_editor PRIVATE src)
+  target_link_libraries(test_confidence_editor agt_spatial_map_core::agt_spatial_map_core)
+
+  ament_add_gtest(test_confidence_roundtrip
+    test/test_confidence_roundtrip.cpp
+    src/confidence/SpatialConfidenceModel.cpp
+    src/confidence/SpatialConfidenceLoader.cpp
+    src/confidence/SpatialConfidenceEditor.cpp
+    src/confidence/SpatialConfidenceIntentIO.cpp
+    src/io/PCDLoader.cpp
+    src/selection/SelectionManager.cpp)
+  target_include_directories(test_confidence_roundtrip PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_compile_definitions(test_confidence_roundtrip PRIVATE ${PCL_DEFINITIONS})
+  ament_target_dependencies(test_confidence_roundtrip ament_index_cpp)
+  target_link_libraries(test_confidence_roundtrip
+    agt_spatial_map_core::agt_spatial_map_core ${PCL_LIBRARIES}
+    ${QT_WIDGETS_TARGET} yaml-cpp)
 
   ament_add_gtest(test_spatial_confidence_loader
     test/test_spatial_confidence_loader.cpp

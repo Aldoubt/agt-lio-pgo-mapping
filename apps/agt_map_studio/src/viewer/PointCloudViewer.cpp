@@ -14,6 +14,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -139,6 +140,11 @@ void PointCloudViewer::set_confidence_model(const SpatialConfidenceModel *model)
   update();
 }
 
+void PointCloudViewer::set_confidence_editor(const SpatialConfidenceEditor *editor) {
+  confidence_editor_ = editor;
+  refresh_confidence_preview();
+}
+
 void PointCloudViewer::set_confidence_selection_manager(SelectionManager *manager) {
   confidence_selection_manager_ = manager;
   confidence_status_dirty_ = true;
@@ -204,11 +210,21 @@ bool PointCloudViewer::passes_z_window(float z) const {
   return !z_window_enabled_ || (z >= z_window_min_ && z <= z_window_max_);
 }
 
+bool PointCloudViewer::confidence_stable(std::size_t index) const {
+  return confidence_editor_ ? confidence_editor_->stable_preview(index)
+                            : confidence_model_->is_stable_preview(index);
+}
+
+std::size_t PointCloudViewer::confidence_stable_count() const {
+  return confidence_editor_ ? confidence_editor_->stable_preview_count()
+                            : confidence_model_->stable_preview_count();
+}
+
 bool PointCloudViewer::visible_for_selection(std::size_t index) const {
   const auto *manager = active_selection_manager();
   if (!manager || index >= manager->statuses().size()) return false;
   if (confidence_mode()) {
-    return !stable_only_ || confidence_model_->is_stable_preview(index);
+    return !stable_only_ || confidence_stable(index);
   }
   return manager->statuses()[index] != PointStatus::DELETED;
 }
@@ -278,7 +294,7 @@ QString PointCloudViewer::stats_text() const {
     text = QStringLiteral("Single-session confidence voxels: %1 | Selected: %2 | Stable preview: %3 | Mode: %4")
         .arg(static_cast<qulonglong>(confidence_model_->voxels().size()))
         .arg(static_cast<qulonglong>(selected))
-        .arg(static_cast<qulonglong>(confidence_model_->stable_preview_count()))
+        .arg(static_cast<qulonglong>(confidence_stable_count()))
         .arg(mode_text());
     if (stable_only_) text += QStringLiteral(" | Show Stable Only");
   } else {
@@ -661,7 +677,7 @@ void PointCloudViewer::upload_confidence_statuses() {
   const bool isolate = matched && confidence_selection_manager_->isolate_selected() &&
                        confidence_selection_manager_->selected_count() != 0U;
   for (std::size_t i = 0; i < count; ++i) {
-    if (stable_only_ && !confidence_model_->is_stable_preview(i)) {
+    if (stable_only_ && !confidence_stable(i)) {
       statuses[i] = 3.0F;  // hidden; not part of formal stable_map.pcd
     } else if (matched) {
       const auto state = confidence_selection_manager_->statuses()[i];
@@ -682,10 +698,14 @@ void PointCloudViewer::upload_confidence_colors() {
   std::vector<float> colors;
   if (confidence_model_) {
     colors.reserve(confidence_model_->voxels().size() * 3U);
-    for (const auto &v : confidence_model_->voxels()) {
+    for (std::size_t i = 0; i < confidence_model_->voxels().size(); ++i) {
+      const auto &v = confidence_model_->voxels()[i];
       float score = v.auto_confidence;
       switch (color_mode_) {
-        case PointColorMode::FinalConfidence: score = v.final_confidence; break;
+        case PointColorMode::FinalConfidence:
+          score = confidence_editor_ ? confidence_editor_->preview_final(i)
+                                     : v.final_confidence;
+          break;
         case PointColorMode::ObservationScore: score = v.observation_score; break;
         case PointColorMode::PersistenceScore: score = v.persistence_score; break;
         default: break;
@@ -847,13 +867,14 @@ void PointCloudViewer::pick_confidence_voxel(const QPoint &screen) {
   if (!confidence_mode() || !confidence_selection_manager_) return;
   const QMatrix4x4 mvp = camera_.projection_matrix() * camera_.view_matrix();
   std::size_t best = static_cast<std::size_t>(-1);
-  int best_distance = 12 * 12;
+  qint64 best_distance = 12 * 12;
   for (std::size_t i = 0; i < confidence_model_->voxels().size(); ++i) {
-    if (stable_only_ && !confidence_model_->is_stable_preview(i)) continue;
+    if (stable_only_ && !confidence_stable(i)) continue;
     const auto p = project(i, mvp);
     if (!p) continue;
-    const QPoint delta = *p - screen;
-    const int distance = delta.x() * delta.x() + delta.y() * delta.y();
+    const qint64 dx = static_cast<qint64>(p->x()) - screen.x();
+    const qint64 dy = static_cast<qint64>(p->y()) - screen.y();
+    const qint64 distance = dx * dx + dy * dy;
     if (distance < best_distance) { best_distance = distance; best = i; }
   }
   if (best == static_cast<std::size_t>(-1)) return;
@@ -872,6 +893,9 @@ std::optional<QPoint> PointCloudViewer::project(std::size_t i, const QMatrix4x4 
                                        xyz[i * 3U + 2U], 1.0F));
   if (clip.w() <= 0.0F) return std::nullopt;
   const QVector3D ndc = clip.toVector3DAffine();
+  if (!std::isfinite(ndc.x()) || !std::isfinite(ndc.y()) ||
+      ndc.x() < -2.0F || ndc.x() > 2.0F ||
+      ndc.y() < -2.0F || ndc.y() > 2.0F) return std::nullopt;
   return QPoint(qRound((ndc.x() + 1.0F) * 0.5F * width()),
                 qRound((1.0F - ndc.y()) * 0.5F * height()));
 }
