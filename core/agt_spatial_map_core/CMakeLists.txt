@@ -13,7 +13,8 @@ find_package(OpenSSL REQUIRED)
 add_library(${PROJECT_NAME} SHARED
   src/spatial_evidence.cpp
   src/spatial_evidence_builder.cpp
-  src/spatial_export.cpp)
+  src/spatial_export.cpp
+  src/spatial_review_source.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -42,6 +43,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_spatial_evidence_builder ${PROJECT_NAME})
   ament_add_gtest(test_spatial_export test/test_spatial_export.cpp)
   target_link_libraries(test_spatial_export ${PROJECT_NAME} yaml-cpp)
+  ament_add_gtest(test_spatial_review test/test_spatial_review.cpp)
+  target_link_libraries(test_spatial_review ${PROJECT_NAME} yaml-cpp)
 
   # Compile the actual unchanged legacy implementation into a regression-only
   # executable: no new dependency or behavior change in the old exporter.

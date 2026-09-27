@@ -1,4 +1,5 @@
 #include "agt_spatial_map_core/spatial_export.hpp"
+#include "spatial_review_source.hpp"
 
 #include <pcl/PCLPointCloud2.h>
 #include <pcl/PCLPointField.h>
@@ -22,6 +23,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <unistd.h>
@@ -110,9 +112,7 @@ std::vector<const SpatialVoxelEvidence *> ordered_voxels(const SpatialEvidenceMa
 }
 
 bool selected(const SpatialVoxelEvidence &v, const ConfidenceParameters &p) {
-  return v.override_mode != ManualOverrideMode::IGNORE &&
-         v.override_mode != ManualOverrideMode::FORCE_LOW &&
-         v.final_confidence >= p.stable_threshold;
+  return stable_preview_selected(v.final_confidence, v.override_mode, p.stable_threshold);
 }
 
 void write_voxel_pcd(const fs::path &file,
@@ -224,22 +224,42 @@ YAML::Node read_override_file(const fs::path &file, const ConfidenceParameters &
   return root["overrides"];
 }
 
-std::unordered_set<VoxelKey, VoxelKeyHash> apply_overrides(
-    SpatialEvidenceMap *voxels, const fs::path &file, const ConfidenceParameters &p) {
+struct AppliedOverrides {
   std::unordered_set<VoxelKey, VoxelKeyHash> touched;
-  if (file.empty()) return touched;
+  std::unordered_map<VoxelKey, ManualOverrideAudit, VoxelKeyHash> audit;
+};
+
+AppliedOverrides apply_overrides(
+    SpatialEvidenceMap *voxels, const fs::path &file, const ConfidenceParameters &p,
+    bool preserve_automatic_evidence) {
+  AppliedOverrides applied;
+  if (file.empty()) return applied;
   const YAML::Node entries = read_override_file(file, p);
   for (const auto &entry : entries) {
-    allowed_keys(entry, {"key", "mode", "value"});
+    allowed_keys(entry, {"key", "mode", "value", "reason", "edited_at", "editor"});
     const auto coordinates = entry["key"];
     if (!coordinates || !coordinates.IsSequence() || coordinates.size() != 3 || !entry["mode"]) {
       throw std::invalid_argument("manual override needs key: [x, y, z] and mode");
     }
     const VoxelKey key{coordinates[0].as<std::int64_t>(), coordinates[1].as<std::int64_t>(),
                        coordinates[2].as<std::int64_t>()};
-    if (!touched.insert(key).second) throw std::invalid_argument("duplicate manual voxel key");
+    if (!applied.touched.insert(key).second) {
+      throw std::invalid_argument("duplicate manual voxel key");
+    }
     const auto found = voxels->find(key);
     if (found == voxels->end()) throw std::invalid_argument("manual override targets an unobserved voxel");
+    const auto optional_audit = [&entry](const char *field) -> std::string {
+      const auto node = entry[field];
+      if (!node) return {};
+      if (!node.IsScalar() || node.as<std::string>().empty()) {
+        throw std::invalid_argument(std::string("invalid or empty manual override ") + field);
+      }
+      return node.as<std::string>();
+    };
+    ManualOverrideAudit audit{optional_audit("reason"), optional_audit("edited_at"),
+                              optional_audit("editor")};
+    validate_manual_override_audit(audit);
+    applied.audit.emplace(key, std::move(audit));
     auto &v = found->second;
     v.override_mode = parse_override_mode(entry["mode"].as<std::string>());
     v.has_manual_value = static_cast<bool>(entry["value"]);
@@ -247,14 +267,19 @@ std::unordered_set<VoxelKey, VoxelKeyHash> apply_overrides(
       throw std::invalid_argument("explicit override value is only supported for FORCE_LOW");
     }
     if (v.has_manual_value) v.manual_value = entry["value"].as<float>();
-    calculate_confidence(&v, p);
+    if (preserve_automatic_evidence) {
+      v.final_confidence = manual_final_confidence(v.auto_confidence, v.override_mode,
+          v.has_manual_value, v.manual_value, p.force_low_value);
+    } else {
+      calculate_confidence(&v, p);
+    }
   }
-  return touched;
+  return applied;
 }
 
 void write_overrides(const fs::path &path,
                      const std::vector<const SpatialVoxelEvidence *> &sorted,
-                     const std::unordered_set<VoxelKey, VoxelKeyHash> &touched,
+                     const AppliedOverrides &applied,
                      const ConfidenceParameters &p) {
   YAML::Emitter yaml;
   yaml << YAML::BeginMap << YAML::Key << "schema_version" << YAML::Value << 1
@@ -262,11 +287,24 @@ void write_overrides(const fs::path &path,
        << YAML::Key << "voxel_size" << YAML::Value << p.voxel_size
        << YAML::Key << "overrides" << YAML::Value << YAML::BeginSeq;
   for (const auto *v : sorted) {
-    if (v->override_mode == ManualOverrideMode::AUTO && !touched.count(v->key)) continue;
+    if (v->override_mode == ManualOverrideMode::AUTO && !applied.touched.count(v->key)) continue;
     yaml << YAML::BeginMap << YAML::Key << "key" << YAML::Value << YAML::Flow
          << YAML::BeginSeq << v->key.x << v->key.y << v->key.z << YAML::EndSeq
          << YAML::Key << "mode" << YAML::Value << override_mode_name(v->override_mode);
     if (v->has_manual_value) yaml << YAML::Key << "value" << YAML::Value << v->manual_value;
+    const auto audit = applied.audit.find(v->key);
+    if (audit != applied.audit.end()) {
+      if (!audit->second.reason.empty()) {
+        yaml << YAML::Key << "reason" << YAML::Value << audit->second.reason;
+      }
+      if (!audit->second.edited_at.empty()) {
+        yaml << YAML::Key << "edited_at" << YAML::Value << YAML::DoubleQuoted
+             << audit->second.edited_at;
+      }
+      if (!audit->second.editor.empty()) {
+        yaml << YAML::Key << "editor" << YAML::Value << audit->second.editor;
+      }
+    }
     yaml << YAML::EndMap;
   }
   yaml << YAML::EndSeq << YAML::EndMap;
@@ -335,7 +373,17 @@ void write_metadata(const fs::path &path, const SpatialExportOptions &options,
        << YAML::Key << "confidence_voxels" << YAML::Value << voxel_count
        << YAML::Key << "stable_voxels" << YAML::Value << stable_count
        << YAML::Key << "manual_overrides" << YAML::Value << manual_count
-       << YAML::EndMap << YAML::EndMap;
+       << YAML::EndMap;
+  if (!options.review_source.empty()) {
+    yaml << YAML::Key << "review" << YAML::Value << YAML::BeginMap
+         << YAML::Key << "source_derivative" << YAML::Value << options.review_source.string()
+         << YAML::Key << "source_checksums_sha256" << YAML::Value
+         << options.review_source_checksums_sha256
+         << YAML::Key << "input_overrides_sha256" << YAML::Value << options.review_input_sha256
+         << YAML::Key << "automatic_evidence" << YAML::Value
+         << "copied_from_verified_source_without_recomputation" << YAML::EndMap;
+  }
+  yaml << YAML::EndMap;
   put_file(path, yaml.c_str());
 }
 
@@ -390,16 +438,21 @@ ConfidenceParameters load_confidence_config(const fs::path &config) {
   return p;
 }
 
-SpatialExportSummary export_spatial_artifacts(
-    SpatialEvidenceMap *evidence, const SpatialExportOptions &options) {
+namespace {
+SpatialExportSummary publish_evidence(
+    SpatialEvidenceMap *evidence, const SpatialExportOptions &options,
+    bool preserve_automatic_evidence) {
   if (!evidence || evidence->empty()) throw std::invalid_argument("cannot export empty evidence");
   validate_parameters(options.parameters);
   const auto output = checked_output(options);
   const auto manifest_digest = sha256_file(options.parent_package / "manifest.yaml");
   const auto checksum_digest = sha256_file(options.parent_package / "checksums.sha256");
-  const auto touched = apply_overrides(evidence, options.manual_overrides, options.parameters);
-  const auto manual_count = touched.size();
-  for (auto &[key, v] : *evidence) calculate_confidence(&v, options.parameters);
+  const auto applied = apply_overrides(evidence, options.manual_overrides, options.parameters,
+                                       preserve_automatic_evidence);
+  const auto manual_count = applied.touched.size();
+  if (!preserve_automatic_evidence) {
+    for (auto &[key, v] : *evidence) calculate_confidence(&v, options.parameters);
+  }
   const auto sorted = ordered_voxels(*evidence);
 
   const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -410,7 +463,7 @@ SpatialExportSummary export_spatial_artifacts(
   StagingGuard guard{stage};
   write_voxel_pcd(stage / "confidence_voxels.pcd", sorted);
   const auto stable_count = write_stable_pcd(stage / "stable_map.pcd", sorted, options.parameters);
-  write_overrides(stage / "manual_overrides.yaml", sorted, touched, options.parameters);
+  write_overrides(stage / "manual_overrides.yaml", sorted, applied, options.parameters);
   write_metadata(stage / "confidence_metadata.yaml", options, manifest_digest, checksum_digest,
                  sorted.size(), stable_count, manual_count);
   constexpr std::array<const char *, 4> files = {
@@ -428,6 +481,64 @@ SpatialExportSummary export_spatial_artifacts(
   fs::rename(stage, output);  // Atomic same-filesystem directory rename; empty target is OK.
   guard.staging.clear();
   return {sorted.size(), stable_count, manual_count, output};
+}
+}  // namespace
+
+SpatialExportSummary export_spatial_artifacts(
+    SpatialEvidenceMap *evidence, const SpatialExportOptions &options) {
+  if (!options.review_source.empty()) {
+    throw std::invalid_argument("use review_spatial_artifacts for source-preserving review");
+  }
+  return publish_evidence(evidence, options, false);
+}
+
+SpatialExportSummary review_spatial_artifacts(
+    const fs::path &source_derivative, const fs::path &parent_package,
+    const fs::path &manual_overrides, const fs::path &output_directory,
+    std::function<void()> before_publish) {
+  if (manual_overrides.empty() || fs::is_symlink(fs::symlink_status(manual_overrides)) ||
+      !fs::is_regular_file(manual_overrides)) {
+    throw std::invalid_argument("review requires a separate regular override-intent YAML file");
+  }
+  auto source = load_verified_review_source(source_derivative, parent_package);
+  SpatialExportOptions options;
+  options.parent_package = parent_package;
+  options.output_directory = output_directory;
+  options.manual_overrides = manual_overrides;
+  options.parameters = source.parameters;
+  options.build_stats = source.stats;
+  options.review_source = source.derivative;
+  options.review_source_checksums_sha256 = source.checksums_sha256;
+  options.review_input_sha256 = sha256_file(manual_overrides);
+  const auto output = checked_output(options);
+  if (inside(output, source.derivative) || inside(source.derivative, output)) {
+    throw std::invalid_argument("review output must not replace or reside inside the source derivative");
+  }
+  if (inside(fs::canonical(manual_overrides), source.derivative) ||
+      inside(fs::canonical(manual_overrides), fs::canonical(parent_package))) {
+    throw std::invalid_argument("review intent YAML must be separate from source artifacts");
+  }
+  // Start from the verified, immutable auto evidence rather than the source
+  // manual state: removing an old override really restores AUTO. No call to
+  // calculate_confidence is made anywhere on this reviewed path.
+  for (auto &[key, voxel] : source.evidence) {
+    voxel.override_mode = ManualOverrideMode::AUTO;
+    voxel.manual_value = 0.0F;
+    voxel.has_manual_value = false;
+    voxel.final_confidence = voxel.auto_confidence;
+  }
+  options.before_publish = [source_dir = source.derivative,
+                            digest = source.checksums_sha256,
+                            intent_file = manual_overrides,
+                            intent_digest = options.review_input_sha256,
+                            callback = std::move(before_publish)] {
+    if (callback) callback();
+    verify_review_source_integrity(source_dir, digest);
+    if (sha256_file(intent_file) != intent_digest) {
+      throw std::runtime_error("manual override intent changed during core review");
+    }
+  };
+  return publish_evidence(&source.evidence, options, true);
 }
 
 }  // namespace agt_spatial_map_core

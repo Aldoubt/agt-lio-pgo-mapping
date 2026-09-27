@@ -137,6 +137,45 @@ TEST_F(ExportTest, ExportsFiveChecksumCoveredArtifactsWithSeparateAutomaticAndMa
             metadata["source"]["parent_manifest_sha256"].as<std::string>());
 }
 
+TEST_F(ExportTest, V1AuditExtensionPreservesReasonTimeAndEditorWithoutChangingGeometry) {
+  const auto input = root_ / "reviewed_overrides.yaml";
+  file(input, "schema_version: 1\ncoordinate_system: voxel_index\nvoxel_size: 0.2\n"
+              "overrides:\n"
+              "  - {key: [-2, 0, 0], mode: FORCE_HIGH, reason: MANUAL_ANCHOR, "
+              "edited_at: '2026-09-27T12:34:56Z', editor: yangxuan}\n"
+              "  - {key: [1, 0, 0], mode: FORCE_LOW, value: 0.1, "
+              "reason: LOW_GEOMETRY, edited_at: '2026-09-27T12:35:06Z', editor: yangxuan}\n");
+  auto opts = options("reviewed");
+  opts.manual_overrides = input;
+  const auto published = export_spatial_artifacts(&voxels_, opts);
+  EXPECT_EQ(published.manual_override_count, 2U);
+  EXPECT_EQ(published.stable_voxel_count, 2U);
+  const auto entries = YAML::LoadFile((published.output_directory / "manual_overrides.yaml").string())
+                           ["overrides"];
+  ASSERT_EQ(entries.size(), 2U);
+  EXPECT_EQ(entries[0]["reason"].as<std::string>(), "MANUAL_ANCHOR");
+  EXPECT_EQ(entries[1]["reason"].as<std::string>(), "LOW_GEOMETRY");
+  EXPECT_EQ(entries[1]["edited_at"].as<std::string>(), "2026-09-27T12:35:06Z");
+  EXPECT_EQ(entries[1]["editor"].as<std::string>(), "yangxuan");
+  EXPECT_FLOAT_EQ(voxels_.at(VoxelKey{1, 0, 0}).geometry_score, 1.0F);
+  EXPECT_GT(voxels_.at(VoxelKey{1, 0, 0}).auto_confidence, .60F);
+  EXPECT_FLOAT_EQ(voxels_.at(VoxelKey{1, 0, 0}).final_confidence, .1F);
+}
+
+TEST_F(ExportTest, RejectsMalformedOptionalAuditWithoutPublishing) {
+  const auto input = root_ / "invalid_audit.yaml";
+  for (const std::string bad : {
+           "reason: LONG_TERM_STABILITY", "reason: ''", "edited_at: '2026-02-30T00:00:00Z'",
+           "editor: 'with spaces'", "unexpected: true"}) {
+    file(input, "schema_version: 1\ncoordinate_system: voxel_index\nvoxel_size: 0.2\n"
+                "overrides: [{key: [-2, 0, 0], mode: FORCE_HIGH, " + bad + "}]\n");
+    auto opts = options("invalid_audit");
+    opts.manual_overrides = input;
+    EXPECT_THROW(export_spatial_artifacts(&voxels_, opts), std::invalid_argument) << bad;
+    EXPECT_FALSE(fs::exists(opts.output_directory));
+  }
+}
+
 TEST_F(ExportTest, RejectsNonemptyOutputAndNeverReplacesParent) {
   const auto out = root_ / "existing";
   fs::create_directory(out);

@@ -37,6 +37,28 @@ enum class ManualOverrideMode : std::uint32_t {
   IGNORE = 3,
 };
 
+// Optional, non-computational audit fields in v1 manual_overrides.yaml.
+// Older Phase 1 files without these keys remain valid. The tags record human
+// intent only; LOW_GEOMETRY never modifies geometry_score.
+struct ManualOverrideAudit {
+  std::string reason;
+  std::string edited_at;  // UTC YYYY-MM-DDTHH:MM:SSZ
+  std::string editor;
+  bool operator==(const ManualOverrideAudit &other) const {
+    return reason == other.reason && edited_at == other.edited_at && editor == other.editor;
+  }
+};
+
+void validate_manual_override_audit(const ManualOverrideAudit &audit);
+
+// Manual final confidence and stable-selection predicate shared by the core
+// exporter and Studio's *preview*. These never recompute automatic evidence.
+float manual_final_confidence(float auto_confidence, ManualOverrideMode mode,
+                              bool has_manual_value, float manual_value,
+                              float force_low_value);
+bool stable_preview_selected(float final_confidence, ManualOverrideMode mode,
+                             float stable_threshold);
+
 struct SpatialVoxelEvidence {
   VoxelKey key;
   Eigen::Vector3f centroid = Eigen::Vector3f::Zero();

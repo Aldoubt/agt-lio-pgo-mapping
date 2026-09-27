@@ -1,9 +1,11 @@
 #include "agt_spatial_map_core/spatial_evidence.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <regex>
 #include <stdexcept>
 
 namespace agt_spatial_map_core {
@@ -59,6 +61,76 @@ void validate_parameters(const ConfidenceParameters &p) {
   unit_interval(p.force_low_value, "force_low_value");
 }
 
+void validate_manual_override_audit(const ManualOverrideAudit &audit) {
+  if (!audit.reason.empty()) {
+    constexpr std::array<const char *, 8> kReasons{{
+        "PARKING_AREA", "VEGETATION", "TEMPORARY_OBJECT", "CONSTRUCTION",
+        "MOVING_OBJECT_PRONE", "LOW_GEOMETRY", "MANUAL_ANCHOR", "OTHER"}};
+    if (std::none_of(kReasons.begin(), kReasons.end(), [&audit](const char *tag) {
+          return audit.reason == tag;
+        })) {
+      throw std::invalid_argument("invalid manual override reason tag");
+    }
+  }
+  if (!audit.edited_at.empty()) {
+    static const std::regex utc(R"(^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$)");
+    if (!std::regex_match(audit.edited_at, utc)) {
+      throw std::invalid_argument("manual override edited_at must be UTC ISO-8601 seconds");
+    }
+    const int year = std::stoi(audit.edited_at.substr(0, 4));
+    const int month = std::stoi(audit.edited_at.substr(5, 2));
+    const int day = std::stoi(audit.edited_at.substr(8, 2));
+    const int hour = std::stoi(audit.edited_at.substr(11, 2));
+    const int minute = std::stoi(audit.edited_at.substr(14, 2));
+    const int second = std::stoi(audit.edited_at.substr(17, 2));
+    constexpr std::array<int, 12> kDays{{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}};
+    const bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    if (year == 0 || month < 1 || month > 12 || day < 1 ||
+        day > kDays.at(static_cast<std::size_t>(month - 1)) + (month == 2 && leap ? 1 : 0) ||
+        hour > 23 || minute > 59 || second > 59) {
+      throw std::invalid_argument("manual override edited_at is not a valid UTC timestamp");
+    }
+  }
+  if (!audit.editor.empty()) {
+    static const std::regex name(R"(^[A-Za-z0-9_.@-]{1,64}$)");
+    if (!std::regex_match(audit.editor, name)) {
+      throw std::invalid_argument("manual override editor must be 1-64 safe ASCII characters");
+    }
+  }
+}
+
+float manual_final_confidence(float auto_confidence, ManualOverrideMode mode,
+                              bool has_manual_value, float manual_value,
+                              float force_low_value) {
+  unit_interval(auto_confidence, "auto_confidence");
+  unit_interval(force_low_value, "force_low_value");
+  // The Phase 1 calculator ignored a stale manual value when the mode was
+  // changed away from FORCE_LOW. Keep that behavior; YAML parser separately
+  // rejects an explicit value for any other mode.
+  switch (mode) {
+    case ManualOverrideMode::AUTO: return auto_confidence;
+    case ManualOverrideMode::FORCE_HIGH: return 1.0F;
+    case ManualOverrideMode::FORCE_LOW:
+      if (has_manual_value) unit_interval(manual_value, "manual_value");
+      return has_manual_value ? manual_value : force_low_value;
+    case ManualOverrideMode::IGNORE: return 0.0F;
+    default: throw std::invalid_argument("unsupported manual override mode");
+  }
+}
+
+bool stable_preview_selected(float final_confidence, ManualOverrideMode mode,
+                             float stable_threshold) {
+  unit_interval(final_confidence, "final_confidence");
+  unit_interval(stable_threshold, "stable_threshold");
+  switch (mode) {
+    case ManualOverrideMode::AUTO:
+    case ManualOverrideMode::FORCE_HIGH: return final_confidence >= stable_threshold;
+    case ManualOverrideMode::FORCE_LOW:
+    case ManualOverrideMode::IGNORE: return false;
+    default: throw std::invalid_argument("unsupported manual override mode");
+  }
+}
+
 void calculate_confidence(SpatialVoxelEvidence *evidence, const ConfidenceParameters &p) {
   if (!evidence) throw std::invalid_argument("evidence must not be null");
   validate_parameters(p);
@@ -78,23 +150,9 @@ void calculate_confidence(SpatialVoxelEvidence *evidence, const ConfidenceParame
   v.observation_score = static_cast<float>(q_obs);
   v.persistence_score = static_cast<float>(q_persist);
   v.auto_confidence = static_cast<float>(q_persist * v.geometry_score);
-  switch (v.override_mode) {
-    case ManualOverrideMode::AUTO:
-      v.final_confidence = v.auto_confidence;
-      break;
-    case ManualOverrideMode::FORCE_HIGH:
-      v.final_confidence = 1.0F;
-      break;
-    case ManualOverrideMode::FORCE_LOW:
-      if (v.has_manual_value) unit_interval(v.manual_value, "manual_value");
-      v.final_confidence = v.has_manual_value ? v.manual_value : p.force_low_value;
-      break;
-    case ManualOverrideMode::IGNORE:
-      v.final_confidence = 0.0F;
-      break;
-    default:
-      throw std::invalid_argument("unsupported manual override mode");
-  }
+  v.final_confidence = manual_final_confidence(
+      v.auto_confidence, v.override_mode, v.has_manual_value,
+      v.manual_value, p.force_low_value);
 }
 
 const char *override_mode_name(ManualOverrideMode mode) {

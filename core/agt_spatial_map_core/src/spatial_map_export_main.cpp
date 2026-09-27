@@ -21,7 +21,10 @@ void usage(std::ostream &out) {
          "--output-dir <new-or-empty-dir> [--config <v1.yaml>] "
          "[--manual-overrides <v1.yaml>] [--voxel-size <m>] "
          "[--n0 <keyframes>] [--s0 <index-span>] [--alpha <0..1>] "
-         "[--stable-threshold <0..1>] [--force-low-value <0..1>]\n";
+         "[--stable-threshold <0..1>] [--force-low-value <0..1>]\n"
+         "Review (no automatic evidence recalculation): --map-package <same PGO parent> "
+         "--source-derivative <verified derivative> --manual-overrides <saved v1 intent.yaml> "
+         "--output-dir <new-or-empty-dir>\n";
 }
 
 float number(const std::string &text) {
@@ -62,7 +65,8 @@ int main(int argc, char **argv) {
     }
     const std::set<std::string> supported = {
         "--map-package", "--output-dir", "--config", "--manual-overrides",
-        "--voxel-size", "--n0", "--s0", "--alpha", "--stable-threshold", "--force-low-value"};
+        "--source-derivative", "--voxel-size", "--n0", "--s0", "--alpha",
+        "--stable-threshold", "--force-low-value"};
     std::map<std::string, std::string> arguments;
     for (int i = 1; i < argc; i += 2) {
       const std::string name = argv[i];
@@ -95,6 +99,26 @@ int main(int argc, char **argv) {
     if (arguments.count("--force-low-value")) p.force_low_value = number(arguments.at("--force-low-value"));
     validate_parameters(p);
 
+    if (arguments.count("--source-derivative")) {
+      if (!arguments.count("--manual-overrides") || arguments.count("--config") ||
+          arguments.count("--voxel-size") || arguments.count("--n0") ||
+          arguments.count("--s0") || arguments.count("--alpha") ||
+          arguments.count("--stable-threshold") || arguments.count("--force-low-value")) {
+        throw std::invalid_argument("review mode requires saved intent YAML and uses ONLY the "
+                                    "verified source derivative's unchanged confidence parameters");
+      }
+      verify_parent_with_existing_validator(package);
+      const auto summary = review_spatial_artifacts(
+          arguments.at("--source-derivative"), package,
+          arguments.at("--manual-overrides"), output,
+          [&package] { verify_parent_with_existing_validator(package); });
+      std::cout << "Reviewed spatial confidence published: " << summary.output_directory << '\n'
+                << "Voxels: " << summary.voxel_count
+                << "; stable voxels: " << summary.stable_voxel_count
+                << "; manual overrides: " << summary.manual_override_count
+                << "; automatic evidence: preserved from verified source derivative\n";
+      return 0;
+    }
     verify_parent_with_existing_validator(package);
     EvidenceBuildStats stats;
     auto voxels = SpatialEvidenceBuilder::build(package, p, &stats);

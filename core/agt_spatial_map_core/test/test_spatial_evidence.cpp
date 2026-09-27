@@ -78,6 +78,38 @@ TEST(ConfidenceTest, ManualOverrideSurvivesAutomaticRecalculation) {
             ManualOverrideMode::IGNORE);
 }
 
+TEST(ConfidenceTest, PreviewUsesCoreOverrideAndStablePredicateWithoutRecomputingAuto) {
+  const float auto_score = .62F;
+  EXPECT_FLOAT_EQ(manual_final_confidence(auto_score, ManualOverrideMode::AUTO,
+                                          false, 0, .05F), auto_score);
+  EXPECT_FLOAT_EQ(manual_final_confidence(auto_score, ManualOverrideMode::FORCE_HIGH,
+                                          false, 0, .05F), 1.0F);
+  EXPECT_FLOAT_EQ(manual_final_confidence(auto_score, ManualOverrideMode::FORCE_LOW,
+                                          false, 0, .05F), .05F);
+  EXPECT_FLOAT_EQ(manual_final_confidence(auto_score, ManualOverrideMode::FORCE_LOW,
+                                          true, .12F, .05F), .12F);
+  EXPECT_FLOAT_EQ(manual_final_confidence(auto_score, ManualOverrideMode::IGNORE,
+                                          false, 0, .05F), 0.0F);
+  EXPECT_TRUE(stable_preview_selected(.62F, ManualOverrideMode::AUTO, .60F));
+  EXPECT_TRUE(stable_preview_selected(1, ManualOverrideMode::FORCE_HIGH, .60F));
+  EXPECT_FALSE(stable_preview_selected(1, ManualOverrideMode::FORCE_LOW, .60F));
+  EXPECT_FALSE(stable_preview_selected(1, ManualOverrideMode::IGNORE, .60F));
+  EXPECT_THROW(manual_final_confidence(1.5F, ManualOverrideMode::AUTO,
+                                        false, 0, .05F), std::invalid_argument);
+}
+
+TEST(ConfidenceTest, OptionalAuditTagsAreStrictButNotSemanticGeometry) {
+  EXPECT_NO_THROW(validate_manual_override_audit(
+      {"LOW_GEOMETRY", "2026-09-27T12:34:56Z", "map_studio"}));
+  EXPECT_NO_THROW(validate_manual_override_audit({}));  // legacy Phase 1
+  EXPECT_THROW(validate_manual_override_audit({"STABLE_PROBABILITY", "", ""}),
+               std::invalid_argument);
+  EXPECT_THROW(validate_manual_override_audit({"OTHER", "2026-02-30T00:00:00Z", ""}),
+               std::invalid_argument);
+  EXPECT_THROW(validate_manual_override_audit({"OTHER", "2026-09-27T00:00:00Z", "with spaces"}),
+               std::invalid_argument);
+}
+
 TEST(ConfidenceTest, RejectsInvalidEvidenceAndParameters) {
   ConfidenceParameters p;
   p.persistence_alpha = 1.2F;

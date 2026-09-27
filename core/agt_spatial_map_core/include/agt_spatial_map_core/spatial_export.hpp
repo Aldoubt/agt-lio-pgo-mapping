@@ -15,6 +15,11 @@ struct SpatialExportOptions {
   std::filesystem::path manual_overrides;     // optional input schema v1; never edited
   ConfidenceParameters parameters;
   EvidenceBuildStats build_stats;
+  // Set by review_spatial_artifacts only. Records an immutable, verified
+  // confidence source; normal exports always rebuild automatic evidence.
+  std::filesystem::path review_source;
+  std::string review_source_checksums_sha256;
+  std::string review_input_sha256;
   // Executed after staged artifacts and checksums exist but before atomic
   // publication. The CLI re-verifies the parent here; tests inject a failure.
   std::function<void()> before_publish;
@@ -34,6 +39,20 @@ struct SpatialExportSummary {
 // before invoking this library; the installed CLI does so twice.
 SpatialExportSummary export_spatial_artifacts(
     SpatialEvidenceMap *evidence, const SpatialExportOptions &options);
+
+// Reviewed-derivative path: verifies all five source artifact files, their
+// checksums, parent PGO package/digests and source evidence consistency. Applies
+// a separate v1 override-intent file to COPIED voxel evidence. In particular,
+// auto_confidence / observation / persistence / geometry are not recalculated.
+// The installed CLI supplies before_publish to re-verify the PGO parent. The
+// library also re-verifies source/input digests immediately before publication.
+// Output must be a new or empty sibling directory outside both source trees.
+SpatialExportSummary review_spatial_artifacts(
+    const std::filesystem::path &source_derivative,
+    const std::filesystem::path &parent_package,
+    const std::filesystem::path &manual_overrides,
+    const std::filesystem::path &output_directory,
+    std::function<void()> before_publish = {});
 
 // Loads schema_version: 1 config, rejects unknown fields and other geometry
 // modes; absent config uses ConfidenceParameters' versioned defaults.
