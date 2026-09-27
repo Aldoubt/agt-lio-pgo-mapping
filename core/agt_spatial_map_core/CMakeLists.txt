@@ -53,6 +53,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_spatial_review test/test_spatial_review.cpp)
   target_link_libraries(test_spatial_review ${PROJECT_NAME} yaml-cpp)
 
+  ament_add_gtest(test_geometry_estimator test/test_geometry_estimator.cpp)
+  target_link_libraries(test_geometry_estimator ${PROJECT_NAME})
+  ament_add_gtest(test_geometry_io test/test_geometry_io.cpp)
+  target_link_libraries(test_geometry_io ${PROJECT_NAME} yaml-cpp)
+
   # Compile the actual unchanged legacy implementation into a regression-only
   # executable: no new dependency or behavior change in the old exporter.
   set(LEGACY_PCD2GRID_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../exporters/agt_pcd2grid_exporter")
