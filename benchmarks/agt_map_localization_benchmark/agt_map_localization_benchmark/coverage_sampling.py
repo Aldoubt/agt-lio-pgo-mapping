@@ -216,15 +216,16 @@ def coverage_field_rows(coords: np.ndarray, baseline: np.ndarray, candidates: di
     rows: list[dict] = []
     for cell, source in grouped.items():
         voxels = np.unique(np.asarray(lookup[source], dtype='<i8'))
-        valid = ((geometry['translation_valid'][voxels] != 0)
-                 & np.isfinite(np.asarray(geometry['translation_q'][voxels], dtype='f8')))
-        qt = np.asarray(geometry['translation_q'][voxels[valid]], dtype='f8')
+        qt_valid = ((geometry['translation_valid'][voxels] != 0)
+                    & np.isfinite(np.asarray(geometry['translation_q'][voxels], dtype='f8')))
+        qt = np.asarray(geometry['translation_q'][voxels[qt_valid]], dtype='f8')
+        normal_valid = np.asarray(geometry['normal_valid'][voxels] != 0)
         row = {
             'cell_x': int(cell[0]), 'cell_y': int(cell[1]),
             'cell_size_m': float(cell_size_m),
             'B_points': int(len(source)),
             'Qt_median': float(np.median(qt)) if len(qt) else None,
-            'valid_normals': int(np.count_nonzero(valid)),
+            'valid_normals': int(np.count_nonzero(normal_valid)),
         }
         for name, mapping in candidate_cells.items():
             row[f'{name}_points'] = int(len(mapping.get(cell, ())))
