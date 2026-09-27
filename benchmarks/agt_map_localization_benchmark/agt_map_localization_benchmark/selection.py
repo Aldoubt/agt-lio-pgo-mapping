@@ -162,7 +162,7 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
 
     # Phase 3C: lock coverage-cell set AND exact point quota per source cell.
     for fraction in COVERAGE_FRACTIONS:
-        label = f'q{int(fraction * 100):02d}'
+        label = f'f{int(fraction * 100):02d}'
         subsets, meta = coverage_matched_subsets(
             b, points, lookup, data.geom, fraction,
             cell_size_m=COVERAGE_CELL_M,
