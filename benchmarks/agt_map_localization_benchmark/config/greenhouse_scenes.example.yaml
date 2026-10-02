@@ -1,0 +1,42 @@
+schema_version: 1
+
+# Optional row ranges let the benchmark classify a descriptor/BBS candidate as
+# the correct row, a wrong row, or unknown. Ranges must not overlap.
+rows:
+  - row_id: R1
+    start_keyframe: 80
+    end_keyframe: 180
+  - row_id: R2
+    start_keyframe: 210
+    end_keyframe: 310
+
+# Pick representative PGO keyframes after inspecting poses_timed.txt / RViz.
+# The benchmark does not infer these states automatically.
+scenes:
+  - id: r1_middle
+    type: row_middle
+    keyframe: 120
+    row_id: R1
+    note: representative highly repetitive row interior
+
+  - id: r1_end
+    type: row_end
+    keyframe: 175
+    row_id: R1
+    note: near the last plants before the headland opens
+
+  - id: headland_1
+    type: headland
+    keyframe: 195
+    note: transverse aisle; expected to contain richer global geometry
+
+  - id: r2_entry
+    type: row_entry
+    keyframe: 215
+    row_id: R2
+    note: after turning into the next row
+
+  - id: r2_middle
+    type: row_middle
+    keyframe: 265
+    row_id: R2
