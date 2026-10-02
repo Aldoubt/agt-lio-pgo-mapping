@@ -88,6 +88,7 @@ class RowRange:
 class SceneConfig:
     scenes: tuple[Scene, ...]
     rows: tuple[RowRange, ...]
+    row_id_semantics: str | None = None
 
     def row_for_index(self, index: int) -> str | None:
         found = [r.row_id for r in self.rows if r.contains(index)]
@@ -107,6 +108,9 @@ def load_scene_config(path: Path, pose_count: int | None = None) -> SceneConfig:
     raw = yaml.safe_load(Path(path).read_text(encoding='utf-8'))
     if not isinstance(raw, dict) or raw.get('schema_version') != 1:
         raise ValueError('scene YAML requires schema_version: 1')
+    row_id_semantics = raw.get('row_id_semantics')
+    if row_id_semantics is not None and (not isinstance(row_id_semantics, str) or not row_id_semantics.strip()):
+        raise ValueError('row_id_semantics must be a non-empty string when supplied')
     scene_rows = raw.get('scenes')
     if not isinstance(scene_rows, list) or not scene_rows:
         raise ValueError('scene YAML requires a non-empty scenes list')
@@ -137,7 +141,7 @@ def load_scene_config(path: Path, pose_count: int | None = None) -> SceneConfig:
         if start < 0 or end < start or (pose_count is not None and end >= pose_count):
             raise ValueError(f'invalid row range: {item}')
         ranges.append(RowRange(str(item['row_id']), start, end))
-    config = SceneConfig(tuple(scenes), tuple(ranges))
+    config = SceneConfig(tuple(scenes), tuple(ranges), row_id_semantics)
     if pose_count is not None:
         for i in range(pose_count):
             config.row_for_index(i)
@@ -615,6 +619,7 @@ def main(argv: list[str] | None = None) -> int:
             'native_executable_sha256': native.sha256,
             'reference_type': dataset.reference_type,
             'reference': dataset.reference,
+            'row_id_semantics': config.row_id_semantics,
             'data_leakage_control': 'all declared query windows excluded from generated target/descriptor maps',
             'remaining_bias': ('same-session FAST-LIO2 frontend poses; absolute ground truth unavailable'
                                if dataset.reference_type == 'FASTLIO2_SAME_SESSION_REFERENCE'

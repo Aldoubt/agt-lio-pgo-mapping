@@ -68,6 +68,8 @@ Supported scene types are:
 
 Optional `rows:` ranges let the benchmark map the native `candidate_patch` back
 to a Row ID and report `wrong_row_candidate`. Ranges must not overlap.
+An optional top-level `row_id_semantics` value is copied to the run manifest
+so provisional trajectory groups are not mistaken for surveyed physical rows.
 
 ## Build
 

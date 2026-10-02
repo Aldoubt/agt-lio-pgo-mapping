@@ -52,6 +52,7 @@ def test_scene_yaml_and_row_lookup(tmp_path: Path):
     config_path = tmp_path / 'scenes.yaml'
     config_path.write_text('''\
 schema_version: 1
+row_id_semantics: trajectory_derived_provisional
 rows:
   - row_id: R1
     start_keyframe: 3
@@ -71,6 +72,7 @@ scenes:
 ''', encoding='utf-8')
     config = load_scene_config(config_path, pose_count=20)
     assert [s.scene_id for s in config.scenes] == ['r1_mid', 'r1_end']
+    assert config.row_id_semantics == 'trajectory_derived_provisional'
     assert config.row_for_index(7) == 'R1'
     assert config.row_for_index(15) == 'R2'
     assert config.row_for_index(2) is None
