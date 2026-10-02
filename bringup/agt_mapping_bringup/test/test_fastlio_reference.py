@@ -52,6 +52,21 @@ class FastlioReferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
             verify_fastlio_reference_package(package)
 
+    def test_serialized_nontrivial_pose_roundoff_is_within_geometry_tolerance(self):
+        package = self.root / 'fastlio_reference_package'
+        quaternion = (0.0107975691529, 0.323449458971, -0.00328155605605, 0.946178149918)
+        records = [Keyframe(
+            record.patch, record.stamp_sec, record.stamp_nanosec,
+            (-0.000681304376901 + record.stamp_sec - 10.0, 0.00012506092321, 0.00076352243496),
+            quaternion,
+        ) for record in self.records]
+        stats = write_reference_package(
+            package, self.source, records,
+            {'cloud': 'body', 'odom_parent': 'lidar', 'odom_child': 'body'},
+            source_bag='/tmp/green-house',
+        )
+        self.assertEqual(stats['status'], 'PASS')
+
 
 if __name__ == '__main__':
     unittest.main()

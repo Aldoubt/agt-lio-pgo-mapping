@@ -309,8 +309,9 @@ def verify_fastlio_reference_package(package_root: Path) -> dict[str, int | str]
         next_cursor = cursor + len(body_points)
         if next_cursor > len(map_points):
             raise ValueError('map has fewer points than the transformed patches')
-        if not np.array_equal(map_points[cursor:next_cursor, :3], expected):
-            raise ValueError(f'map/patch/pose geometry mismatch at keyframe {index}')
+        if not np.allclose(map_points[cursor:next_cursor, :3], expected,
+                           rtol=0.0, atol=1e-6):
+            raise ValueError(f'map/patch/pose geometry mismatch above 1e-6 m at keyframe {index}')
         if not np.array_equal(map_points[cursor:next_cursor, 3], body_points[:, 3]):
             raise ValueError(f'map/patch intensity mismatch at keyframe {index}')
         cursor = next_cursor
