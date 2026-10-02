@@ -100,8 +100,9 @@ def classify_failure(row: dict) -> str | None:
 
     A native iteration-limit failure is only MAX_ITERATIONS if the backend
     *says so*: its current CLI does not expose an iteration count.  GLOBAL
-    FALSE_RELOCALIZATION means a returned wrong pose relative to this same-
-    session optimized PGO reference, NOT a negative-session false-positive rate.
+    FALSE_RELOCALIZATION means the returned GLOBAL pose is wrong relative to
+    the declared same-session reference; it is not a negative-session
+    false-positive rate.
     """
     if not row.get('reference_pose'):
         return 'REFERENCE_UNAVAILABLE'
