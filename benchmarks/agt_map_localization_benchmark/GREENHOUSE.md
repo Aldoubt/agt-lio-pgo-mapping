@@ -9,7 +9,7 @@ The benchmark answers two separate questions:
 
 1. **GICP basin:** for a representative row-middle / row-end / headland /
    row-entry query, which `(dx, dy, dyaw)` initial errors still converge to the
-   optimized PGO reference?
+   declared reference?
 2. **BBS -> GICP:** with no initial pose, does the existing descriptor + CPU
    3D-BBS pipeline return a coarse pose that the same LOCAL GICP backend can
    refine successfully?
@@ -21,9 +21,8 @@ measurement, not a lookup/interpolation from the sampled heatmap.
 
 ## Inputs
 
-Only the verified PGO `map_package` and a small human-labelled scene YAML are
-required. Confidence / geometry sidecars from Phase 3B are intentionally not
-required.
+Only a checksum-verified reference package and a small scene YAML are required.
+Confidence / geometry sidecars from Phase 3B are intentionally not required.
 
 Expected map package:
 
@@ -39,9 +38,16 @@ map_package/
 The source package is checksum-verified and never modified. Every declared
 query window is excluded from the generated target map and descriptor map.
 This removes direct query-patch self-overlap, but the first experiment is still
-**same-session PGO evaluation**: optimized PGO poses are both the reference and
-the transform used to accumulate 3/5-frame queries. It is not absolute GT and
-is not evidence of cross-day generalization.
+The benchmark records the reference type from `metadata.yaml`. A PGO package is
+same-session optimized PGO evaluation; a FAST-LIO2 package labelled
+`FASTLIO2_SAME_SESSION_REFERENCE` uses unoptimized frontend poses. Neither is
+absolute ground truth or evidence of cross-day generalization.
+
+For an offline FAST-LIO2-only package, use the existing mapping entry point
+with `--reference fastlio`. This branch launches the adapter, FAST-LIO2,
+frontend relay, and the consistent reference exporter; it does not launch PGO.
+It writes `fastlio_reference_package/` with `reference.pgo_applied: false`,
+`reference.optimized: false`, and `reference.absolute_ground_truth: false`.
 
 ## Scene labels
 
@@ -200,8 +206,8 @@ Keep rosbag replay and benchmark responsibilities separate:
 
 ```text
 raw MID360 rosbag
-    -> existing run_mid360_mapping.sh
-    -> verified PGO map_package
+    -> existing run_mid360_mapping.sh --reference fastlio
+    -> FAST-LIO2-only fastlio_reference_package
     -> manually label representative keyframes
     -> greenhouse benchmark
     -> basin/global CSV + summary

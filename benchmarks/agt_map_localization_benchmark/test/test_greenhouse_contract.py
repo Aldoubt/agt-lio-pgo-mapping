@@ -1,11 +1,39 @@
 from pathlib import Path
+import hashlib
 
+import numpy as np
 import pytest
+import yaml
 
 from agt_map_localization_benchmark.greenhouse import (
-    Scene, SceneConfig, grid_values, heldout_indices,
+    MapPackage, Scene, SceneConfig, grid_values, heldout_indices,
     load_scene_config, parse_frames, summarize,
 )
+from agt_map_localization_benchmark.pcd import write_pcd
+
+
+def _write_reference_package(root: Path, reference: dict):
+    root.mkdir()
+    patches = root / 'patches'
+    patches.mkdir()
+    points = np.array([[0.0, 0.0, 0.0, 1.0]], dtype='<f4')
+    write_pcd(root / 'map.pcd', points[:, :3], points[:, 3])
+    poses = []
+    for index in range(7):
+        patch = f'{index}.pcd'
+        write_pcd(patches / patch, points[:, :3], points[:, 3])
+        poses.append(f'{patch} {10 + index}.000000000 {index} 0 0 1 0 0 0\n')
+    (root / 'poses_timed.txt').write_text(''.join(poses), encoding='ascii')
+    (root / 'metadata.yaml').write_text(yaml.safe_dump({
+        'backend': 'FAST-LIO2', 'reference_type': 'FASTLIO2_SAME_SESSION_REFERENCE',
+        'reference': reference,
+    }), encoding='utf-8')
+    (root / 'manifest.yaml').write_text('format_version: 1\n', encoding='ascii')
+    files = sorted(path for path in root.rglob('*') if path.is_file())
+    (root / 'checksums.sha256').write_text(''.join(
+        f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root).as_posix()}\n'
+        for path in files
+    ), encoding='ascii')
 
 
 def test_grid_values_includes_endpoint():
@@ -93,3 +121,22 @@ def test_summary_separates_scene_types_and_bbs_seed_success():
     assert summary['by_scene_type']['row_middle']['basin_nominal']['fraction'] == 0.5
     assert summary['by_scene_type']['headland']['bbs_coarse_seed_gicp_nominal']['fraction'] == 1.0
     assert summary['overall']['wrong_row_candidate']['fraction'] == 0.5
+
+
+def test_map_package_accepts_explicit_fastlio_same_session_reference(tmp_path: Path):
+    _write_reference_package(tmp_path / 'map_package', {
+        'source': 'fastlio2_odometry', 'pgo_applied': False, 'optimized': False,
+        'absolute_ground_truth': False, 'same_session': True,
+    })
+    package = MapPackage(tmp_path / 'map_package')
+    assert package.reference_type == 'FASTLIO2_SAME_SESSION_REFERENCE'
+    assert package.reference['pgo_applied'] is False
+
+
+def test_map_package_rejects_inconsistent_fastlio_reference_flags(tmp_path: Path):
+    _write_reference_package(tmp_path / 'map_package', {
+        'source': 'fastlio2_odometry', 'pgo_applied': True, 'optimized': False,
+        'absolute_ground_truth': False, 'same_session': True,
+    })
+    with pytest.raises(ValueError, match='metadata is incomplete or inconsistent'):
+        MapPackage(tmp_path / 'map_package')

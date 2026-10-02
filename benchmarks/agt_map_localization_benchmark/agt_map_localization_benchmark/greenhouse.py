@@ -2,12 +2,12 @@
 
 This module deliberately contains no registration implementation. It reuses the
 installed production native executables to answer two questions from a verified
-PGO map package:
+reference map package:
 
 1. For row-middle / row-end / headland / row-entry queries, what initial
    x/y/yaw perturbations remain inside the local GICP convergence basin?
 2. Does the GLOBAL pipeline's 3D-BBS coarse pose place the same query inside
-   that basin, and does the subsequent GICP converge to the PGO reference?
+   that basin, and does the subsequent GICP converge to the declared reference?
 
 All generated maps, queries and assets live in a new experiment directory.
 The source map package is checksum-verified and never modified.
@@ -175,12 +175,28 @@ def perturb_pose(reference: Pose, dx: float, dy: float, dyaw_deg: float) -> tupl
 
 
 class MapPackage:
-    """Read-only, checksum-verified PGO map package without confidence sidecars."""
+    """Read-only, checksum-verified reference package without confidence sidecars."""
 
     def __init__(self, root: Path):
         self.root = Path(root).resolve(strict=True)
         self.checksums = verify_checksum_index(
             self.root, ('map.pcd', 'poses_timed.txt', 'manifest.yaml'))
+        metadata_path = self.root / 'metadata.yaml'
+        loaded_metadata = yaml.safe_load(metadata_path.read_text(encoding='utf-8')) if metadata_path.is_file() else {}
+        self.metadata = loaded_metadata if isinstance(loaded_metadata, dict) else {}
+        self.reference = self.metadata.get('reference', {})
+        self.reference_type = self.metadata.get('reference_type')
+        if self.reference_type == 'FASTLIO2_SAME_SESSION_REFERENCE':
+            if (self.reference.get('source') != 'fastlio2_odometry'
+                    or self.reference.get('pgo_applied') is not False
+                    or self.reference.get('optimized') is not False
+                    or self.reference.get('absolute_ground_truth') is not False
+                    or self.reference.get('same_session') is not True):
+                raise ValueError('FAST-LIO2 reference metadata is incomplete or inconsistent')
+        if not self.reference_type:
+            self.reference_type = ('PGO_OPTIMIZED_REFERENCE'
+                                   if self.metadata.get('backend') == 'PGO'
+                                   else 'UNDECLARED_REFERENCE')
         patches = self.root / 'patches'
         if not patches.is_dir() or patches.is_symlink():
             raise ValueError(f'missing/unsafe patches directory: {patches}')
@@ -597,9 +613,12 @@ def main(argv: list[str] | None = None) -> int:
             'map_checksums_sha256': sha256_file(dataset.root / 'checksums.sha256'),
             'scene_yaml': str(args.scenes.resolve()), 'scene_yaml_sha256': sha256_file(args.scenes),
             'native_executable_sha256': native.sha256,
-            'reference': 'same-session optimized_PGO_pose; NOT absolute ground truth',
+            'reference_type': dataset.reference_type,
+            'reference': dataset.reference,
             'data_leakage_control': 'all declared query windows excluded from generated target/descriptor maps',
-            'remaining_bias': 'same-session PGO poses are used for reference and query accumulation',
+            'remaining_bias': ('same-session FAST-LIO2 frontend poses; absolute ground truth unavailable'
+                               if dataset.reference_type == 'FASTLIO2_SAME_SESSION_REFERENCE'
+                               else 'same-session PGO poses may be used for reference and query accumulation'),
             'parameters': {
                 'frames': list(frames), 'dx_m': list(dx_values), 'dy_m': list(dy_values),
                 'dyaw_deg': list(yaw_values), 'local_radius_m': args.local_radius_m,
@@ -627,6 +646,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode in ('global', 'all'):
             global_rows = run_global(dataset, config, native, run, frames, targets)
         summary = summarize(basin_rows, global_rows)
+        summary['reference_type'] = dataset.reference_type
         _write_json(run / 'summary.json', summary)
         manifest['status'] = 'COMPLETED'
         manifest['counts'] = {'basin_trials': len(basin_rows), 'global_trials': len(global_rows)}
