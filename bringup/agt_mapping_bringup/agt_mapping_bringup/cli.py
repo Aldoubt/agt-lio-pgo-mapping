@@ -26,6 +26,8 @@ def parser():
     result.add_argument('bag', nargs='?', help='rosbag2 directory containing metadata.yaml (omit with --live)')
     result.add_argument('output', nargs='?', help='New/empty run directory (default: timestamped output)')
     result.add_argument('--rate', default=1.0, type=float, help='Playback speed, default 1.0')
+    result.add_argument('--reference', choices=('pgo', 'fastlio'), default='pgo',
+                        help='offline reference backend; fastlio disables PGO and exports paired FAST-LIO2 data')
     result.add_argument('--lidar-topic', default='auto', help='CustomMsg topic, default: auto-detect unique stream')
     result.add_argument('--imu-topic', default='auto', help='Imu topic, default: auto-detect unique stream')
     rviz = result.add_mutually_exclusive_group()
@@ -140,6 +142,8 @@ def main(argv=None):
                 raise PreflightError('--live does not take a bag; the sensor is the input')
             if args.start_paused or args.manual_export:
                 raise PreflightError('--start-paused/--manual-export apply to bag replay only')
+            if args.reference != 'pgo':
+                raise PreflightError('--reference fastlio is available for offline bag replay only')
         elif args.robot != 'bunker_v1':
             raise PreflightError('--robot yhs_v1 selects the YHS sensor-only LIVE entry; '
                                  'bag replay is robot-agnostic and must be explicitly promoted as yhs_v1 later')
@@ -177,6 +181,7 @@ def main(argv=None):
         parameters = {
             'bag_path': str(bag.path), 'output_dir': str(output),
             'lidar_topic': bag.lidar_topic, 'imu_topic': bag.imu_topic,
+            'reference_mode': args.reference,
             'playback_rate': args.rate, 'start_rviz': start_rviz,
             'start_paused': args.start_paused, 'auto_export': not args.manual_export,
             'keep_open': args.keep_open, 'startup_timeout': args.startup_timeout,
@@ -187,6 +192,7 @@ def main(argv=None):
                     for key, value in parameters.items()]
         plan = {
             'mode': 'dry-run' if args.dry_run else 'mapping', 'bag': str(bag.path),
+            'reference': args.reference,
             'duration_seconds': bag.duration_seconds, 'message_count': bag.message_count,
             'lidar_topic': bag.lidar_topic, 'imu_topic': bag.imu_topic,
             'output': str(output), 'overlay': str(setup), 'ros_setup': str(ros_setup),

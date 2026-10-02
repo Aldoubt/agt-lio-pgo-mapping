@@ -28,6 +28,7 @@ def launch_session(context):
     bag = inspect_bag(value('bag_path'), value('lidar_topic'), value('imu_topic'))
     output = Path(value('output_dir')).expanduser().resolve()
     options = {
+        'reference_mode': value('reference_mode'),
         'playback_rate': validate_number(value('playback_rate'), 'playback_rate'),
         'startup_timeout': validate_number(value('startup_timeout'), 'startup_timeout'),
         'export_timeout': validate_number(value('export_timeout'), 'export_timeout'),
@@ -37,6 +38,8 @@ def launch_session(context):
     }
     if options['export_timeout'] <= options['drain_seconds']:
         raise ValueError('export_timeout must exceed drain_seconds')
+    if options['reference_mode'] not in ('pgo', 'fastlio'):
+        raise ValueError('reference_mode must be pgo or fastlio')
     share = Path(get_package_share_directory('agt_mapping_bringup'))
     lio_config = share / 'config' / 'fastlio2_mid360.yaml'
     remappings = frontend_remappings(lio_config, bag.imu_topic)
@@ -49,15 +52,25 @@ def launch_session(context):
              remappings=remappings),
         Node(package='agt_fastlio_backend', executable='fastlio_backend_node',
              parameters=[{'use_sim_time': True}]),
-        Node(package='pgo', executable='pgo_node',
-             parameters=[{'config_path': text(share / 'config' / 'pgo_frontend.yaml'),
-                          'use_sim_time': True}]),
-        Node(package='agt_pgo_backend', executable='pgo_backend_node',
-             parameters=[{'use_sim_time': True, 'pgo_output_dir': text(output / 'pgo_raw')}]),
-        Node(package='agt_mapping_exporter', executable='mapping_artifact_exporter',
-             parameters=[{'use_sim_time': True, 'output_dir': text(output)}]),
     ]
-    labels = ['sensor adapter', 'FAST-LIO2', 'frontend bridge', 'PGO', 'PGO bridge', 'artifact exporter']
+    if options['reference_mode'] == 'fastlio':
+        nodes.append(Node(
+            package='agt_mapping_bringup', executable='fastlio_reference_exporter',
+            parameters=[{'use_sim_time': True, 'output_dir': text(output),
+                         'bag_path': text(bag.path)}],
+        ))
+        labels = ['sensor adapter', 'FAST-LIO2', 'frontend bridge', 'FAST-LIO2 reference exporter']
+    else:
+        nodes.extend([
+            Node(package='pgo', executable='pgo_node',
+                 parameters=[{'config_path': text(share / 'config' / 'pgo_frontend.yaml'),
+                              'use_sim_time': True}]),
+            Node(package='agt_pgo_backend', executable='pgo_backend_node',
+                 parameters=[{'use_sim_time': True, 'pgo_output_dir': text(output / 'pgo_raw')}]),
+            Node(package='agt_mapping_exporter', executable='mapping_artifact_exporter',
+                 parameters=[{'use_sim_time': True, 'output_dir': text(output)}]),
+        ])
+        labels = ['sensor adapter', 'FAST-LIO2', 'frontend bridge', 'PGO', 'PGO bridge', 'artifact exporter']
     playback_cmd = ['ros2', 'bag', 'play', str(bag.path), '--clock', '--rate',
                     str(options['playback_rate']), '--topics', bag.lidar_topic, bag.imu_topic]
     if options['start_paused']:
@@ -65,10 +78,12 @@ def launch_session(context):
     player = ExecuteProcess(cmd=playback_cmd, output='screen')
     ready = Node(package='agt_mapping_bringup', executable='mapping_wait_ready', output='screen',
                  parameters=[{'output_dir': text(output), 'startup_timeout': options['startup_timeout'],
-                              'lidar_topic': bag.lidar_topic, 'imu_topic': bag.imu_topic}])
+                              'lidar_topic': bag.lidar_topic, 'imu_topic': bag.imu_topic,
+                              'reference_mode': options['reference_mode']}])
     finalizer = Node(package='agt_mapping_bringup', executable='mapping_export_verified', output='screen',
                      parameters=[{'output_dir': text(output), 'export_timeout': options['export_timeout'],
-                                  'drain_seconds': options['drain_seconds']}])
+                                  'drain_seconds': options['drain_seconds'],
+                                  'reference_mode': options['reference_mode']}])
 
     def fail(message):
         mark_session(output, 'failed', message)
@@ -105,9 +120,12 @@ def launch_session(context):
         if event.returncode != 0:
             return fail('Map export/verification failed; no verified completion (see session.json/logs)')
         if options['keep_open']:
-            return [LogInfo(msg=f'Verified map: {output / "map_package"}. --keep-open: Ctrl+C to close.')]
-        return [LogInfo(msg=f'Verified map: {output / "map_package"}; closing this launch.'),
-                EmitEvent(event=Shutdown(reason='Optimized map artifact verified'))]
+            package_name = 'fastlio_reference_package' if options['reference_mode'] == 'fastlio' else 'map_package'
+            return [LogInfo(msg=f'Verified map: {output / package_name}. --keep-open: Ctrl+C to close.')]
+        package_name = 'fastlio_reference_package' if options['reference_mode'] == 'fastlio' else 'map_package'
+        reason = 'FAST-LIO2 reference artifact verified' if options['reference_mode'] == 'fastlio' else 'Optimized map artifact verified'
+        return [LogInfo(msg=f'Verified map: {output / package_name}; closing this launch.'),
+                EmitEvent(event=Shutdown(reason=reason))]
 
     def critical_exit(label):
         def handler(event, ctx):

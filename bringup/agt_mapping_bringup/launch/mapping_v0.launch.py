@@ -11,6 +11,8 @@ def generate_launch_description():
         DeclareLaunchArgument('output_dir', description='New or empty run output directory'),
         DeclareLaunchArgument('lidar_topic', default_value='auto'),
         DeclareLaunchArgument('imu_topic', default_value='auto'),
+        DeclareLaunchArgument('reference_mode', default_value='pgo',
+                              description='pgo or fastlio (fastlio disables PGO)'),
         DeclareLaunchArgument('playback_rate', default_value='1.0'),
         DeclareLaunchArgument('start_rviz', default_value='true'),
         DeclareLaunchArgument('start_paused', default_value='false'),

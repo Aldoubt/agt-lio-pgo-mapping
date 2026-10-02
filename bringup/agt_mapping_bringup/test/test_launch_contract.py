@@ -81,6 +81,7 @@ class LaunchContractTests(unittest.TestCase):
             'lidar_topic': 'auto', 'imu_topic': 'auto', 'playback_rate': '1.0',
             'startup_timeout': '45', 'export_timeout': '180', 'drain_seconds': '3',
             'start_rviz': 'false', 'start_paused': 'false', 'auto_export': 'true', 'keep_open': 'false',
+            'reference_mode': 'pgo',
         })
         share = Path(__file__).resolve().parents[1]
         replacements = {
@@ -189,6 +190,16 @@ class LaunchContractTests(unittest.TestCase):
         lio = next(a for a in actions if isinstance(a, Node) and a.kwargs.get('executable') == 'lio_node')
         self.assertIn(('/agt/sensors/imu/data', '/livox/imu'), lio.kwargs['remappings'])
         self.assertNotIn('imu_topic', lio.kwargs['parameters'][0])
+
+    def test_fastlio_reference_mode_does_not_launch_pgo(self):
+        actions = self.compose(reference_mode='fastlio')
+        executables = [a.kwargs.get('executable') for a in actions if isinstance(a, Node)]
+        self.assertIn('fastlio_reference_exporter', executables)
+        self.assertNotIn('pgo_node', executables)
+        self.assertNotIn('pgo_backend_node', executables)
+        self.assertNotIn('mapping_artifact_exporter', executables)
+        session = json.loads((self.output / 'session.json').read_text())
+        self.assertEqual(session['options']['reference_mode'], 'fastlio')
 
     def test_paused_and_rate_are_forwarded_to_player_argv(self):
         self.compose(start_paused='true', playback_rate='2.5')
