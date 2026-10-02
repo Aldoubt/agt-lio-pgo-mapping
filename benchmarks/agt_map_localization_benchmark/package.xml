@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>agt_map_localization_benchmark</name>
-  <version>0.1.0</version>
-  <description>Isolated non-publishing offline map localization A/B benchmark.</description>
+  <version>0.2.0</version>
+  <description>Isolated non-publishing offline map localization and greenhouse relocalization benchmark.</description>
   <maintainer email="dev@agt.local">AGT Mapping</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>
