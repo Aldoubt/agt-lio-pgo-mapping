@@ -24,6 +24,11 @@ def choose_yaws(values: list[float], maximum: int = 5) -> list[float]:
     return [unique[int(round(i))] for i in desired]
 
 
+def plot_title(scene_id: str, frames: int, yaw: float, metric: str) -> str:
+    display_id = scene_id.replace('trajectory_row_group_', 'rowgroup_')
+    return f'{display_id}\nf={frames} | yaw={yaw:+g} deg | {metric}'
+
+
 def plot(run: Path, metric: str = 'nominal_success') -> int:
     try:
         import matplotlib
@@ -58,7 +63,7 @@ def plot(run: Path, metric: str = 'nominal_success') -> int:
                               extent=(min(xs), max(xs), min(ys), max(ys)))
             ax.set_xlabel('initial dx [m]')
             ax.set_ylabel('initial dy [m]')
-            ax.set_title(f'{scene_id} f={frames}, yaw={yaw:g} deg, {metric}')
+            ax.set_title(plot_title(scene_id, frames, yaw, metric))
             fig.colorbar(image, ax=ax, label='success (1=yes, 0=no)')
             fig.tight_layout()
             name = f'{scene_id}_f{frames}_yaw_{yaw:+g}_{metric}.png'.replace('+', 'p').replace('-', 'm')

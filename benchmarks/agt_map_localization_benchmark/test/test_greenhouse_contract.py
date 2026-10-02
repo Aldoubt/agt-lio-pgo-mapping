@@ -9,6 +9,7 @@ from agt_map_localization_benchmark.greenhouse import (
     MapPackage, Scene, SceneConfig, grid_values, heldout_indices,
     load_scene_config, parse_frames, summarize,
 )
+from agt_map_localization_benchmark.plot_greenhouse import plot_title
 from agt_map_localization_benchmark.pcd import write_pcd
 
 
@@ -46,6 +47,11 @@ def test_parse_frames_contract():
         parse_frames('1,1')
     with pytest.raises(ValueError):
         parse_frames('2')
+
+
+def test_basin_plot_title_compacts_provisional_group_id():
+    assert plot_title('trajectory_row_group_06_middle', 5, 20.0, 'nominal_success') == (
+        'rowgroup_06_middle\nf=5 | yaw=+20 deg | nominal_success')
 
 
 def test_scene_yaml_and_row_lookup(tmp_path: Path):
