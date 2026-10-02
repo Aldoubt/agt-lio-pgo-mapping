@@ -57,7 +57,7 @@ class FastlioReferenceTests(unittest.TestCase):
         quaternion = (0.0107975691529, 0.323449458971, -0.00328155605605, 0.946178149918)
         records = [Keyframe(
             record.patch, record.stamp_sec, record.stamp_nanosec,
-            (-0.000681304376901 + record.stamp_sec - 10.0, 0.00012506092321, 0.00076352243496),
+            (25.11862844 + record.stamp_sec - 10.0, 9.43951622, 0.49791907),
             quaternion,
         ) for record in self.records]
         stats = write_reference_package(
