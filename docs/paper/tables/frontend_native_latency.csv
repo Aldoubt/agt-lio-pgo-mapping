@@ -1,0 +1,7 @@
+﻿backend,run,native_latency_source,per_scan_samples,native_processing_latency_p50_ms,native_processing_latency_p95_ms,native_processing_latency_max_ms
+point_lio,point_lio_run1,not emitted/captured,0,,,
+point_lio,point_lio_run2,not emitted/captured,0,,,
+point_lio,point_lio_run3,not emitted/captured,0,,,
+fast_livo2_lio,fast_livo2_lio_run1,not emitted/captured,0,,,
+fast_livo2_lio,fast_livo2_lio_run2,FAST-LIVO2 stdout Current Total Time,6227,28.657,53.28969999999999,142.174
+fast_livo2_lio,fast_livo2_lio_run3,FAST-LIVO2 stdout Current Total Time,6227,26.566,39.428799999999995,114.45

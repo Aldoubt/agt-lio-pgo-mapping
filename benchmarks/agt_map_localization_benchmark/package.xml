@@ -10,6 +10,8 @@
   <exec_depend>python3-scipy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>agt_global_relocalization_native</exec_depend>
+  <exec_depend>agt_greenhouse_annotation</exec_depend>
+  <exec_depend>python3-matplotlib</exec_depend>
   <test_depend>python3-pytest</test_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

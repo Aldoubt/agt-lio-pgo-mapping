@@ -1,0 +1,288 @@
+diff --git a/navigation/localization/agt_global_relocalization_native/CMakeLists.txt b/navigation/localization/agt_global_relocalization_native/CMakeLists.txt
+index 24b1434..487fb46 100644
+--- a/navigation/localization/agt_global_relocalization_native/CMakeLists.txt
++++ b/navigation/localization/agt_global_relocalization_native/CMakeLists.txt
+@@ -10,6 +10,7 @@ find_package(PCL REQUIRED COMPONENTS common io filters)
+ find_package(OpenMP)
+ find_package(Boost REQUIRED COMPONENTS filesystem system)
+ find_package(small_gicp CONFIG REQUIRED)
++find_package(nlohmann_json REQUIRED)
+ 
+ set(AGT_NATIVE_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
+ 
+@@ -103,6 +104,7 @@ if(AGT_HAVE_3D_BBS)
+     ${PCL_INCLUDE_DIRS}
+   )
+   target_link_libraries(candidate_bbs_gicp_localizer PRIVATE
++    nlohmann_json::nlohmann_json
+     ${BBS3D_CPU_LIBRARY}
+     small_gicp::small_gicp
+     ${PCL_LIBRARIES}
+diff --git a/navigation/localization/agt_global_relocalization_native/package.xml b/navigation/localization/agt_global_relocalization_native/package.xml
+index ec8931a..2eba0e7 100644
+--- a/navigation/localization/agt_global_relocalization_native/package.xml
++++ b/navigation/localization/agt_global_relocalization_native/package.xml
+@@ -9,5 +9,6 @@
+   <build_depend>eigen3_cmake_module</build_depend>
+   <depend>pcl_conversions</depend>
+   <depend>boost</depend>
++  <build_depend>nlohmann-json-dev</build_depend>
+   <export><build_type>ament_cmake</build_type></export>
+ </package>
+diff --git a/navigation/localization/agt_global_relocalization_native/src/candidate_bbs_gicp_localizer.cpp b/navigation/localization/agt_global_relocalization_native/src/candidate_bbs_gicp_localizer.cpp
+index 25cbbf3..339de02 100644
+--- a/navigation/localization/agt_global_relocalization_native/src/candidate_bbs_gicp_localizer.cpp
++++ b/navigation/localization/agt_global_relocalization_native/src/candidate_bbs_gicp_localizer.cpp
+@@ -1,13 +1,16 @@
+ 
+ #include <algorithm>
+ #include <chrono>
++#include <cctype>
+ #include <cmath>
+ #include <filesystem>
++#include <fstream>
+ #include <iostream>
+ #include <limits>
+ #include <stdexcept>
+ #include <string>
+ #include <vector>
++#include <nlohmann/json.hpp>
+ 
+ #include <Eigen/Core>
+ #include <Eigen/Geometry>
+@@ -30,6 +33,12 @@ struct Options {
+   std::string map;
+   std::string scan;
+   std::string assets_dir;
++  // Opt-in observation only. The ranked descriptor list is never resized for tracing.
++  std::string trace_candidates_json;
++  int query_frames{1};
++  double query_timestamp{std::numeric_limits<double>::quiet_NaN()};
++  int query_keyframe{-1};
++  std::string query_scene_id, query_scene_type, query_backend_id;
+   double timeout_sec{18.0};
+   double map_leaf{0.35};
+   double scan_leaf{0.35};
+@@ -75,6 +84,67 @@ struct CoarseResult {
+   double elapsed_ms{0.0};
+ };
+ 
++using Json = nlohmann::json;
++
++Json trace_pose(const Eigen::Isometry3d& pose) {
++  const Eigen::Quaterniond q(pose.rotation());
++  return {{"x", pose.translation().x()}, {"y", pose.translation().y()},
++          {"z", pose.translation().z()}, {"qx", q.x()}, {"qy", q.y()},
++          {"qz", q.z()}, {"qw", q.w()},
++          {"yaw_deg", agt_relocalization::yaw_from_quaternion(q) * 180.0 / M_PI}};
++}
++
++// The file is serialized after native computation, including failed returns.
++// Diagnostic I/O failure is reported on stderr and cannot change the result.
++struct CandidateTrace {
++  const Options& options;
++  Json document;
++  explicit CandidateTrace(const Options& o) : options(o) {}
++  bool enabled() const { return !options.trace_candidates_json.empty(); }
++  void initialize() {
++    if (!enabled()) return;
++    document = {{"schema_version", 1}, {"producer", "agt_global_relocalization_native"},
++      {"query", {{"scan", options.scan}, {"map_package", options.map},
++        {"frames", options.query_frames}, {"timestamp", options.query_timestamp},
++        {"keyframe", options.query_keyframe}, {"scene_id", options.query_scene_id},
++        {"scene_type", options.query_scene_type}, {"backend_id", options.query_backend_id},
++        {"frame", options.bbs_query_frame_mode}}},
++      {"ranked_candidates", Json::array()},
++      {"native_configuration", {{"timeout_sec", options.timeout_sec},
++        {"per_candidate_timeout_sec", options.per_candidate_timeout_sec},
++        {"candidate_xy_radius_m", options.candidate_xy_radius}, {"candidate_z_radius_m", options.candidate_z_radius},
++        {"candidate_yaw_range_deg", options.candidate_yaw_range_deg},
++        {"roll_pitch_range_deg", options.roll_pitch_range_deg},
++        {"bbs_score_threshold", options.bbs_score_threshold},
++        {"map_leaf_m", options.map_leaf}, {"scan_leaf_m", options.scan_leaf},
++        {"gicp_max_corr_m", options.gicp_max_corr}, {"threads", options.threads},
++        {"local_map_radius_xy_m", options.local_map_radius_xy},
++        {"local_map_half_height_m", options.local_map_half_height},
++        {"min_local_map_points", options.min_local_map_points}}},
++      {"selected", {{"candidate_rank", nullptr}, {"reason", "no_valid_bbs_candidate"},
++                    {"native_success", false}}},
++      {"acceptance", {{"owner", "runtime_wrapper_not_observed"},
++                      {"nominal_success", nullptr}}}};
++  }
++  ~CandidateTrace() noexcept {
++    if (!enabled()) return;
++    try {
++      if (document.is_null()) initialize();
++      const fs::path path(options.trace_candidates_json);
++      if (!path.parent_path().empty()) fs::create_directories(path.parent_path());
++      const fs::path temporary(path.string() + ".tmp");
++      std::ofstream out(temporary);
++      if (!out) throw std::runtime_error("cannot open trace output");
++      out << document.dump(2) << '\n';
++      out.close();
++      if (!out) throw std::runtime_error("cannot write trace output");
++      fs::rename(temporary, path);
++    } catch (const std::exception& e) {
++      std::cerr << "WARN: candidate trace unavailable: " << e.what() << '\n';
++    }
++  }
++};
++
+ void usage() {
+   std::cerr
+     << "Usage: candidate_bbs_gicp_localizer --map MAP.pcd --scan SCAN.pcd"
+@@ -82,6 +152,7 @@ void usage() {
+     << " [--candidate-xy-radius 4] [--candidate-yaw-range-deg 0]"
+     << " [--bbs-query-frame-mode mapping_body|base_link]"
+     << " [--base-from-body-tx ... --base-from-body-qw ...]"
++    << " [--trace-candidates-json PATH] [--query-frames 1]"
+     << std::endl;
+ }
+ 
+@@ -95,6 +166,13 @@ bool parse(int argc, char** argv, Options& o) {
+     if (a == "--map") o.map = next();
+     else if (a == "--scan") o.scan = next();
+     else if (a == "--assets-dir") o.assets_dir = next();
++    else if (a == "--trace-candidates-json") o.trace_candidates_json = next();
++    else if (a == "--query-frames") o.query_frames = std::stoi(next());
++    else if (a == "--query-timestamp") o.query_timestamp = std::stod(next());
++    else if (a == "--query-keyframe") o.query_keyframe = std::stoi(next());
++    else if (a == "--query-scene-id") o.query_scene_id = next();
++    else if (a == "--query-scene-type") o.query_scene_type = next();
++    else if (a == "--query-backend-id") o.query_backend_id = next();
+     else if (a == "--timeout") o.timeout_sec = std::stod(next());
+     else if (a == "--map-leaf") o.map_leaf = std::stod(next());
+     else if (a == "--scan-leaf") o.scan_leaf = std::stod(next());
+@@ -237,12 +315,14 @@ std::vector<RankedCandidate> rank_candidates(
+ }  // namespace
+ 
+ int main(int argc, char** argv) {
++  Options o;
++  CandidateTrace trace(o);
+   try {
+-    Options o;
+     if (!parse(argc, argv, o)) {
+       usage();
+       return 2;
+     }
++    trace.initialize();
+     if (o.candidate_top_k <= 0 || o.descriptor_prefilter <= 0 ||
+         o.candidate_xy_radius <= 0.0 || o.candidate_z_radius <= 0.0) {
+       throw std::runtime_error("invalid candidate-search settings");
+@@ -313,8 +393,39 @@ int main(int argc, char** argv) {
+       query_descriptor, db_entries, descriptor_params, o.descriptor_prefilter);
+     if (candidates.empty()) throw std::runtime_error("descriptor retrieval returned no candidates");
+ 
++    if (trace.enabled()) {
++      trace.document["descriptor"] = {
++        {"database_size", db_entries.size()}, {"prefilter", o.descriptor_prefilter},
++        {"candidate_top_k", o.candidate_top_k},
++        {"params", {{"rings", descriptor_params.rings}, {"sectors", descriptor_params.sectors},
++          {"max_radius", descriptor_params.max_radius}, {"min_radius", descriptor_params.min_radius},
++          {"z_offset", descriptor_params.z_offset}, {"max_height", descriptor_params.max_height}}},
++        {"score_semantics", {{"ring_distance", "lower_is_better"},
++                            {"sector_similarity", "higher_is_better"}}}};
++      for (std::size_t i = 0; i < candidates.size(); ++i) {
++        const auto& c = candidates[i];
++        Eigen::Isometry3d map_pose = Eigen::Isometry3d::Identity();
++        map_pose.translation() = c.entry.translation;
++        map_pose.linear() = c.entry.orientation.normalized().toRotationMatrix();
++        const std::string stem = fs::path(c.entry.patch_name).stem().string();
++        Json keyframe = nullptr;
++        if (!stem.empty() && stem.size() < 18 && std::all_of(stem.begin(), stem.end(), [](unsigned char ch) { return std::isdigit(ch); }))
++          keyframe = std::stoll(stem);
++        trace.document["ranked_candidates"].push_back({{"rank", i + 1},
++          {"patch", c.entry.patch_name}, {"keyframe", keyframe},
++          {"descriptor", {{"ring_distance", c.ring_distance}, {"sector_similarity", c.sector_similarity},
++            {"sector_shift", c.sector_shift}, {"yaw_seed_deg", c.yaw_estimate * 180.0 / M_PI}}},
++          {"map_pose", trace_pose(map_pose)},
++          {"bbs", {{"attempted", false}, {"valid", nullptr}, {"timed_out", nullptr},
++            {"score", nullptr}, {"elapsed_ms", nullptr}, {"coarse_pose", nullptr}}},
++          {"gicp", {{"attempted", false}, {"converged", nullptr}, {"fitness", nullptr},
++            {"overlap", nullptr}, {"final_pose", nullptr}}}});
++      }
++    }
++
+     const auto started = std::chrono::steady_clock::now();
+     CoarseResult best;
++    int best_rank_index = -1;
+     std::vector<CoarseResult> coarse_results;
+     int attempted_candidates = 0;
+     const int try_count =
+@@ -329,6 +440,7 @@ int main(int argc, char** argv) {
+ 
+       const auto& c = candidates[static_cast<std::size_t>(i)];
+       ++attempted_candidates;
++      if (trace.enabled()) trace.document["ranked_candidates"][i]["bbs"]["attempted"] = true;
+       cpu::BBS3D bbs;
+       bbs.set_num_threads(std::max(1, o.threads));
+       if (!bbs.set_voxelmaps_coords(o.assets_dir)) {
+@@ -378,6 +490,13 @@ int main(int argc, char** argv) {
+         static_cast<int>(candidate_timeout * 1000.0));
+       bbs.localize();
+ 
++      if (trace.enabled()) {
++        auto& stage = trace.document["ranked_candidates"][i]["bbs"];
++        stage["valid"] = bbs.has_localized() && !bbs.has_timed_out();
++        stage["timed_out"] = bbs.has_timed_out();
++        stage["elapsed_ms"] = bbs.get_elapsed_time();
++      }
++
+       if (!bbs.has_localized() || bbs.has_timed_out()) continue;
+       const double score =
+         std::clamp(bbs.get_best_score_percentage(), 0.0, 1.0);
+@@ -391,7 +510,15 @@ int main(int argc, char** argv) {
+       coarse.bbs_score = score;
+       coarse.elapsed_ms = bbs.get_elapsed_time();
+       coarse_results.push_back(coarse);
+-      if (!best.valid || score > best.bbs_score) best = coarse;
++      if (trace.enabled()) {
++        auto& stage = trace.document["ranked_candidates"][i]["bbs"];
++        stage["score"] = score;
++        stage["coarse_pose"] = trace_pose(coarse.pose);
++      }
++      if (!best.valid || score > best.bbs_score) {
++        best = coarse;
++        best_rank_index = i;
++      }
+       // Every retrieved candidate within the shared deadline is attempted.
+       // A high score alone cannot resolve two visually similar greenhouse rows.
+ 
+@@ -414,11 +541,23 @@ int main(int argc, char** argv) {
+       full_map_fallback ? map_points : local_map_points;
+ 
+     small_gicp::RegistrationSetting setting;
++    if (trace.enabled()) {
++      trace.document["selected"] = {{"candidate_rank", best_rank_index + 1},
++        {"reason", "highest_valid_bbs_score_first_on_tie"}, {"native_success", false}};
++      trace.document["ranked_candidates"][best_rank_index]["gicp"]["attempted"] = true;
++    }
+     setting.num_threads = std::max(1, o.threads);
+     setting.downsampling_resolution = std::min(o.map_leaf, o.scan_leaf);
+     setting.max_correspondence_distance = o.gicp_max_corr;
+     auto result =
+       small_gicp::align(gicp_target, scan_points, best.pose, setting);
++    if (trace.enabled()) {
++      auto& stage = trace.document["ranked_candidates"][best_rank_index]["gicp"];
++      stage["converged"] = result.converged;
++      stage["fitness"] = result.error / static_cast<double>(std::max<std::size_t>(1, result.num_inliers));
++      stage["overlap"] = std::clamp(static_cast<double>(result.num_inliers) / scan_points.size(), 0.0, 1.0);
++      stage["final_pose"] = trace_pose(result.T_target_source);
++    }
+     if (!result.converged || result.num_inliers == 0) {
+       emit_failure(
+         "small_gicp did not converge after candidate-guided BBS; patch=" +
+@@ -518,8 +657,13 @@ int main(int argc, char** argv) {
+               << ",\"gicp_full_map_fallback\":"
+               << (full_map_fallback ? "true" : "false")
+               << "}" << std::endl;
++    if (trace.enabled()) trace.document["selected"]["native_success"] = true;
+     return 0;
+   } catch (const std::exception& e) {
++    if (trace.enabled()) {
++      if (!trace.document.contains("schema_version")) trace.initialize();
++      trace.document["error"] = e.what();
++    }
+     emit_failure(e.what());
+     return 1;
+   }

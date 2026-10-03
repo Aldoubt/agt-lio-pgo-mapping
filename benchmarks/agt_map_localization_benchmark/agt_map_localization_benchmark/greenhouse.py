@@ -31,7 +31,7 @@ from scipy.spatial.transform import Rotation
 import yaml
 
 from .backends import (GLOBAL_SETTINGS, LOCAL_SETTINGS, NativePrograms,
-                       global_command, invoke, local_command)
+                       global_command, invoke, local_command, enrich_candidate_trace)
 from .metrics import classify_failure, measure_pose, pose_record
 from .pcd import read_pcd, sha256_file, verify_checksum_index, write_pcd, xyz
 
@@ -438,7 +438,8 @@ def build_global_assets(dataset: MapPackage, config: SceneConfig, native: Native
                            f'{coarse.stderr[-300:]} {desc.stderr[-300:]}')
     meta = {'target': target_meta, 'descriptor_patch_count': descriptor_count,
             'heldout_query_indices': sorted(exclude),
-            'same_session_pgo_reference': True,
+            'same_session_pgo_reference': dataset.reference_type == 'PGO_OPTIMIZED_REFERENCE',
+            'reference_type': dataset.reference_type,
             'asset_files_sha256': {str(p.relative_to(assets)): sha256_file(p)
                                    for p in sorted(assets.rglob('*')) if p.is_file()}}
     _write_json(stage / 'assets_manifest.json', meta)
@@ -454,7 +455,8 @@ def _candidate_row(dataset: MapPackage, config: SceneConfig, candidate_patch: ob
 
 
 def run_global(dataset: MapPackage, config: SceneConfig, native: NativePrograms,
-               run: Path, frames: tuple[int, ...], local_targets: dict[str, dict] | None) -> list[dict]:
+               run: Path, frames: tuple[int, ...], local_targets: dict[str, dict] | None,
+               *, trace_candidates: bool = False, global_settings: dict | None = None) -> list[dict]:
     if not native.global_ready:
         raise RuntimeError('GLOBAL native executables are not installed')
     global_target, _ = build_global_assets(dataset, config, native, run, frames)
@@ -467,9 +469,28 @@ def run_global(dataset: MapPackage, config: SceneConfig, native: NativePrograms,
         for frame_count in frames:
             query = queries / f'{scene.scene_id}_f{frame_count}.pcd'
             write_pcd(query, dataset.query_body(scene.keyframe, frame_count))
+            trace_path = (run / 'global' / 'traces' / f'{scene.scene_id}_f{frame_count}.json'
+                          if trace_candidates else None)
             global_result = invoke(global_command(native.paths['candidate_bbs_gicp_localizer'],
-                                                  global_target, query, assets), timeout=30)
+                                                  global_target, query, assets,
+                                                  settings=global_settings,
+                                                  trace_candidates_json=trace_path,
+                                                  query_metadata={'frames': frame_count, 'timestamp': ref.stamp,
+                                                                  'keyframe': scene.keyframe,
+                                                                  'scene_id': scene.scene_id,
+                                                                  'scene_type': scene.scene_type}), timeout=30)
             final_measured = _native_pose_error(ref, global_result)
+            if trace_path is not None:
+                if not trace_path.is_file():
+                    raise RuntimeError(f'native candidate trace missing: {trace_path}')
+                enrich_candidate_trace(trace_path, query={
+                    'map_package': str(dataset.root),
+                    'backend_id': dataset.metadata.get('mapping_backend', {}).get('id', 'UNKNOWN'),
+                    'reference_pose': pose_record(ref.t, ref.quat_xyzw)},
+                    nominal_success=final_measured['nominal_success'],
+                    provenance={'map_checksums_sha256': sha256_file(dataset.root / 'checksums.sha256'),
+                                'native_executable_sha256': native.sha256['candidate_bbs_gicp_localizer'],
+                                'reference_type': dataset.reference_type})
             global_failure = classify_failure({'algorithm': 'GLOBAL',
                                                'reference_pose': pose_record(ref.t, ref.quat_xyzw),
                                                'native': global_result, **final_measured})
@@ -528,7 +549,8 @@ def run_global(dataset: MapPackage, config: SceneConfig, native: NativePrograms,
                 'ambiguity_margin': global_result.get('ambiguity_margin_native'),
                 'ambiguity_second_bbs_score': second_bbs_score,
                 'score_margin_normalized': normalized_score_margin,
-                'full_descriptor_topk_scores_available': False,
+                'full_descriptor_topk_scores_available': trace_candidates,
+                'candidate_trace_path': None if trace_path is None else str(trace_path),
                 'wrong_row_candidate': wrong_row if candidate_row is not None else None,
                 'coarse_seed_gicp_ran': seed_result is not None,
                 'coarse_seed_gicp_backend_success': None if seed_result is None else bool(seed_result.get('backend_success')),
@@ -581,6 +603,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--output-root', type=Path,
                    default=Path.home() / 'ros2_ws/experiments/greenhouse_relocalization_benchmark')
     p.add_argument('--ros-install', type=Path, default=Path.home() / 'ros2_ws/install')
+    p.add_argument('--native-localizer-path', type=Path, help='isolated instrumented native executable')
+    p.add_argument('--trace-candidates', action='store_true', help='save full native candidate ranking')
+    p.add_argument('--candidate-top-k', type=int, help='opt-in native BBS attempt count, e.g. 10')
+    p.add_argument('--descriptor-prefilter', type=int, help='opt-in descriptor prefilter size')
+    p.add_argument('--skip-coarse-seed-local', action='store_true',
+                   help='GLOBAL only: omit the supplementary LOCAL diagnostic')
     p.add_argument('--profile', choices=tuple(BASIN_PROFILES), default='smoke')
     p.add_argument('--mode', choices=('basin', 'global', 'all'), default='all')
     p.add_argument('--frames', help='override profile frames, e.g. 1,3,5')
@@ -620,6 +648,20 @@ def main(argv: list[str] | None = None) -> int:
         dataset = MapPackage(args.map_package)
         config = load_scene_config(args.scenes, len(dataset.poses))
         native = NativePrograms.discover(args.ros_install)
+        if args.native_localizer_path is not None:
+            binary = args.native_localizer_path.expanduser().resolve()
+            if not binary.is_file():
+                raise ValueError(f'native localizer not found: {binary}')
+            native = NativePrograms(native.paths | {'candidate_bbs_gicp_localizer': binary},
+                                    native.sha256 | {'candidate_bbs_gicp_localizer': sha256_file(binary)},
+                                    native.available | {'candidate_bbs_gicp_localizer': True})
+        global_settings = dict(GLOBAL_SETTINGS)
+        for name in ('candidate_top_k', 'descriptor_prefilter'):
+            value = getattr(args, name)
+            if value is not None:
+                if value <= 0:
+                    raise ValueError(f'{name} must be positive')
+                global_settings[name] = value
         if not native.local_ready:
             raise ValueError('installed map_gicp_tracker is required')
         if args.mode in ('global', 'all') and not native.global_ready:
@@ -644,14 +686,14 @@ def main(argv: list[str] | None = None) -> int:
             'reference': dataset.reference,
             'row_id_semantics': config.row_id_semantics,
             'data_leakage_control': 'all declared query windows excluded from generated target/descriptor maps',
-            'remaining_bias': ('same-session FAST-LIO2 frontend poses; absolute ground truth unavailable'
-                               if dataset.reference_type == 'FASTLIO2_SAME_SESSION_REFERENCE'
-                               else 'same-session PGO poses may be used for reference and query accumulation'),
+            'remaining_bias': 'same-session reference poses used for query accumulation; absolute ground truth unavailable',
             'parameters': {
                 'frames': list(frames), 'dx_m': list(dx_values), 'dy_m': list(dy_values),
                 'dyaw_deg': list(yaw_values), 'local_radius_m': args.local_radius_m,
                 'local_max_patches': args.local_max_patches,
-                'local_native': LOCAL_SETTINGS, 'global_native': GLOBAL_SETTINGS,
+                'local_native': LOCAL_SETTINGS, 'global_native': global_settings,
+                'trace_candidates': args.trace_candidates,
+                'skip_coarse_seed_local': args.skip_coarse_seed_local,
             },
         }
         _write_json(run / 'manifest.json', manifest)
@@ -662,7 +704,7 @@ def main(argv: list[str] | None = None) -> int:
             basin_rows, targets = run_basin(dataset, config, native, run, frames,
                                              dx_values, dy_values, yaw_values,
                                              args.local_radius_m, args.local_max_patches)
-        elif args.mode == 'global':
+        elif args.mode == 'global' and not args.skip_coarse_seed_local:
             target_stage = run / 'coarse_seed_targets'
             target_stage.mkdir()
             targets = {}
@@ -672,7 +714,9 @@ def main(argv: list[str] | None = None) -> int:
                                                 args.local_max_patches)
                 targets[scene.scene_id] = dataset.write_map(ids, target_stage / f'{scene.scene_id}.pcd')
         if args.mode in ('global', 'all'):
-            global_rows = run_global(dataset, config, native, run, frames, targets)
+            global_rows = run_global(dataset, config, native, run, frames, targets,
+                                     trace_candidates=args.trace_candidates,
+                                     global_settings=global_settings)
         summary = summarize(basin_rows, global_rows)
         summary['reference_type'] = dataset.reference_type
         _write_json(run / 'summary.json', summary)

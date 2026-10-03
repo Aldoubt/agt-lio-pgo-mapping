@@ -23,6 +23,8 @@ setup(
             'agt_map_localization_benchmark = agt_map_localization_benchmark.cli:main',
             'agt_greenhouse_relocalization_benchmark = agt_map_localization_benchmark.greenhouse:main',
             'agt_plot_greenhouse_basin = agt_map_localization_benchmark.plot_greenhouse:main',
+            'topk_ambiguity_analysis = agt_map_localization_benchmark.topk_ambiguity_analysis:main',
+            'topk_trace_replay = agt_map_localization_benchmark.topk_trace_replay:main',
         ],
     },
 )

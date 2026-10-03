@@ -6,6 +6,16 @@ ROS 2 Humble 的三维 LiDAR 建图框架：支持选择 LIO-SAM no-loop、Point
 
 > MID-360 是 Livox 雷达。当前 **0.2.0 编排升级**已在共享目录对应的 Ubuntu 22.04 / ROS 2 Humble 宿主机完成 82 项自动化测试、完整基准录包回放及操作场景验证。MCP 的 Ubuntu 24.04 容器不是 ROS 执行环境。具体版本覆盖、测试安装层及剩余验收边界见 [宿主机测试报告](docs/mcp-host-validation.md)。
 
+## 可复用的温室拓扑标注与 Top-K 分析
+
+对新场景的 `map_package` 手工标注真实行中心线、地头区域和 scene markers：
+
+```bash
+./scripts/annotate_map_topology.sh /path/to/new/map_package /path/to/new/annotation
+```
+
+支持编辑、撤销/重做、YAML/GeoJSON/关键帧标签导出及冻结校验。冻结后可接原生 GLOBAL Top-K trace 和论文表图导出，见 [完整流水线](docs/paper/GREENHOUSE_TOPOLOGY_TOPK_PIPELINE.md) 与 [标注工具](tools/agt_greenhouse_annotation/README.md)。
+
 ## 一键开始
 
 前提：Ubuntu 22.04、ROS 2 Humble、网络连接，以及可使用 `sudo` 安装系统依赖。

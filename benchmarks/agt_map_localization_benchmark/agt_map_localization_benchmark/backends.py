@@ -183,9 +183,12 @@ def local_command(binary: Path, map_pcd: Path, query_pcd: Path,
 
 
 def global_command(binary: Path, map_pcd: Path, query_pcd: Path,
-                   assets_dir: Path) -> list[str]:
-    p = GLOBAL_SETTINGS
-    return [str(binary), '--map', str(map_pcd), '--scan', str(query_pcd),
+                   assets_dir: Path, *, settings: dict | None = None,
+                   trace_candidates_json: Path | None = None,
+                   query_metadata: dict | None = None) -> list[str]:
+    """Use native retrieval unchanged; K=10 and observation are explicit opt-ins."""
+    p = GLOBAL_SETTINGS | (settings or {})
+    command = [str(binary), '--map', str(map_pcd), '--scan', str(query_pcd),
             '--assets-dir', str(assets_dir), '--timeout', str(p['timeout_sec']),
             '--map-leaf', str(p['map_leaf_m']), '--scan-leaf', str(p['scan_leaf_m']),
             '--candidate-top-k', str(p['candidate_top_k']),
@@ -202,6 +205,31 @@ def global_command(binary: Path, map_pcd: Path, query_pcd: Path,
             '--min-local-map-points', str(p['min_local_map_points']),
             '--threads', str(p['threads']),
             '--bbs-query-frame-mode', p['query_frame_mode']]
+    if trace_candidates_json is not None:
+        command += ['--trace-candidates-json', str(trace_candidates_json)]
+        for name, value in (query_metadata or {}).items():
+            if name not in ('frames', 'timestamp', 'keyframe', 'scene_id', 'scene_type', 'backend_id'):
+                continue
+            if value is not None:
+                command += ['--query-' + name.replace('_', '-'), str(value)]
+    return command
+
+
+def enrich_candidate_trace(path: Path, *, query: dict, nominal_success: bool,
+                           provenance: dict | None = None) -> None:
+    """Attach offline reference and provenance without inventing runtime acceptance."""
+    trace = json.loads(path.read_text(encoding='utf-8'))
+    if trace.get('schema_version') != 1 or not isinstance(trace.get('ranked_candidates'), list):
+        raise ValueError('unsupported or incomplete native candidate trace')
+    trace.setdefault('query', {}).update(query)
+    trace['acceptance'] = {'owner': 'offline_reference_tolerance',
+                           'nominal_success': bool(nominal_success),
+                           'xy_tolerance_m': 0.5, 'yaw_tolerance_deg': 5.0,
+                           'runtime_acceptance_observed': False}
+    trace['provenance'] = provenance or {}
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(trace, indent=2, allow_nan=False) + '\n', encoding='utf-8')
+    temporary.replace(path)
 
 
 def build_candidate_assets(native: NativePrograms, data: PgoEvidence,

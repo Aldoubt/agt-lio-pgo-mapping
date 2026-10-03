@@ -1,0 +1,29 @@
+{
+  "case_id": "headland_global_failure_01_point_lio_HEADLAND_01_f1",
+  "selection": "headland_global_failure",
+  "backend": "point_lio",
+  "scene_id": "HEADLAND_01",
+  "scene_type": "headland",
+  "frames": 1,
+  "keyframe": 55,
+  "reference_kind": "same-session frontend mapping reference; not absolute ground truth",
+  "candidate_patch": {
+    "file": "/home/yangxuan/ros2_ws/experiments/multi_lio_backend_20261003/runs/point_lio/map_package/patches/1090.pcd",
+    "keyframe": 1090
+  },
+  "coarse_available": true,
+  "global_final_pose_available": true,
+  "final_nominal_success": false,
+  "coarse_xy_error_m": 26.738766572499387,
+  "coarse_yaw_error_deg": 103.41187376560158,
+  "final_xy_error_m": 26.375292997611925,
+  "final_yaw_error_deg": 104.61763014317816,
+  "bbs_score": 0.991416,
+  "score_margin_normalized": null,
+  "candidate_attempted_count": "",
+  "candidate_valid_count": "",
+  "physical_row_id": "UNKNOWN",
+  "trajectory_row_group": "headland_turn_00",
+  "trajectory_group_candidate_proxy": "trajectory_pass_14",
+  "topk_full_scores_available": "False"
+}
