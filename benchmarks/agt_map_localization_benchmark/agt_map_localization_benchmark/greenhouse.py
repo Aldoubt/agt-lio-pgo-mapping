@@ -197,6 +197,13 @@ class MapPackage:
                     or self.reference.get('absolute_ground_truth') is not False
                     or self.reference.get('same_session') is not True):
                 raise ValueError('FAST-LIO2 reference metadata is incomplete or inconsistent')
+        elif self.reference_type == 'FRONTEND_SAME_SESSION_REFERENCE':
+            if (self.reference.get('source') != 'mapping_frontend_odometry'
+                    or self.reference.get('pgo_applied') is not False
+                    or self.reference.get('optimized') is not False
+                    or self.reference.get('absolute_ground_truth') is not False
+                    or self.reference.get('same_session') is not True):
+                raise ValueError('frontend reference metadata is incomplete or inconsistent')
         if not self.reference_type:
             self.reference_type = ('PGO_OPTIMIZED_REFERENCE'
                                    if self.metadata.get('backend') == 'PGO'

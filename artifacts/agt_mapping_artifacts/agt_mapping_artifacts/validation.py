@@ -65,7 +65,7 @@ def _check_deadline(deadline):
 
 
 def verify_artifact(path, *, deadline=None):
-    """Return the package path only after full coverage and SHA-256 verification."""
+    """Verify an optimized PGO artifact or a same-session frontend map package."""
     root = Path(path).expanduser().resolve()
     if (root / 'map_package').is_dir():
         root = root / 'map_package'
@@ -89,6 +89,13 @@ def verify_artifact(path, *, deadline=None):
         metadata = yaml.safe_load((root / 'metadata.yaml').read_text(encoding='utf-8'))
         if not isinstance(metadata, dict):
             raise ArtifactValidationError('Invalid metadata document')
+        if metadata.get('artifact_kind') == 'frontend_mapping_map_package':
+            from .frontend_package import verify_frontend_map_package
+            try:
+                verify_frontend_map_package(root)
+            except (OSError, ValueError, yaml.YAMLError) as exc:
+                raise ArtifactValidationError(f'Frontend map package is invalid: {exc}') from exc
+            return root
         status = metadata.get('backend_status')
         if (metadata.get('backend') != 'PGO' or not isinstance(status, dict)
                 or status.get('optimized') is not True):
