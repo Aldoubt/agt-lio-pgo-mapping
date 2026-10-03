@@ -490,6 +490,13 @@ def run_global(dataset: MapPackage, config: SceneConfig, native: NativePrograms,
                                                  'native': seed_result, **seed_measured})
             candidate_index, candidate_row = _candidate_row(
                 dataset, config, global_result.get('candidate_patch_native'))
+            best_bbs_score = global_result.get('bbs_score_native')
+            second_bbs_score = global_result.get('ambiguity_second_bbs_score_native')
+            ambiguity_valid = global_result.get('ambiguity_valid_native') is True
+            normalized_score_margin = None
+            if ambiguity_valid and best_bbs_score is not None and second_bbs_score is not None \
+                    and abs(best_bbs_score) > 1e-12:
+                normalized_score_margin = (best_bbs_score - second_bbs_score) / abs(best_bbs_score)
             wrong_row = (scene.row_id is not None and candidate_row is not None
                          and str(scene.row_id) != str(candidate_row))
             rows.append({
@@ -504,6 +511,8 @@ def run_global(dataset: MapPackage, config: SceneConfig, native: NativePrograms,
                 'final_translation_3d_error_m': final_measured['translation_3d_error_m'],
                 'final_yaw_error_deg': final_measured['yaw_error_deg'],
                 'coarse_available': coarse is not None,
+                'coarse_pose': coarse,
+                'global_final_pose': global_result.get('pose'),
                 'coarse_xy_error_m': coarse_measured['xy_error_m'],
                 'coarse_translation_3d_error_m': coarse_measured['translation_3d_error_m'],
                 'coarse_yaw_error_deg': coarse_measured['yaw_error_deg'],
@@ -513,6 +522,13 @@ def run_global(dataset: MapPackage, config: SceneConfig, native: NativePrograms,
                 'descriptor_similarity': global_result.get('descriptor_similarity_native'),
                 'candidate_patch': global_result.get('candidate_patch_native'),
                 'candidate_keyframe': candidate_index, 'candidate_row_id': candidate_row,
+                'candidate_attempted_count': global_result.get('candidate_attempted_count_native'),
+                'candidate_valid_count': global_result.get('candidate_valid_count_native'),
+                'ambiguity_valid': global_result.get('ambiguity_valid_native'),
+                'ambiguity_margin': global_result.get('ambiguity_margin_native'),
+                'ambiguity_second_bbs_score': second_bbs_score,
+                'score_margin_normalized': normalized_score_margin,
+                'full_descriptor_topk_scores_available': False,
                 'wrong_row_candidate': wrong_row if candidate_row is not None else None,
                 'coarse_seed_gicp_ran': seed_result is not None,
                 'coarse_seed_gicp_backend_success': None if seed_result is None else bool(seed_result.get('backend_success')),

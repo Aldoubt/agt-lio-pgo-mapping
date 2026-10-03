@@ -176,10 +176,20 @@ def test_native_commands_share_params_and_unavailable_metrics_are_null():
     assert '--bbs-query-frame-mode' in global_command(Path('/tmp/g'), Path('/tmp/m'), query, Path('/tmp/a'))
     success = parse_backend(json.dumps({'success': True, 'x': 0, 'y': 0, 'z': 0,
                                         'qx': 0, 'qy': 0, 'qz': 0, 'qw': 1,
-                                        'fitness': .1, 'overlap': .95}), '', 0, 11)
+                                        'fitness': .1, 'overlap': .95,
+                                        'ambiguity_valid': True,
+                                        'ambiguity_margin': .15,
+                                        'ambiguity_second_bbs_score': .70,
+                                        'candidate_attempted_count': 4,
+                                        'candidate_valid_count': 4}), '', 0, 11)
     assert success['pose']['x'] == 0
     assert success['inliers_native'] is None and success['iterations_native'] is None
     assert success['converged'] is True
+    assert success['ambiguity_valid_native'] is True
+    assert success['ambiguity_margin_native'] == pytest.approx(.15)
+    assert success['ambiguity_second_bbs_score_native'] == pytest.approx(.70)
+    assert success['candidate_attempted_count_native'] == 4
+    assert success['candidate_valid_count_native'] == 4
     fail = parse_backend('{"success":false,"message":"GICP did not converge"}', '', 1, 13)
     assert fail['converged'] is False and fail['pose'] is None
 

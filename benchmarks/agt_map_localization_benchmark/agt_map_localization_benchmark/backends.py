@@ -139,6 +139,14 @@ def parse_backend(stdout: str, stderr: str, returncode: int, wall_ms: float) -> 
         'wall_ms_external': wall_ms,
         'bbs_score_native': finite('bbs_score'),
         'bbs_elapsed_ms_native': finite('bbs_elapsed_ms'),
+        # Preserve ambiguity diagnostics already emitted by the native
+        # candidate localizer. These are not probabilities and do not expose
+        # the full descriptor Top-K ranking.
+        'ambiguity_valid_native': result.get('ambiguity_valid'),
+        'ambiguity_margin_native': finite('ambiguity_margin'),
+        'ambiguity_second_bbs_score_native': finite('ambiguity_second_bbs_score'),
+        'candidate_attempted_count_native': result.get('candidate_attempted_count'),
+        'candidate_valid_count_native': result.get('candidate_valid_count'),
         'descriptor_ring_distance_native': finite('descriptor_ring_distance'),
         'descriptor_similarity_native': finite('descriptor_similarity'),
         'descriptor_shift_native': result.get('descriptor_shift'),
