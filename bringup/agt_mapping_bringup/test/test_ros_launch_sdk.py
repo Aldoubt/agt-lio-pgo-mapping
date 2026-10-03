@@ -63,6 +63,7 @@ class RealLaunchSdkTests(unittest.TestCase):
             context.launch_configurations.update({
                 'bag_path': str(bag), 'output_dir': str(root / 'output'),
                 'lidar_topic': 'auto', 'imu_topic': 'auto', 'playback_rate': '1.0',
+                'reference_mode': 'pgo',
                 'startup_timeout': '45', 'export_timeout': '180', 'drain_seconds': '3',
                 'start_rviz': 'false', 'start_paused': 'false',
                 'auto_export': 'true', 'keep_open': 'false',

@@ -8,6 +8,7 @@ setup(name=package_name, version='0.3.0', packages=[package_name], data_files=[
     ('share/' + package_name, ['package.xml']),
     ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
     ('share/' + package_name + '/config', glob('config/*.yaml')),
+    ('share/' + package_name + '/config/backends', glob('config/backends/*.yaml')),
     ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
 ], install_requires=['setuptools'], zip_safe=True, maintainer='AGT Mapping Team',
     maintainer_email='xuanyang.robotics@gmail.com',
@@ -18,6 +19,9 @@ setup(name=package_name, version='0.3.0', packages=[package_name], data_files=[
         'mapping_export_verified = agt_mapping_bringup.session_runtime:export_main',
         'mapping_live_supervisor = agt_mapping_bringup.live_supervisor:supervisor_main',
         'fastlio_reference_exporter = agt_mapping_bringup.fastlio_reference:main',
+        'frontend_map_exporter = agt_mapping_bringup.frontend_map_exporter:main',
+        'mapping_imu_accel_scaler = agt_mapping_bringup.imu_accel_scaler:main',
+        'frontend_map_export_client = agt_mapping_bringup.frontend_map_exporter:export_client_main',
         'mapping_review = agt_mapping_bringup.review:main',
         'mapping_map_release = agt_mapping_bringup.map_release:main',
     ]})

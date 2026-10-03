@@ -1,6 +1,6 @@
 # AGT LIO–PGO Mapping
 
-ROS 2 Humble 的三维 LiDAR 建图基线：**Livox MID-360 → FAST-LIO2 → PGO → 可校验 PCD 地图包**。
+ROS 2 Humble 的三维 LiDAR 建图框架：支持选择 LIO-SAM no-loop、Point-LIO、FAST-LIVO2 LIO-only，保留 FAST-LIO2 legacy/experimental；统一前端与地图包接口，现有 PGO、BBS/GICP 与地图审阅流程继续保留。
 
 它面向建图研究协作，不包含 Nav2、定位运行时、HMI、RTK 或底盘控制。FAST-LIO2、PGO、HBA 和 Batch-LIO 保持为锁定版本的外部依赖；本仓库只实现稳定的传感器、前后端和地图产物接口。
 
@@ -123,6 +123,35 @@ ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1 \
 少量连续帧出现的拖影，同时保留墙、路沿和立柱。原始 `map.pcd` 与建图包不会被修改。
 长时间原地不动的人仍可能被当成静态物体，需在二维编辑器中删除；若现场仍频繁出现，
 再考虑在建图前端增加语义动态目标过滤，而不是直接改变 SLAM 主链。
+
+## 多 LIO Backend 验收中的入口
+
+本分支增加了显式 backend 选择和 backend-independent `map_package`：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/yangxuan/agt_navigation_v2/install/setup.bash
+source /home/yangxuan/lio_benchmark_algorithms/point_lio_ws/install/setup.bash
+source /home/yangxuan/lio_benchmark_algorithms/lio_sam_ws/install/setup.bash
+source /home/yangxuan/ros2_ws/experiments/multi_lio_backend_20261003/install/setup.bash
+
+ros2 launch agt_mapping_bringup mapping.launch.py \
+  bag_path:=/home/yangxuan/rosbags/green-house \
+  output_dir:=/home/yangxuan/ros2_ws/experiments/multi_lio_backend_20261003/runs/lio_sam_noloop \
+  mapping_backend:=lio_sam_noloop
+```
+
+Point-LIO 和 FAST-LIVO2 分别选择 `point_lio`、`fast_livo2_lio`。未通过温室
+bag 的构建、轨迹、地图包和重复性验收前，默认保持
+`DEFAULT_NOT_ESTABLISHED`；需要显式选择候选 backend。FAST-LIO2 必须额外设置
+`allow_experimental_backend:=true`。LIO-SAM loop 配置只作实验 profile；温室重复行列
+数据上已观察到 false loop，不参与默认资格。
+
+这一新入口只导出 frontend same-session reference，不运行 PGO。该 reference
+通过统一结构供 BBS/GICP 输入，但不能替代现有需要 optimized PGO 的导航地图发布链。
+仓库、源码、历史基准和本次运行状态见
+[`docs/backend/`](docs/backend/)，特别是
+[`MULTI_LIO_BACKEND_ACCEPTANCE.md`](docs/backend/MULTI_LIO_BACKEND_ACCEPTANCE.md)。
 
 ## 技术边界
 
