@@ -9,6 +9,7 @@
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>agt_mapping_artifacts</exec_depend>
   <exec_depend>agt_global_relocalization_native</exec_depend>
   <exec_depend>agt_greenhouse_annotation</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>

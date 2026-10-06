@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from agt_map_localization_benchmark.greenhouse import (
-    MapPackage, Scene, SceneConfig, grid_values, heldout_indices,
+    MapPackage, Scene, SceneConfig, build_global_assets, grid_values, heldout_indices,
     load_scene_config, parse_frames, summarize,
 )
 from agt_map_localization_benchmark.plot_greenhouse import plot_title
@@ -148,3 +148,38 @@ def test_map_package_rejects_inconsistent_fastlio_reference_flags(tmp_path: Path
     })
     with pytest.raises(ValueError, match='metadata is incomplete or inconsistent'):
         MapPackage(tmp_path / 'map_package')
+
+
+def test_global_assets_exclude_every_keyframe_from_query_blocks(tmp_path: Path, monkeypatch):
+    package_root = tmp_path / 'map_package'
+    _write_reference_package(package_root, {
+        'source': 'fastlio2_odometry', 'pgo_applied': False, 'optimized': False,
+        'absolute_ground_truth': False, 'same_session': True,
+    })
+    dataset = MapPackage(package_root)
+    config = SceneConfig((Scene('q', 'row_middle', 3, None, 'test'),), ())
+    run = tmp_path / 'run'
+    run.mkdir()
+
+    def copy_source(_dataset, indices, destination, _minimum):
+        destination.mkdir(parents=True)
+        return len(indices)
+
+    class Programs:
+        paths = {'build_relocalization_assets': Path('/native/build_assets'),
+                 'build_relocalization_candidates': Path('/native/build_candidates')}
+
+    def fake_run(command, **_kwargs):
+        if '--output' in command:
+            Path(command[command.index('--output') + 1]).mkdir(parents=True, exist_ok=True)
+        return type('Completed', (), {'returncode': 0, 'stderr': ''})()
+
+    monkeypatch.setattr('agt_map_localization_benchmark.greenhouse._copy_descriptor_source', copy_source)
+    monkeypatch.setattr('agt_map_localization_benchmark.greenhouse.subprocess.run', fake_run)
+    _, metadata = build_global_assets(dataset, config, Programs(), run, (1,),
+                                      extra_excluded_indices=(2, 3, 4, 5))
+    assert metadata['block_containing_query_excluded_indices'] == [2, 3, 4, 5]
+    assert metadata['heldout_query_indices'] == [2, 3, 4, 5]
+    with pytest.raises(ValueError, match='out-of-range'):
+        build_global_assets(dataset, config, Programs(), tmp_path / 'bad_run', (1,),
+                            extra_excluded_indices=(99,))

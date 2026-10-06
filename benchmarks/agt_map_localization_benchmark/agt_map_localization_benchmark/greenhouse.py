@@ -412,10 +412,17 @@ def _copy_descriptor_source(dataset: MapPackage, indices: tuple[int, ...], desti
 
 
 def build_global_assets(dataset: MapPackage, config: SceneConfig, native: NativePrograms,
-                        run: Path, frames: tuple[int, ...]) -> tuple[Path, dict]:
+                        run: Path, frames: tuple[int, ...],
+                        extra_excluded_indices: Iterable[int] = ()) -> tuple[Path, dict]:
+    raw_exclusions = list(extra_excluded_indices)
+    if any(isinstance(i, bool) or not isinstance(i, int) for i in raw_exclusions):
+        raise ValueError('extra query-block exclusions must be integer keyframe indices')
+    extra_excluded = set(raw_exclusions)
+    if extra_excluded - set(range(len(dataset.poses))):
+        raise ValueError('extra query-block exclusions contain out-of-range keyframes')
     stage = run / 'global'
     stage.mkdir(exist_ok=True)
-    exclude = heldout_indices(config, frames)
+    exclude = heldout_indices(config, frames) | extra_excluded
     map_indices = tuple(i for i in range(len(dataset.poses)) if i not in exclude)
     target = stage / 'global_target_map.pcd'
     target_meta = dataset.write_map(map_indices, target)
@@ -438,6 +445,7 @@ def build_global_assets(dataset: MapPackage, config: SceneConfig, native: Native
                            f'{coarse.stderr[-300:]} {desc.stderr[-300:]}')
     meta = {'target': target_meta, 'descriptor_patch_count': descriptor_count,
             'heldout_query_indices': sorted(exclude),
+            'block_containing_query_excluded_indices': sorted(extra_excluded),
             'same_session_pgo_reference': dataset.reference_type == 'PGO_OPTIMIZED_REFERENCE',
             'reference_type': dataset.reference_type,
             'asset_files_sha256': {str(p.relative_to(assets)): sha256_file(p)
@@ -456,10 +464,12 @@ def _candidate_row(dataset: MapPackage, config: SceneConfig, candidate_patch: ob
 
 def run_global(dataset: MapPackage, config: SceneConfig, native: NativePrograms,
                run: Path, frames: tuple[int, ...], local_targets: dict[str, dict] | None,
-               *, trace_candidates: bool = False, global_settings: dict | None = None) -> list[dict]:
+               *, trace_candidates: bool = False, global_settings: dict | None = None,
+               extra_excluded_indices: Iterable[int] = ()) -> list[dict]:
     if not native.global_ready:
         raise RuntimeError('GLOBAL native executables are not installed')
-    global_target, _ = build_global_assets(dataset, config, native, run, frames)
+    global_target, _ = build_global_assets(dataset, config, native, run, frames,
+                                           extra_excluded_indices=extra_excluded_indices)
     assets = run / 'global' / 'assets'
     queries = run / 'global' / 'queries'
     queries.mkdir()
@@ -471,6 +481,8 @@ def run_global(dataset: MapPackage, config: SceneConfig, native: NativePrograms,
             write_pcd(query, dataset.query_body(scene.keyframe, frame_count))
             trace_path = (run / 'global' / 'traces' / f'{scene.scene_id}_f{frame_count}.json'
                           if trace_candidates else None)
+            if trace_path is not None:
+                trace_path.parent.mkdir(parents=True, exist_ok=True)
             global_result = invoke(global_command(native.paths['candidate_bbs_gicp_localizer'],
                                                   global_target, query, assets,
                                                   settings=global_settings,

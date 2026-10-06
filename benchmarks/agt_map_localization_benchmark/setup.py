@@ -25,6 +25,9 @@ setup(
             'agt_plot_greenhouse_basin = agt_map_localization_benchmark.plot_greenhouse:main',
             'topk_ambiguity_analysis = agt_map_localization_benchmark.topk_ambiguity_analysis:main',
             'topk_trace_replay = agt_map_localization_benchmark.topk_trace_replay:main',
+            'agt_run_relocalization_query = agt_map_localization_benchmark.relocalization_mvp:main',
+            'agt_verify_relocalization_evidence = agt_map_localization_benchmark.relocalization_mvp:verify_main',
+            'agt_export_relocalization_candidate = agt_map_localization_benchmark.relocalization_mvp:candidate_overlay_main',
         ],
     },
 )
