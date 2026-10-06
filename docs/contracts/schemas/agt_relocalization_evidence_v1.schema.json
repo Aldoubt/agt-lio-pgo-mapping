@@ -1,0 +1,467 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agt://schemas/relocalization-evidence/v1",
+  "title": "AGT Relocalization Evidence",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "asset_type",
+    "evidence_id",
+    "source",
+    "block_set",
+    "query",
+    "algorithm",
+    "reference",
+    "evidence"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "asset_type": {
+      "const": "agt.relocalization_evidence/v1"
+    },
+    "evidence_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,100}$"
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "identity",
+        "manifest_sha256",
+        "checksums_sha256",
+        "pose_revision"
+      ],
+      "properties": {
+        "identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "checksums_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "pose_revision": {
+          "$ref": "#/$defs/sha256"
+        },
+        "path_at_run": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "block_set": {
+      "type": "object",
+      "required": [
+        "block_set_id",
+        "revision",
+        "parent_source_digest",
+        "manifest_sha256",
+        "index_sha256",
+        "checksums_sha256",
+        "builder_config_digest",
+        "block_keyframe_count",
+        "query_excluded_block_ids",
+        "query_excluded_keyframes"
+      ],
+      "properties": {
+        "block_set_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parent_source_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "index_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "checksums_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "builder_config_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "block_keyframe_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "row_annotation_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "query_excluded_block_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "query_excluded_keyframes": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 0},
+          "uniqueItems": true
+        },
+        "path_at_run": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "query": {
+      "type": "object",
+      "required": [
+        "query_id",
+        "keyframe",
+        "timestamp",
+        "window_keyframes",
+        "query_accumulation_frames",
+        "window_sha256",
+        "query_cloud_sha256",
+        "row_id",
+        "along_row_s_m"
+      ],
+      "properties": {
+        "query_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "keyframe": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timestamp": {
+          "type": "number"
+        },
+        "window_keyframes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "query_accumulation_frames": {
+          "enum": [
+            1,
+            3,
+            5
+          ]
+        },
+        "window_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "query_cloud_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "row_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "along_row_s_m": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "row_annotation_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "algorithm": {
+      "type": "object",
+      "required": [
+        "name",
+        "candidate_top_k",
+        "config",
+        "config_digest",
+        "binary_sha256"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_top_k": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "config": {
+          "type": "object",
+          "required": ["candidate_top_k", "query_accumulation_frames", "block_keyframe_count"],
+          "properties": {
+            "candidate_top_k": {"type": "integer", "minimum": 1},
+            "query_accumulation_frames": {"enum": [1, 3, 5]},
+            "block_keyframe_count": {"type": "integer", "minimum": 1},
+            "global_settings": {"type": "object"},
+            "registration": {"type": "string", "minLength": 1},
+            "extra_excluded_query_block_keyframes": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+            "native_binary_sha256": {"type": "object", "additionalProperties": {"$ref": "#/$defs/sha256"}},
+            "native_dependency_fingerprints": {"type": "object"},
+            "native_localizer_path": {"type": "string"},
+            "native_localizer_trace_capable": {"type": "boolean"},
+            "native_reference": {"type": "string"}
+          }
+        },
+        "config_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "binary_sha256": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256"
+          }
+        },
+        "dependency_fingerprints": {
+          "type": "object"
+        }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "required": [
+        "type",
+        "same_session",
+        "independent_ground_truth",
+        "absolute_ground_truth"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "same_session": {
+          "type": "boolean"
+        },
+        "independent_ground_truth": {
+          "type": "boolean"
+        },
+        "absolute_ground_truth": {
+          "const": false
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "geometry_observability",
+        "candidate_ambiguity",
+        "local_convergence_basin",
+        "empirical_global_result"
+      ],
+      "properties": {
+        "geometry_observability": {
+          "$ref": "#/$defs/category"
+        },
+        "candidate_ambiguity": {
+          "$ref": "#/$defs/category"
+        },
+        "local_convergence_basin": {
+          "$ref": "#/$defs/category"
+        },
+        "empirical_global_result": {
+          "type": "object",
+          "required": [
+            "classification"
+          ],
+          "properties": {
+            "classification": {
+              "enum": [
+                "CORRECT",
+                "FALSE_ACCEPT",
+                "REJECTED",
+                "TIMEOUT",
+                "NOT_RUN",
+                "REFERENCE_UNKNOWN"
+              ]
+            },
+            "converged": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "reference_relative_only": {
+              "type": "boolean"
+            },
+            "reference_error": {
+              "type": "object",
+              "properties": {
+                "xy_m": {
+                  "type": "number"
+                },
+                "translation_3d_m": {
+                  "type": "number"
+                },
+                "yaw_deg": {
+                  "type": "number"
+                }
+              },
+              "anyOf": [
+                {
+                  "required": [
+                    "xy_m"
+                  ]
+                },
+                {
+                  "required": [
+                    "translation_3d_m"
+                  ]
+                }
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "classification"
+                ],
+                "properties": {
+                  "classification": {
+                    "enum": [
+                      "CORRECT",
+                      "FALSE_ACCEPT"
+                    ]
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "converged",
+                  "reference_relative_only",
+                  "reference_error"
+                ],
+                "properties": {
+                  "converged": {
+                    "const": true
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "classification"
+                ],
+                "properties": {
+                  "classification": {
+                    "enum": [
+                      "REJECTED",
+                      "TIMEOUT",
+                      "NOT_RUN"
+                    ]
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "converged": {
+                    "not": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "analysis_artifacts": {
+      "type": "object",
+      "required": ["query_cloud"],
+      "properties": {
+        "query_cloud": {"$ref": "#/$defs/bundle_path"},
+        "raw_trace": {"$ref": "#/$defs/bundle_path"},
+        "summary": {"$ref": "#/$defs/bundle_path"},
+        "assets_manifest": {"$ref": "#/$defs/bundle_path"},
+        "job": {"$ref": "#/$defs/bundle_path"},
+        "display_only": {"type": "object", "additionalProperties": {"$ref": "#/$defs/bundle_path"}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "bundle_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*(?:^|/)\\.(?:/|$))(?!.*//)(?!.*\\\\)[^\\s]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "category": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "KNOWN",
+            "UNKNOWN",
+            "NO_DATA",
+            "CENSORED"
+          ]
+        },
+        "metrics": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "KNOWN"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "metrics"
+            ],
+            "properties": {
+              "metrics": {
+                "type": "object",
+                "minProperties": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

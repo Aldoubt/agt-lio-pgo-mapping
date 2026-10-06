@@ -25,6 +25,35 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def path_is_same_or_within(path: str | Path, root: str | Path) -> bool:
+    """Resolve existing symlink parents before checking an output boundary."""
+    candidate = Path(path).expanduser().resolve(strict=False)
+    boundary = Path(root).expanduser().resolve(strict=False)
+    return candidate == boundary or boundary in candidate.parents
+
+
+def require_output_outside(path: str | Path, protected_roots: Iterable[str | Path], *,
+                           label: str = 'output') -> Path:
+    """Reject new output paths inside immutable inputs/assets, including symlink paths."""
+    candidate = Path(path).expanduser().resolve(strict=False)
+    for protected in protected_roots:
+        boundary = Path(protected).expanduser().resolve(strict=False)
+        if path_is_same_or_within(candidate, boundary):
+            raise ValueError(f'{label} must be outside protected asset: {boundary}')
+    for ancestor in (candidate, *candidate.parents):
+        manifest_path = ancestor / 'manifest.yaml'
+        if not manifest_path.is_file() or manifest_path.is_symlink():
+            continue
+        try:
+            manifest = yaml.safe_load(manifest_path.read_text(encoding='utf-8')) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(manifest, dict) and manifest.get('asset_type') in {
+                'agt.keyframe_block_set/v1', 'agt.relocalization_evidence/v1'}:
+            raise ValueError(f'{label} must be outside immutable asset bundle: {ancestor}')
+    return candidate
+
+
 def rotation_from_xyzw(quaternion: Iterable[float]) -> np.ndarray:
     x, y, z, w = (float(value) for value in quaternion)
     norm = math.sqrt(x*x + y*y + z*z + w*w)
