@@ -28,6 +28,7 @@ setup(
             'agt_run_relocalization_query = agt_map_localization_benchmark.relocalization_mvp:main',
             'agt_verify_relocalization_evidence = agt_map_localization_benchmark.relocalization_mvp:verify_main',
             'agt_export_relocalization_candidate = agt_map_localization_benchmark.relocalization_mvp:candidate_overlay_main',
+            'agt_mapstudio_workflow = agt_map_localization_benchmark.study_workflow:main',
         ],
     },
 )

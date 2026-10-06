@@ -53,6 +53,8 @@ add_executable(map_viewer
   src/tools/ExternalToolRunner.cpp
   src/workflow/WorkflowSession.cpp
   src/ui/WorkflowPanel.cpp
+  src/ui/UiLanguage.cpp
+  src/ui/StudyResultMarkers.cpp
   src/ui/MainWindow.cpp
 )
 
@@ -87,6 +89,18 @@ install(DIRECTORY config
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_point_cloud_render_sampler test/test_point_cloud_render_sampler.cpp)
+  target_include_directories(test_point_cloud_render_sampler PRIVATE src)
+
+  ament_add_gtest(test_ui_language test/test_ui_language.cpp src/ui/UiLanguage.cpp)
+  target_include_directories(test_ui_language PRIVATE src)
+  target_link_libraries(test_ui_language ${QT_WIDGETS_TARGET})
+
+  ament_add_gtest(test_study_result_markers
+    test/test_study_result_markers.cpp src/ui/StudyResultMarkers.cpp)
+  target_include_directories(test_study_result_markers PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_link_libraries(test_study_result_markers ${QT_WIDGETS_TARGET} yaml-cpp Eigen3::Eigen)
+
   ament_add_gtest(test_confidence_color
     test/test_confidence_color.cpp src/confidence/ConfidenceColor.cpp)
   target_include_directories(test_confidence_color PRIVATE src)

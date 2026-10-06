@@ -4,8 +4,10 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QProcessEnvironment>
+#include <QPointer>
 #include <QStandardPaths>
 #include <QTextStream>
+#include <QTimer>
 
 namespace agt_map_studio {
 
@@ -99,8 +101,12 @@ void ExternalToolRunner::start(const ToolInvocation &invocation) {
 
 void ExternalToolRunner::cancel() {
   if (!process_) return;
-  process_->terminate();
-  if (!process_->waitForFinished(3000)) process_->kill();
+  QPointer<QProcess> active = process_;
+  active->terminate();
+  QTimer::singleShot(2500, this, [this, active]() {
+    if (active && process_ == active && active->state() != QProcess::NotRunning)
+      active->kill();
+  });
 }
 
 ToolResult ExternalToolRunner::run_blocking(const ToolInvocation &invocation, int timeout_ms) {

@@ -48,7 +48,9 @@ inline bool is_geometry_color_mode(PointColorMode mode) {
 
 // How a selection is drawn in Select/Delete mode.
 enum class SelectionTool { ScreenRect, PolygonPrism, Sphere };
-enum class AuxiliaryLayer { Structure = 0, Blocks = 1, Query = 2, Candidate = 3 };
+enum class AuxiliaryLayer {
+  Structure = 0, Blocks = 1, Query = 2, Candidate = 3, StudyResults = 4
+};
 
 class PointCloudViewer : public QOpenGLWidget, protected QOpenGLFunctions {
   Q_OBJECT
@@ -59,7 +61,8 @@ public:
 
   void set_cloud(LoadedPointCloud cloud, const QString &filename);
   void set_auxiliary_cloud(AuxiliaryLayer layer, const LoadedPointCloud &cloud,
-                           bool visible = true);
+                           bool visible = true,
+                           const std::vector<QVector3D> &point_colors = {});
   void set_auxiliary_visible(AuxiliaryLayer layer, bool visible);
   void clear_auxiliary_cloud(AuxiliaryLayer layer);
   void set_query_pick_mode(bool enabled) { query_pick_mode_ = enabled; }
@@ -87,8 +90,11 @@ public:
   InteractionMode mode() const { return mode_; }
   void set_selection_tool(SelectionTool tool);
   SelectionTool selection_tool() const { return tool_; }
-  // Z window applied to PolygonPrism / ScreenRect selections when enabled.
+  // Z window filters the display and constrains PolygonPrism / ScreenRect selections.
   void set_z_window(bool enabled, double z_min, double z_max);
+  // Zero keeps every source point. Display sampling never changes edit/export data.
+  void set_render_point_limit(std::size_t maximum_points);
+  void set_display_language(const QString &language);
   void set_sphere_radius(double radius_m) { sphere_radius_ = radius_m; }
   double sphere_radius() const { return sphere_radius_; }
 
@@ -133,6 +139,7 @@ private slots:
   void tick();
 
 private:
+  void rebuild_render_cloud();
   void upload_cloud();
   void upload_statuses();
   void upload_confidence_cloud();
@@ -167,6 +174,7 @@ private:
   QOpenGLBuffer axis_buffer_;
   std::unique_ptr<QOpenGLShaderProgram> shader_;
   QTimer timer_;
+  QTimer render_rebuild_timer_;
   QElapsedTimer fps_timer_;
   int frame_count_ = 0;
   float fps_ = 0.0F;
@@ -184,17 +192,22 @@ private:
   bool confidence_status_dirty_ = true;
   bool confidence_colors_dirty_ = true;
   QString cached_stats_text_;
+  QString display_language_ = QStringLiteral("en");
+  std::size_t render_point_limit_ = 500000U;
+  std::vector<std::size_t> render_indices_;
+  std::vector<float> render_xyz_;
   bool gl_ready_ = false;
   struct AuxiliaryCloud {
     QOpenGLBuffer positions{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer statuses{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer colors{QOpenGLBuffer::VertexBuffer};
     std::vector<float> xyz;
+    std::vector<QVector3D> point_colors;
     QVector3D color;
     bool visible = false;
     bool dirty = true;
   };
-  std::array<AuxiliaryCloud, 4> auxiliary_clouds_;
+  std::array<AuxiliaryCloud, 5> auxiliary_clouds_;
   bool query_pick_mode_ = false;
   bool left_drag_ = false;
   bool right_drag_ = false;

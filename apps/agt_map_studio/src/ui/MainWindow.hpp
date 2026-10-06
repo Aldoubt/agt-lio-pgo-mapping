@@ -28,7 +28,11 @@ class QMenu;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
+class QTreeWidget;
+class QTreeWidgetItem;
 class QToolBar;
+class QTimer;
+class QActionGroup;
 
 namespace agt_map_studio {
 
@@ -121,6 +125,23 @@ private slots:
   void run_publish();
   void run_all_pending();
   void cancel_tool();
+  void apply_ui_language(const QString &language);
+  void open_project_dialog();
+  void create_project_dialog();
+  void freeze_structure_review();
+  void add_manual_query_point();
+  void toggle_selected_query_enabled();
+  void delete_selected_draft_query();
+  void sample_reviewed_rows();
+  void freeze_selected_query_set();
+  void create_relocalization_study();
+  void run_selected_study();
+  void cancel_selected_study();
+  void export_selected_study();
+  void save_project_dependencies();
+  void project_item_selected(QTreeWidgetItem *item, int column);
+  void refresh_project_tree();
+  void poll_study_job();
 
 private:
   using StepFn = std::function<void()>;
@@ -129,6 +150,7 @@ private:
   void create_workflow_dock();
   void create_confidence_dock();
   void create_relocalization_dock();
+  void create_project_dock();
   void display_block_preview(const QString &directory);
   void start_relocalization_tool(const ToolInvocation &invocation,
                                  std::function<void(const ToolResult &)> on_done);
@@ -159,6 +181,13 @@ private:
   bool load_navigation_dir_into_2d(const QString &directory, QString *error);
   bool write_pipeline_config(QString *error) const;
   void save_session_quietly();
+  void populate_project_tree();
+  void validate_and_open_project(const QString &path);
+  void update_project_membership(const QStringList &query_sets,
+                                 const QStringList &studies,
+                                 std::function<void(const ToolResult &)> on_done = {});
+  void show_query_set_markers(const QString &path);
+  void show_study_result_markers(const QString &path, bool select_study);
 
   PointCloudViewer *viewer_ = nullptr;
   OccupancyViewer *occupancy_viewer_ = nullptr;
@@ -168,6 +197,16 @@ private:
   QDockWidget *workflow_dock_ = nullptr;
   QDockWidget *confidence_dock_ = nullptr;
   QDockWidget *relocalization_dock_ = nullptr;
+  QDockWidget *project_dock_ = nullptr;
+  QTreeWidget *project_tree_ = nullptr;
+  QLabel *project_status_label_ = nullptr;
+  QComboBox *study_filter_combo_ = nullptr;
+  QComboBox *study_scene_filter_combo_ = nullptr;
+  QComboBox *study_frames_filter_combo_ = nullptr;
+  QTimer *study_poll_timer_ = nullptr;
+  QPushButton *cancel_study_button_ = nullptr;
+  QPushButton *toggle_query_button_ = nullptr;
+  QPushButton *delete_query_button_ = nullptr;
   QLabel *confidence_details_label_ = nullptr;
   QLabel *geometry_summary_label_ = nullptr;
   QLabel *confidence_status_label_ = nullptr;
@@ -193,7 +232,16 @@ private:
   QCheckBox *show_blocks_layer_ = nullptr;
   QCheckBox *show_query_layer_ = nullptr;
   QCheckBox *show_candidate_layer_ = nullptr;
+  QCheckBox *show_study_results_layer_ = nullptr;
   QString loaded_evidence_directory_;
+  QString project_manifest_path_;
+  QString selected_query_set_path_;
+  QString selected_study_path_;
+  QString selected_evidence_path_;
+  QString selected_project_item_kind_;
+  QString pending_project_command_input_path_;
+  bool study_job_running_ = false;
+  qint64 study_elapsed_start_ms_ = 0;
   double picked_query_x_ = 0.0;
   double picked_query_y_ = 0.0;
   bool has_picked_query_point_ = false;
@@ -214,6 +262,7 @@ private:
   QCheckBox *z_window_check_ = nullptr;
   QDoubleSpinBox *z_min_spin_ = nullptr;
   QDoubleSpinBox *z_max_spin_ = nullptr;
+  QComboBox *render_point_limit_combo_ = nullptr;
   QDoubleSpinBox *sphere_radius_spin_ = nullptr;
   QAction *hide_deleted_action_ = nullptr;
   QAction *isolate_selection_action_ = nullptr;
@@ -234,6 +283,8 @@ private:
   QMenu *view_menu_ = nullptr;
   QMenu *tools_menu_ = nullptr;
   QAction *confirm_review_action_ = nullptr;
+  QAction *language_chinese_action_ = nullptr;
+  QAction *language_english_action_ = nullptr;
 
   RefinementModel refinement_model_;
   SelectionManager selection_manager_;

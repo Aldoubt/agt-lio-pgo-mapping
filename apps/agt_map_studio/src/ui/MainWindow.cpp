@@ -10,6 +10,8 @@
 #include "occupancy/commands/FillPolygonCommand.hpp"
 #include "occupancy/commands/ForbiddenPolygonCommand.hpp"
 #include "ui/WorkflowPanel.hpp"
+#include "ui/UiLanguage.hpp"
+#include "ui/StudyResultMarkers.hpp"
 
 #include <agt_pcd2grid_exporter/OccupancyGridWriter.hpp>
 #include <agt_pcd2grid_exporter/PCDProjector.hpp>
@@ -39,6 +41,7 @@
 #include <QGroupBox>
 #include <QImage>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenuBar>
@@ -47,18 +50,23 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPixmap>
+#include <QPointF>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QSaveFile>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QToolBar>
 #include <QHeaderView>
+#include <QTimer>
 #include <QUuid>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -66,6 +74,9 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -175,6 +186,7 @@ MainWindow::MainWindow(const QString &config_path, QWidget *parent)
   create_actions();
   create_workflow_dock();
   create_confidence_dock();
+  create_project_dock();
   create_relocalization_dock();
   load_config(config_path);
   session_.publish_target().map_root = default_map_root_;
@@ -276,6 +288,7 @@ MainWindow::MainWindow(const QString &config_path, QWidget *parent)
   edit_state_label_ = new QLabel(this);
   statusBar()->addPermanentWidget(edit_state_label_);
   refresh_workflow();
+  apply_ui_language(UiLanguage::preferred_language());
 }
 
 void MainWindow::create_actions() {
@@ -582,6 +595,22 @@ void MainWindow::create_actions() {
   connect(workflow_help_action, &QAction::triggered, this, &MainWindow::show_workflow_help);
   help_menu->addAction(workflow_help_action);
 
+  auto *language_menu = menuBar()->addMenu(QStringLiteral("Language"));
+  auto *language_group = new QActionGroup(this);
+  language_group->setExclusive(true);
+  language_chinese_action_ = language_menu->addAction(QStringLiteral("简体中文"));
+  language_english_action_ = language_menu->addAction(QStringLiteral("English"));
+  for (auto *action : {language_chinese_action_, language_english_action_}) {
+    action->setCheckable(true);
+    language_group->addAction(action);
+  }
+  language_chinese_action_->setData(QStringLiteral("zh_CN"));
+  language_english_action_->setData(QStringLiteral("en"));
+  connect(language_chinese_action_, &QAction::triggered, this,
+          [this]() { apply_ui_language(QStringLiteral("zh_CN")); });
+  connect(language_english_action_, &QAction::triggered, this,
+          [this]() { apply_ui_language(QStringLiteral("en")); });
+
   // 3D toolbar: mode + selection tool + z window + view helpers
   toolbar_3d_ = addToolBar(QStringLiteral("3D Edit"));
   toolbar_3d_->setMovable(false);
@@ -625,8 +654,9 @@ void MainWindow::create_actions() {
   connect(sphere_radius_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
           [this](double value) { viewer_->set_sphere_radius(value); viewer_->mark_edit_state_dirty(); });
   toolbar_3d_->addSeparator();
-  z_window_check_ = new QCheckBox(QStringLiteral("Z window"), this);
-  z_window_check_->setToolTip(QStringLiteral("Limit rectangle/polygon selections to a height band"));
+  z_window_check_ = new QCheckBox(QStringLiteral("Z height filter"), this);
+  z_window_check_->setToolTip(QStringLiteral(
+      "Filter the displayed cloud and limit rectangle/polygon selections to this Z range"));
   toolbar_3d_->addWidget(z_window_check_);
   z_min_spin_ = new QDoubleSpinBox(this);
   z_min_spin_->setRange(-1000.0, 1000.0);
@@ -646,6 +676,25 @@ void MainWindow::create_actions() {
   connect(z_window_check_, &QCheckBox::toggled, this, [apply_z_window](bool) { apply_z_window(); });
   connect(z_min_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [apply_z_window](double) { apply_z_window(); });
   connect(z_max_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [apply_z_window](double) { apply_z_window(); });
+  toolbar_3d_->addWidget(new QLabel(QStringLiteral("Display points:"), this));
+  render_point_limit_combo_ = new QComboBox(this);
+  render_point_limit_combo_->addItem(QStringLiteral("250k"), QVariant::fromValue<qulonglong>(250000ULL));
+  render_point_limit_combo_->addItem(QStringLiteral("500k"), QVariant::fromValue<qulonglong>(500000ULL));
+  render_point_limit_combo_->addItem(QStringLiteral("1M"), QVariant::fromValue<qulonglong>(1000000ULL));
+  render_point_limit_combo_->addItem(QStringLiteral("1.5M"), QVariant::fromValue<qulonglong>(1500000ULL));
+  render_point_limit_combo_->addItem(QStringLiteral("3M"), QVariant::fromValue<qulonglong>(3000000ULL));
+  render_point_limit_combo_->addItem(QStringLiteral("Full"), QVariant::fromValue<qulonglong>(0ULL));
+  // Start with a lightweight preview for workstation-sized maps. Users can
+  // increase this when inspecting details; edits still target the full cloud.
+  render_point_limit_combo_->setCurrentIndex(1);
+  render_point_limit_combo_->setToolTip(QStringLiteral(
+      "Rendering sample cap only; selection, edits, and exports still use all source points"));
+  toolbar_3d_->addWidget(render_point_limit_combo_);
+  connect(render_point_limit_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+          [this](int) {
+    viewer_->set_render_point_limit(static_cast<std::size_t>(
+        render_point_limit_combo_->currentData().toULongLong()));
+  });
   toolbar_3d_->addSeparator();
   toolbar_3d_->addAction(hide_deleted_action_);
   toolbar_3d_->addAction(isolate_selection_action_);
@@ -702,6 +751,1111 @@ void MainWindow::create_actions() {
   occupancy_toolbar_->addSeparator();
   occupancy_toolbar_->addAction(confirm_review_action_);
   occupancy_toolbar_->setVisible(false);
+}
+
+void MainWindow::apply_ui_language(const QString &language) {
+  UiLanguage::set_language(this, language);
+  if (viewer_) viewer_->set_display_language(language);
+  if (workflow_panel_) workflow_panel_->set_display_language(language);
+  const bool chinese = language == QStringLiteral("zh_CN");
+  if (language_chinese_action_) language_chinese_action_->setChecked(chinese);
+  if (language_english_action_) language_english_action_->setChecked(!chinese);
+}
+
+void MainWindow::create_project_dock() {
+  project_dock_ = new QDockWidget(QStringLiteral("Project Browser"), this);
+  project_dock_->setObjectName(QStringLiteral("mapstudio_project_browser"));
+  project_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+  auto *panel = new QWidget(project_dock_);
+  auto *layout = new QVBoxLayout(panel);
+  layout->setContentsMargins(6, 6, 6, 6);
+  auto *project_buttons = new QHBoxLayout();
+  auto *open = new QPushButton(QStringLiteral("Open Project"), panel);
+  auto *create = new QPushButton(QStringLiteral("Create Project"), panel);
+  auto *save = new QPushButton(QStringLiteral("Save / Rebind"), panel);
+  project_buttons->addWidget(open);
+  project_buttons->addWidget(create);
+  project_buttons->addWidget(save);
+  layout->addLayout(project_buttons);
+  auto *query_buttons = new QHBoxLayout();
+  auto *add_query = new QPushButton(QStringLiteral("Add Query Point"), panel);
+  auto *sample_rows = new QPushButton(QStringLiteral("Sample Reviewed Rows"), panel);
+  query_buttons->addWidget(add_query);
+  query_buttons->addWidget(sample_rows);
+  layout->addLayout(query_buttons);
+  auto *draft_query_buttons = new QHBoxLayout();
+  toggle_query_button_ = new QPushButton(QStringLiteral("Enable / Disable Query"), panel);
+  delete_query_button_ = new QPushButton(QStringLiteral("Delete Draft Query"), panel);
+  toggle_query_button_->setEnabled(false);
+  delete_query_button_->setEnabled(false);
+  draft_query_buttons->addWidget(toggle_query_button_);
+  draft_query_buttons->addWidget(delete_query_button_);
+  layout->addLayout(draft_query_buttons);
+  auto *asset_buttons = new QHBoxLayout();
+  auto *freeze_qs = new QPushButton(QStringLiteral("Freeze Query Set"), panel);
+  auto *new_study = new QPushButton(QStringLiteral("New Study"), panel);
+  asset_buttons->addWidget(freeze_qs);
+  asset_buttons->addWidget(new_study);
+  layout->addLayout(asset_buttons);
+  auto *study_buttons = new QHBoxLayout();
+  auto *run_study = new QPushButton(QStringLiteral("Run Study"), panel);
+  cancel_study_button_ = new QPushButton(QStringLiteral("Cancel Study"), panel);
+  cancel_study_button_->setEnabled(false);
+  study_buttons->addWidget(run_study);
+  study_buttons->addWidget(cancel_study_button_);
+  layout->addLayout(study_buttons);
+  auto *export_report_button = new QPushButton(QStringLiteral("Export Study Report"), panel);
+  layout->addWidget(export_report_button);
+  study_filter_combo_ = new QComboBox(panel);
+  study_filter_combo_->addItem(QStringLiteral("All"), QStringLiteral("ALL"));
+  study_filter_combo_->addItem(QStringLiteral("False Accept"), QStringLiteral("FALSE_ACCEPT"));
+  study_filter_combo_->addItem(QStringLiteral("Rejected"), QStringLiteral("REJECTED"));
+  study_filter_combo_->addItem(QStringLiteral("Timeout"), QStringLiteral("TIMEOUT"));
+  layout->addWidget(study_filter_combo_);
+  study_scene_filter_combo_ = new QComboBox(panel);
+  study_scene_filter_combo_->addItem(QStringLiteral("All Scenes"), QStringLiteral("ALL"));
+  study_scene_filter_combo_->addItem(QStringLiteral("Entry"), QStringLiteral("ENTRY"));
+  study_scene_filter_combo_->addItem(QStringLiteral("Middle"), QStringLiteral("MIDDLE"));
+  study_scene_filter_combo_->addItem(QStringLiteral("Exit"), QStringLiteral("EXIT"));
+  study_scene_filter_combo_->addItem(QStringLiteral("Headland"), QStringLiteral("HEADLAND"));
+  study_scene_filter_combo_->addItem(QStringLiteral("Other / unknown"), QStringLiteral("OTHER"));
+  layout->addWidget(study_scene_filter_combo_);
+  study_frames_filter_combo_ = new QComboBox(panel);
+  study_frames_filter_combo_->addItem(QStringLiteral("All Frame Counts"), QStringLiteral("ALL"));
+  for (int frames : {1, 3, 5})
+    study_frames_filter_combo_->addItem(QString::number(frames) + QStringLiteral(" frame(s)"), QString::number(frames));
+  layout->addWidget(study_frames_filter_combo_);
+  project_tree_ = new QTreeWidget(panel);
+  project_tree_->setHeaderLabels({QStringLiteral("Project Assets")});
+  project_tree_->setUniformRowHeights(true);
+  project_tree_->setMinimumHeight(300);
+  layout->addWidget(project_tree_, 1);
+  project_status_label_ = new QLabel(QStringLiteral("Open a project to restore source, structure, blocks, Query Sets, Studies and evidence."), panel);
+  project_status_label_->setWordWrap(true);
+  project_status_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  layout->addWidget(project_status_label_);
+  project_dock_->setWidget(panel);
+  addDockWidget(Qt::LeftDockWidgetArea, project_dock_);
+  project_dock_->setMinimumWidth(290);
+  if (view_menu_) {
+    view_menu_->addSeparator();
+    auto *toggle = project_dock_->toggleViewAction();
+    toggle->setText(QStringLiteral("Project Browser Panel"));
+    view_menu_->addAction(toggle);
+  }
+  study_poll_timer_ = new QTimer(this);
+  study_poll_timer_->setInterval(600);
+  connect(study_poll_timer_, &QTimer::timeout, this, &MainWindow::poll_study_job);
+  connect(open, &QPushButton::clicked, this, &MainWindow::open_project_dialog);
+  connect(create, &QPushButton::clicked, this, &MainWindow::create_project_dialog);
+  connect(save, &QPushButton::clicked, this, &MainWindow::save_project_dependencies);
+  connect(add_query, &QPushButton::clicked, this, &MainWindow::add_manual_query_point);
+  connect(sample_rows, &QPushButton::clicked, this, &MainWindow::sample_reviewed_rows);
+  connect(toggle_query_button_, &QPushButton::clicked, this, &MainWindow::toggle_selected_query_enabled);
+  connect(delete_query_button_, &QPushButton::clicked, this, &MainWindow::delete_selected_draft_query);
+  connect(freeze_qs, &QPushButton::clicked, this, &MainWindow::freeze_selected_query_set);
+  connect(new_study, &QPushButton::clicked, this, &MainWindow::create_relocalization_study);
+  connect(run_study, &QPushButton::clicked, this, &MainWindow::run_selected_study);
+  connect(cancel_study_button_, &QPushButton::clicked, this, &MainWindow::cancel_selected_study);
+  connect(export_report_button, &QPushButton::clicked, this, &MainWindow::export_selected_study);
+  connect(project_tree_, &QTreeWidget::itemClicked, this, &MainWindow::project_item_selected);
+  connect(study_filter_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+          [this](int) {
+            refresh_project_tree();
+            if (!selected_study_path_.isEmpty()) show_study_result_markers(selected_study_path_, false);
+          });
+  connect(study_scene_filter_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+          [this](int) {
+            refresh_project_tree();
+            if (!selected_study_path_.isEmpty()) show_study_result_markers(selected_study_path_, false);
+          });
+  connect(study_frames_filter_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+          [this](int) {
+            refresh_project_tree();
+            if (!selected_study_path_.isEmpty()) show_study_result_markers(selected_study_path_, false);
+          });
+  auto *root = new QTreeWidgetItem(project_tree_, {QStringLiteral("No project loaded")});
+  root->setData(0, Qt::UserRole, QStringLiteral("empty"));
+}
+
+void MainWindow::open_project_dialog() {
+  const QString path = QFileDialog::getOpenFileName(
+      this, QStringLiteral("Open MapStudio Project"), QString(),
+      QStringLiteral("MapStudio project (*.yaml *.yml);;All Files (*)"));
+  if (!path.isEmpty()) validate_and_open_project(path);
+}
+
+void MainWindow::create_project_dialog() {
+  if (!session_.source_is_mapping_package() || block_directory_edit_->text().trimmed().isEmpty()) {
+    QMessageBox::warning(this, QStringLiteral("Validated source and blocks required"),
+                         QStringLiteral("Open a validated mapping source and load/build its immutable block set first."));
+    return;
+  }
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("Create MapStudio Project"),
+      QDir::home().filePath(QStringLiteral("ros2_ws/projects/mapstudio_project.yaml")),
+      QStringLiteral("MapStudio project (*.yaml *.yml)"));
+  if (path.isEmpty()) return;
+  QStringList args{QStringLiteral("project-init"), QStringLiteral("--project"), path,
+                   QStringLiteral("--map-package"), session_.source_package_dir(),
+                   QStringLiteral("--block-dir"), block_directory_edit_->text()};
+  if (!topology_path_edit_->text().trimmed().isEmpty())
+    args << QStringLiteral("--topology") << topology_path_edit_->text().trimmed();
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Create persistent MapStudio project"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"), args);
+  start_relocalization_tool(invocation, [this, path](const ToolResult &result) {
+    if (!result.ok) {
+      project_status_label_->setText(QStringLiteral("Project creation failed: %1").arg(result.error_summary));
+      return;
+    }
+    validate_and_open_project(path);
+  });
+}
+
+void MainWindow::validate_and_open_project(const QString &path) {
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_map_localization_benchmark/agt_mapstudio_workflow")}, &missing)) {
+    QMessageBox::critical(this, QStringLiteral("Project services unavailable"), missing);
+    return;
+  }
+  const QString absolute = QFileInfo(path).absoluteFilePath();
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Validate project identities and staleness"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"),
+      {QStringLiteral("project-validate"), absolute});
+  start_relocalization_tool(invocation, [this, absolute](const ToolResult &result) {
+    if (!QFileInfo::exists(absolute)) {
+      project_status_label_->setText(QStringLiteral("Project file is missing: %1").arg(absolute));
+      return;
+    }
+    QJsonObject validation;
+    const auto raw = result.output.toUtf8();
+    const int begin = raw.indexOf('{');
+    const int end = raw.lastIndexOf('}');
+    if (begin >= 0 && end > begin) {
+      const auto parsed = QJsonDocument::fromJson(raw.mid(begin, end - begin + 1));
+      if (parsed.isObject()) validation = parsed.object();
+    }
+    QString state = validation.value(QStringLiteral("state")).toString();
+    if (state.isEmpty()) state = result.ok ? QStringLiteral("CURRENT") : QStringLiteral("INVALID");
+    project_manifest_path_ = absolute;
+    try {
+      const YAML::Node project = YAML::LoadFile(absolute.toStdString());
+      const QString root = QFileInfo(absolute).absolutePath();
+      const auto ref_path = [&root](const YAML::Node &ref) {
+        if (!ref || !ref["path"]) return QString();
+        return QDir(root).absoluteFilePath(QString::fromStdString(ref["path"].as<std::string>()));
+      };
+      const QString source_dir = ref_path(project["source_ref"]);
+      const QString block_dir = ref_path(project["block_set_ref"]);
+      const QString annotation = ref_path(project["annotation_ref"]);
+      if (!source_dir.isEmpty() && source_dir != session_.source_package_dir()) {
+        QString open_error;
+        if (!open_mapping_package(source_dir, &open_error))
+          project_status_label_->setText(QStringLiteral("Project opened STALE; source could not be loaded: %1").arg(open_error));
+      }
+      if (!block_dir.isEmpty()) block_directory_edit_->setText(block_dir);
+      if (!annotation.isEmpty()) topology_path_edit_->setText(annotation);
+      populate_project_tree();
+      project_status_label_->setText(
+          QStringLiteral("Project %1 — %2. Source, annotation, block, Query Set and Study revisions are checked from relative refs and hashes.")
+              .arg(QString::fromStdString(project["project_id"].as<std::string>(QFileInfo(absolute).completeBaseName().toStdString())), state));
+      if (state == QStringLiteral("CURRENT") && !block_dir.isEmpty() && QFileInfo::exists(block_dir))
+        display_block_preview(block_dir);
+    } catch (const std::exception &error) {
+      project_status_label_->setText(QStringLiteral("Project manifest is invalid: %1").arg(error.what()));
+      project_tree_->clear();
+    }
+  });
+}
+
+void MainWindow::populate_project_tree() {
+  project_tree_->clear();
+  if (project_manifest_path_.isEmpty() || !QFileInfo::exists(project_manifest_path_)) return;
+  const YAML::Node project = YAML::LoadFile(project_manifest_path_.toStdString());
+  const QString root_path = QFileInfo(project_manifest_path_).absolutePath();
+  const auto ref_path = [&root_path](const YAML::Node &ref) {
+    if (!ref || !ref["path"]) return QString();
+    return QDir(root_path).absoluteFilePath(QString::fromStdString(ref["path"].as<std::string>()));
+  };
+  auto *root = new QTreeWidgetItem(project_tree_, {
+      QString::fromStdString(project["project_id"].as<std::string>(QFileInfo(project_manifest_path_).completeBaseName().toStdString()))});
+  root->setData(0, Qt::UserRole, QStringLiteral("project"));
+  auto *source = new QTreeWidgetItem(root, {QStringLiteral("Source — %1").arg(
+      QString::fromStdString(project["source_ref"]["identity"].as<std::string>("UNKNOWN")))});
+  source->setData(0, Qt::UserRole, QStringLiteral("source"));
+  source->setData(0, Qt::UserRole + 1, ref_path(project["source_ref"]));
+  auto *structure = new QTreeWidgetItem(root, {QStringLiteral("Structure")});
+  structure->setData(0, Qt::UserRole, QStringLiteral("structure"));
+  if (project["annotation_ref"] && !project["annotation_ref"].IsNull()) {
+    const QString path = ref_path(project["annotation_ref"]);
+    QString status = QStringLiteral("MISSING");
+    if (QFileInfo::exists(path)) {
+      const YAML::Node annotation = YAML::LoadFile(path.toStdString());
+      status = QString::fromStdString(annotation["annotation"]["status"].as<std::string>("draft"));
+      if (status == QStringLiteral("frozen") && annotation["annotation"]["manual_review_confirmed"].as<bool>(false))
+        status = QStringLiteral("FROZEN / REVIEWED");
+      else
+        status = QStringLiteral("DRAFT / NOT REVIEWED");
+    }
+    auto *annotation_item = new QTreeWidgetItem(structure, {QStringLiteral("Topology — %1").arg(status)});
+    annotation_item->setData(0, Qt::UserRole, QStringLiteral("annotation"));
+    annotation_item->setData(0, Qt::UserRole + 1, path);
+    if (QFileInfo::exists(path)) {
+      const YAML::Node annotation = YAML::LoadFile(path.toStdString());
+      const int revision = annotation["annotation"]["revision"].as<int>(1);
+      if (annotation["rows"] && annotation["rows"].IsSequence()) {
+        for (const auto &row : annotation["rows"]) {
+          const std::string row_id_value = row["id"].as<std::string>("UNKNOWN");
+          const QString row_id = QString::fromStdString(row_id_value);
+          const QString direction = QString::fromStdString(row["direction"].as<std::string>("unknown"));
+          const QString review = QString::fromStdString(row["confidence"].as<std::string>("unknown"));
+          QString entry = QStringLiteral("UNKNOWN");
+          QString exit = QStringLiteral("UNKNOWN");
+          double length_m = 0.0;
+          const YAML::Node points = row["centerline"];
+          if (points && points.IsSequence() && points.size() >= 2) {
+            const auto coordinate = [](const YAML::Node &point) {
+              return QPointF(point[0].as<double>(), point[1].as<double>());
+            };
+            const QPointF first = coordinate(points[0]);
+            const QPointF last = coordinate(points[points.size() - 1]);
+            entry = QStringLiteral("(%1, %2)").arg(first.x(), 0, 'f', 2).arg(first.y(), 0, 'f', 2);
+            exit = QStringLiteral("(%1, %2)").arg(last.x(), 0, 'f', 2).arg(last.y(), 0, 'f', 2);
+            for (std::size_t index = 1; index < points.size(); ++index) {
+              const QPointF prior = coordinate(points[index - 1]);
+              const QPointF next = coordinate(points[index]);
+              length_m += std::hypot(next.x() - prior.x(), next.y() - prior.y());
+            }
+          }
+          auto *row_item = new QTreeWidgetItem(annotation_item, {
+              QStringLiteral("%1 — %2 / %3 m / %4 → %5 / %6")
+                  .arg(row_id, direction).arg(length_m, 0, 'f', 2)
+                  .arg(entry, exit, review)});
+          row_item->setData(0, Qt::UserRole, QStringLiteral("structure_row"));
+          row_item->setData(0, Qt::UserRole + 1, path);
+          row_item->setData(0, Qt::UserRole + 2, row_id);
+          row_item->setData(0, Qt::UserRole + 3, revision);
+          row_item->setData(0, Qt::UserRole + 4, direction);
+          row_item->setData(0, Qt::UserRole + 5, review);
+          row_item->setData(0, Qt::UserRole + 6, entry);
+          row_item->setData(0, Qt::UserRole + 7, exit);
+          row_item->setData(0, Qt::UserRole + 8, length_m);
+        }
+      }
+      if (annotation["headlands"] && annotation["headlands"].IsSequence()) {
+        auto *headlands = new QTreeWidgetItem(annotation_item, {QStringLiteral("Headlands")});
+        for (const auto &headland : annotation["headlands"]) {
+          const QString id = QString::fromStdString(headland["id"].as<std::string>("UNKNOWN"));
+          const QString confidence = QString::fromStdString(headland["confidence"].as<std::string>("unknown"));
+          new QTreeWidgetItem(headlands, {QStringLiteral("%1 — %2").arg(id, confidence)});
+        }
+      }
+      if (annotation["scenes"] && annotation["scenes"].IsSequence()) {
+        auto *scenes = new QTreeWidgetItem(annotation_item, {QStringLiteral("Scenes")});
+        for (const auto &scene : annotation["scenes"]) {
+          const QString id = QString::fromStdString(scene["id"].as<std::string>("UNKNOWN"));
+          const QString type = QString::fromStdString(scene["type"].as<std::string>("UNKNOWN"));
+          new QTreeWidgetItem(scenes, {QStringLiteral("%1 — %2").arg(id, type)});
+        }
+      }
+      annotation_item->setExpanded(true);
+    }
+  } else {
+    new QTreeWidgetItem(structure, {QStringLiteral("No topology annotation")});
+  }
+  auto *blocks = new QTreeWidgetItem(root, {QStringLiteral("Blocks")});
+  const QString block_path = ref_path(project["block_set_ref"]);
+  const QString block_id = QString::fromStdString(project["block_set_ref"]["block_set_id"].as<std::string>("UNKNOWN"));
+  auto *block_item = new QTreeWidgetItem(blocks, {block_id});
+  block_item->setData(0, Qt::UserRole, QStringLiteral("block"));
+  block_item->setData(0, Qt::UserRole + 1, block_path);
+  auto *query_sets = new QTreeWidgetItem(root, {QStringLiteral("Query Sets")});
+  auto *studies = new QTreeWidgetItem(root, {QStringLiteral("Studies")});
+  auto *evidence_group = new QTreeWidgetItem(root, {QStringLiteral("Evidence")});
+  new QTreeWidgetItem(root, {QStringLiteral("Navigation Map")});
+  new QTreeWidgetItem(root, {QStringLiteral("Routes")});
+
+  for (const auto &reference : project["query_sets"]) {
+    const QString path = ref_path(reference);
+    QString label = QFileInfo(path).fileName();
+    QString state = QStringLiteral("MISSING");
+    if (QFileInfo::exists(path)) {
+      const YAML::Node query_set = YAML::LoadFile(path.toStdString());
+      label = QString::fromStdString(query_set["query_set_id"].as<std::string>(label.toStdString())) +
+          QStringLiteral(" r%1 — %2 (%3 queries)")
+              .arg(query_set["revision"].as<int>(1))
+              .arg(QString::fromStdString(query_set["status"].as<std::string>("DRAFT")))
+              .arg(query_set["query_count"].as<int>(0));
+      state = QStringLiteral("CURRENT");
+    }
+    auto *item = new QTreeWidgetItem(query_sets, {label + QStringLiteral(" — ") + state});
+    item->setData(0, Qt::UserRole, QStringLiteral("query_set"));
+    item->setData(0, Qt::UserRole + 1, path);
+    if (QFileInfo::exists(path) && QFileInfo(path).isFile()) {
+      const YAML::Node query_set = YAML::LoadFile(path.toStdString());
+      const QString query_set_state = QString::fromStdString(query_set["status"].as<std::string>("UNKNOWN"));
+      if (query_set["queries"] && query_set["queries"].IsSequence()) {
+        for (const auto &query : query_set["queries"]) {
+          const QString query_id = QString::fromStdString(query["query_id"].as<std::string>("UNKNOWN"));
+          const QString scene = QString::fromStdString(query["scene"].as<std::string>("UNKNOWN"));
+          const int keyframe = query["resolved_keyframe_id"].as<int>(-1);
+          const bool enabled = query["enabled"].as<bool>(true);
+          auto *query_item = new QTreeWidgetItem(item, {
+              QStringLiteral("%1 — %2 / KF %3 / %4")
+                  .arg(query_id, scene).arg(keyframe)
+                  .arg(enabled ? QStringLiteral("ENABLED") : QStringLiteral("DISABLED"))});
+          query_item->setData(0, Qt::UserRole, QStringLiteral("query"));
+          query_item->setData(0, Qt::UserRole + 1, path);
+          query_item->setData(0, Qt::UserRole + 2, query_id);
+          query_item->setData(0, Qt::UserRole + 3, enabled);
+          query_item->setData(0, Qt::UserRole + 4, query_set_state);
+          query_item->setData(0, Qt::UserRole + 5,
+                              query["resolved_timestamp"] ? query["resolved_timestamp"].as<double>() : -1.0);
+          const QString row_id = QString::fromStdString(query["row_id"].as<std::string>("UNKNOWN"));
+          query_item->setData(0, Qt::UserRole + 6, row_id);
+          query_item->setData(0, Qt::UserRole + 7, scene);
+        }
+      }
+      item->setExpanded(true);
+    }
+  }
+  const QString filter = study_filter_combo_ ? study_filter_combo_->currentData().toString()
+                                            : QStringLiteral("ALL");
+  const QString scene_filter = study_scene_filter_combo_ ? study_scene_filter_combo_->currentData().toString()
+                                                          : QStringLiteral("ALL");
+  const QString frames_filter = study_frames_filter_combo_ ? study_frames_filter_combo_->currentData().toString()
+                                                            : QStringLiteral("ALL");
+  for (const auto &reference : project["studies"]) {
+    const QString path = ref_path(reference);
+    QString label = QFileInfo(path).dir().dirName();
+    YAML::Node study;
+    if (QFileInfo::exists(path)) {
+      study = YAML::LoadFile(path.toStdString());
+      label = QString::fromStdString(study["study_id"].as<std::string>(label.toStdString())) +
+          QStringLiteral(" — %1").arg(QString::fromStdString(study["status"].as<std::string>("UNKNOWN")));
+    }
+    auto *study_item = new QTreeWidgetItem(studies, {label});
+    study_item->setData(0, Qt::UserRole, QStringLiteral("study"));
+    study_item->setData(0, Qt::UserRole + 1, path);
+    if (!study || !study["results"] || !study["results"].IsSequence()) continue;
+    const QString study_dir = QFileInfo(path).absolutePath();
+    for (const auto &row : study["results"]) {
+      const QString qid = QString::fromStdString(row["query_id"].as<std::string>("UNKNOWN"));
+      const QString classification = QString::fromStdString(row["classification"].as<std::string>("NO_DATA"));
+      if (filter != QStringLiteral("ALL") && filter != classification) continue;
+      const QString scene = QString::fromStdString(row["scene"].as<std::string>("UNKNOWN"));
+      if (scene_filter != QStringLiteral("ALL") && scene_filter != scene) continue;
+      const int frames = row["query_accumulation_frames"].as<int>(0);
+      if (frames_filter != QStringLiteral("ALL") && frames_filter != QString::number(frames)) continue;
+      auto *result_item = new QTreeWidgetItem(study_item, {
+          QStringLiteral("%1 / %2 frames — %3 / %4")
+              .arg(qid).arg(frames).arg(scene, classification)});
+      result_item->setData(0, Qt::UserRole, QStringLiteral("study_result"));
+      result_item->setData(0, Qt::UserRole + 1, path);
+      result_item->setData(0, Qt::UserRole + 2, qid);
+      result_item->setData(0, Qt::UserRole + 3, classification);
+      QString evidence_path;
+      if (row["evidence_ref"] && row["evidence_ref"]["path"])
+        evidence_path = QDir(study_dir).absoluteFilePath(QString::fromStdString(row["evidence_ref"]["path"].as<std::string>()));
+      result_item->setData(0, Qt::UserRole + 4, evidence_path);
+      result_item->setData(0, Qt::UserRole + 5, scene);
+      result_item->setData(0, Qt::UserRole + 6, frames);
+      if (!evidence_path.isEmpty()) {
+        auto *evidence_item = new QTreeWidgetItem(evidence_group, {
+            QStringLiteral("%1 / f%2 — %3").arg(qid).arg(frames).arg(classification)});
+        evidence_item->setData(0, Qt::UserRole, QStringLiteral("evidence"));
+        evidence_item->setData(0, Qt::UserRole + 1, evidence_path);
+      }
+    }
+  }
+  root->setExpanded(true);
+  for (int i = 0; i < root->childCount(); ++i) root->child(i)->setExpanded(true);
+}
+
+void MainWindow::refresh_project_tree() {
+  if (!project_manifest_path_.isEmpty()) populate_project_tree();
+}
+
+void MainWindow::project_item_selected(QTreeWidgetItem *item, int) {
+  if (!item) return;
+  const QString kind = item->data(0, Qt::UserRole).toString();
+  const QString path = item->data(0, Qt::UserRole + 1).toString();
+  selected_project_item_kind_ = kind;
+  if (toggle_query_button_) toggle_query_button_->setEnabled(kind == QStringLiteral("query"));
+  if (delete_query_button_) delete_query_button_->setEnabled(kind == QStringLiteral("query"));
+  if (kind == QStringLiteral("query_set")) {
+    selected_query_set_path_ = path;
+    selected_study_path_.clear();
+    if (show_study_results_layer_) show_study_results_layer_->setChecked(false);
+    viewer_->clear_auxiliary_cloud(AuxiliaryLayer::StudyResults);
+    if (QFileInfo::exists(path)) {
+      const YAML::Node query_set = YAML::LoadFile(path.toStdString());
+      project_status_label_->setText(QStringLiteral("Query Set %1 r%2 — %3; %4 query records. Click Add Query Point to extend a draft; frozen revisions remain immutable.")
+          .arg(QString::fromStdString(query_set["query_set_id"].as<std::string>("UNKNOWN")))
+          .arg(query_set["revision"].as<int>(1))
+          .arg(QString::fromStdString(query_set["status"].as<std::string>("UNKNOWN")))
+          .arg(query_set["query_count"].as<int>(0)));
+      show_query_set_markers(path);
+    }
+  } else if (kind == QStringLiteral("query")) {
+    selected_query_set_path_ = path;
+    selected_study_path_.clear();
+    if (show_study_results_layer_) show_study_results_layer_->setChecked(false);
+    viewer_->clear_auxiliary_cloud(AuxiliaryLayer::StudyResults);
+    const QString query_id = item->data(0, Qt::UserRole + 2).toString();
+    const bool enabled = item->data(0, Qt::UserRole + 3).toBool();
+    const QString status = item->data(0, Qt::UserRole + 4).toString();
+    if (toggle_query_button_)
+      toggle_query_button_->setText(enabled ? QStringLiteral("Disable Query") : QStringLiteral("Enable Query"));
+    if (toggle_query_button_) toggle_query_button_->setEnabled(status == QStringLiteral("DRAFT"));
+    if (delete_query_button_) delete_query_button_->setEnabled(status == QStringLiteral("DRAFT"));
+    show_query_set_markers(path);
+    project_status_label_->setText(QStringLiteral("Query %1 — row %2; scene %3; KF %4; t=%5 s; %6. Only draft queries may be changed.")
+        .arg(query_id, item->data(0, Qt::UserRole + 6).toString(),
+             item->data(0, Qt::UserRole + 7).toString())
+        .arg(item->text(0).section(QStringLiteral("KF "), 1, 1).section(QStringLiteral(" / "), 0, 0))
+        .arg(item->data(0, Qt::UserRole + 5).toDouble(), 0, 'f', 6)
+        .arg(enabled ? QStringLiteral("ENABLED") : QStringLiteral("DISABLED")));
+  } else if (kind == QStringLiteral("study")) {
+    selected_study_path_ = path;
+    selected_query_set_path_.clear();
+    show_study_result_markers(path, true);
+    if (QFileInfo::exists(path)) {
+      const YAML::Node study = YAML::LoadFile(path.toStdString());
+      const QString summary = QFileInfo(path).dir().filePath(QStringLiteral("summary.yaml"));
+      QString details = QStringLiteral("Study %1 — %2; completed %3 / %4; failed %5; reference %6.")
+          .arg(QString::fromStdString(study["study_id"].as<std::string>("UNKNOWN")))
+          .arg(QString::fromStdString(study["status"].as<std::string>("UNKNOWN")))
+          .arg(study["job"]["completed"].as<int>(0)).arg(study["job"]["total"].as<int>(0))
+          .arg(study["job"]["failed"].as<int>(0))
+          .arg(QString::fromStdString(study["reference_level"].as<std::string>("UNKNOWN")));
+      if (QFileInfo::exists(summary)) {
+        const YAML::Node metrics = YAML::LoadFile(summary.toStdString());
+        details += QStringLiteral("\nCorrect %1; false accept %2; rejected %3; timeout %4; no data %5.")
+            .arg(metrics["CORRECT"].as<int>(0)).arg(metrics["FALSE_ACCEPT"].as<int>(0))
+            .arg(metrics["REJECTED"].as<int>(0)).arg(metrics["TIMEOUT"].as<int>(0))
+            .arg(metrics["NO_DATA"].as<int>(0));
+        const auto correct_k = [&metrics](const char *key) {
+          const YAML::Node value = metrics["correct_at_k"][key]["value"];
+          return value ? QString::number(value.as<double>(), 'f', 3) : QStringLiteral("N/A");
+        };
+        details += QStringLiteral("\nCorrect@1: %1; @3: %2; @5: %3.")
+            .arg(correct_k("1"), correct_k("3"), correct_k("5"));
+      }
+      project_status_label_->setText(details);
+    }
+  } else if (kind == QStringLiteral("study_result")) {
+    selected_study_path_ = item->data(0, Qt::UserRole + 1).toString();
+    selected_evidence_path_ = item->data(0, Qt::UserRole + 4).toString();
+    show_study_result_markers(selected_study_path_, false);
+    if (!selected_evidence_path_.isEmpty() && QFileInfo::exists(selected_evidence_path_)) {
+      evidence_path_edit_->setText(selected_evidence_path_);
+      load_relocalization_evidence();
+    }
+    project_status_label_->setText(QStringLiteral("%1 — %2. Classification uses its recorded reference level; it does not claim independent ground truth.")
+        .arg(item->data(0, Qt::UserRole + 2).toString())
+        .arg(item->data(0, Qt::UserRole + 3).toString()));
+  } else if (kind == QStringLiteral("evidence")) {
+    selected_evidence_path_ = path;
+    evidence_path_edit_->setText(path);
+    load_relocalization_evidence();
+  } else if (kind == QStringLiteral("annotation")) {
+    if (!path.isEmpty()) topology_path_edit_->setText(path);
+  } else if (kind == QStringLiteral("structure_row")) {
+    topology_path_edit_->setText(path);
+    QString source_identity = QStringLiteral("UNKNOWN");
+    try {
+      const YAML::Node project = YAML::LoadFile(project_manifest_path_.toStdString());
+      source_identity = QString::fromStdString(project["source_ref"]["identity"].as<std::string>("UNKNOWN"));
+    } catch (const std::exception &) {
+    }
+    QString annotation_hash = QStringLiteral("UNKNOWN");
+    QFile annotation_file(path);
+    if (annotation_file.open(QIODevice::ReadOnly))
+      annotation_hash = QString::fromLatin1(QCryptographicHash::hash(
+          annotation_file.readAll(), QCryptographicHash::Sha256).toHex());
+    project_status_label_->setText(QStringLiteral(
+        "Row %1 — revision %2; status %3; entry %4; exit %5; direction %6; length %7 m. Source identity: %8; annotation SHA-256: %9.")
+        .arg(item->data(0, Qt::UserRole + 2).toString())
+        .arg(item->data(0, Qt::UserRole + 3).toInt())
+        .arg(item->data(0, Qt::UserRole + 5).toString())
+        .arg(item->data(0, Qt::UserRole + 6).toString(), item->data(0, Qt::UserRole + 7).toString(),
+             item->data(0, Qt::UserRole + 4).toString())
+        .arg(item->data(0, Qt::UserRole + 8).toDouble(), 0, 'f', 2)
+        .arg(source_identity, annotation_hash));
+  } else if (kind == QStringLiteral("block")) {
+    if (!path.isEmpty()) block_directory_edit_->setText(path);
+  } else if (kind == QStringLiteral("source")) {
+    project_status_label_->setText(QStringLiteral("Source identity is checked against its recorded manifest, checksum index and pose revision."));
+  } else if (kind == QStringLiteral("unsupported")) {
+    project_status_label_->setText(QStringLiteral("This tree slot is reserved for later authoring work; this stage does not create navigation-map or Route assets."));
+  }
+}
+
+void MainWindow::update_project_membership(
+    const QStringList &query_sets, const QStringList &studies,
+    std::function<void(const ToolResult &)> on_done) {
+  if (project_manifest_path_.isEmpty()) {
+    if (on_done) {
+      ToolResult failed;
+      failed.error_summary = QStringLiteral("Open or create a MapStudio project first.");
+      on_done(failed);
+    }
+    return;
+  }
+  QStringList args{QStringLiteral("project-add-assets"), project_manifest_path_};
+  for (const auto &path : query_sets) args << QStringLiteral("--query-set") << path;
+  for (const auto &path : studies) args << QStringLiteral("--study") << path;
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Save project asset references"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"), args);
+  start_relocalization_tool(invocation, [this, on_done = std::move(on_done)](const ToolResult &result) {
+    if (result.ok) populate_project_tree();
+    if (on_done) on_done(result);
+  });
+}
+
+void MainWindow::save_project_dependencies() {
+  if (project_manifest_path_.isEmpty() || !session_.source_is_mapping_package() ||
+      block_directory_edit_->text().trimmed().isEmpty()) {
+    QMessageBox::information(this, QStringLiteral("Project dependencies required"),
+                             QStringLiteral("Open a project and select its validated source and immutable block set first."));
+    return;
+  }
+  QStringList args{QStringLiteral("project-set-dependencies"), project_manifest_path_,
+                   QStringLiteral("--map-package"), session_.source_package_dir(),
+                   QStringLiteral("--block-dir"), block_directory_edit_->text().trimmed()};
+  if (!topology_path_edit_->text().trimmed().isEmpty())
+    args << QStringLiteral("--topology") << topology_path_edit_->text().trimmed();
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Rebind project to exact source, structure and block revisions"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"), args);
+  start_relocalization_tool(invocation, [this](const ToolResult &result) {
+    if (!result.ok) {
+      project_status_label_->setText(QStringLiteral("Project dependency update failed: %1").arg(result.error_summary));
+      return;
+    }
+    validate_and_open_project(project_manifest_path_);
+  });
+}
+
+void MainWindow::add_manual_query_point() {
+  if (project_manifest_path_.isEmpty()) {
+    QMessageBox::information(this, QStringLiteral("Open a project first"),
+                             QStringLiteral("Create or open a project before authoring a Query Set."));
+    return;
+  }
+  if (!session_.source_is_mapping_package() || block_directory_edit_->text().trimmed().isEmpty()) {
+    QMessageBox::warning(this, QStringLiteral("Validated source and blocks required"),
+                         QStringLiteral("Load the project source and its immutable block set first."));
+    return;
+  }
+  if (!has_picked_query_point_) {
+    QMessageBox::information(this, QStringLiteral("Pick a map point"),
+                             QStringLiteral("Use Pick on 3D map, click near a location, then choose Add Query Point."));
+    pick_relocalization_point();
+    return;
+  }
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("Add Manual Query"));
+  auto *form = new QFormLayout(&dialog);
+  auto *scene = new QComboBox(&dialog);
+  scene->addItem(QStringLiteral("Entry"), QStringLiteral("ENTRY"));
+  scene->addItem(QStringLiteral("Middle"), QStringLiteral("MIDDLE"));
+  scene->addItem(QStringLiteral("Exit"), QStringLiteral("EXIT"));
+  scene->addItem(QStringLiteral("Headland"), QStringLiteral("HEADLAND"));
+  scene->addItem(QStringLiteral("Other / unknown"), QStringLiteral("OTHER"));
+  scene->setCurrentIndex(1);
+  form->addRow(QStringLiteral("Scene"), scene);
+  auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+  form->addRow(buttons);
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  if (dialog.exec() != QDialog::Accepted) return;
+  const QString scene_type = scene->currentData().toString();
+
+  QString target = selected_query_set_path_;
+  bool append_to_draft = false;
+  QString query_set_id;
+  if (!target.isEmpty() && QFileInfo::exists(target)) {
+    try {
+      const YAML::Node value = YAML::LoadFile(target.toStdString());
+      append_to_draft = value["status"] && value["status"].as<std::string>() == "DRAFT";
+      query_set_id = QString::fromStdString(value["query_set_id"].as<std::string>(""));
+    } catch (const std::exception &) {
+      append_to_draft = false;
+    }
+  }
+  if (!append_to_draft) {
+    bool accepted = false;
+    query_set_id = QInputDialog::getText(this, QStringLiteral("New Query Set"),
+        QStringLiteral("Query Set ID (letters, digits, _ or -)"),
+        QLineEdit::Normal, QStringLiteral("greenhouse_sparse_v1"), &accepted).trimmed();
+    if (!accepted) return;
+    static const QRegularExpression safe_id(QStringLiteral("^[A-Za-z0-9_-]{1,80}$"));
+    if (!safe_id.match(query_set_id).hasMatch()) {
+      QMessageBox::warning(this, QStringLiteral("Invalid Query Set ID"),
+                           QStringLiteral("Use only ASCII letters, digits, underscore and hyphen."));
+      return;
+    }
+    const QString directory = QDir(QFileInfo(project_manifest_path_).absolutePath())
+        .filePath(QStringLiteral("query_sets/%1").arg(query_set_id));
+    if (!QDir().mkpath(directory)) {
+      QMessageBox::critical(this, QStringLiteral("Cannot create Query Set directory"), directory);
+      return;
+    }
+    target = QDir(directory).filePath(QStringLiteral("draft.yaml"));
+  }
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_map_localization_benchmark/agt_mapstudio_workflow")}, &missing)) {
+    QMessageBox::critical(this, QStringLiteral("Query Set service unavailable"), missing);
+    return;
+  }
+  QStringList args;
+  if (append_to_draft) {
+    args = QStringList{QStringLiteral("query-set-add-manual"), target,
+            QStringLiteral("--scene"), scene_type, QStringLiteral("--xy"),
+            QString::number(picked_query_x_, 'g', 12), QString::number(picked_query_y_, 'g', 12)};
+  } else {
+    QJsonObject point{{QStringLiteral("query_id"), QStringLiteral("Q001")},
+                      {QStringLiteral("scene"), scene_type},
+                      {QStringLiteral("xy"), QJsonArray{picked_query_x_, picked_query_y_}}};
+    const QString input = QDir(QDir::tempPath()).filePath(
+        QStringLiteral("agt_mapstudio_query_%1.json")
+            .arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    QSaveFile file(input);
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(QJsonDocument(QJsonArray{point}).toJson(QJsonDocument::Compact)) < 0 ||
+        !file.commit()) {
+      QMessageBox::critical(this, QStringLiteral("Cannot write query input"), input);
+      return;
+    }
+    pending_project_command_input_path_ = input;
+    args = QStringList{QStringLiteral("query-set-manual"), QStringLiteral("--id"), query_set_id,
+            QStringLiteral("--map-package"), session_.source_package_dir(),
+            QStringLiteral("--block-dir"), block_directory_edit_->text().trimmed(),
+            QStringLiteral("--locations-json"), input, QStringLiteral("--output"), target};
+    if (!topology_path_edit_->text().trimmed().isEmpty())
+      args << QStringLiteral("--topology") << topology_path_edit_->text().trimmed();
+  }
+  const QString created_path = target;
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Create or extend a draft Query Set"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"), args);
+  start_relocalization_tool(invocation, [this, created_path](const ToolResult &result) {
+    if (!pending_project_command_input_path_.isEmpty()) {
+      QFile::remove(pending_project_command_input_path_);
+      pending_project_command_input_path_.clear();
+    }
+    if (!result.ok) {
+      project_status_label_->setText(QStringLiteral("Query Set authoring failed: %1").arg(result.error_summary));
+      return;
+    }
+    selected_query_set_path_ = created_path;
+    selected_project_item_kind_ = QStringLiteral("query_set");
+    show_query_set_markers(created_path);
+    update_project_membership({created_path}, {}, [this](const ToolResult &save_result) {
+      if (!save_result.ok)
+        project_status_label_->setText(QStringLiteral("Query Set created, but project reference save failed: %1").arg(save_result.error_summary));
+      else
+        project_status_label_->setText(QStringLiteral("Draft Query Set saved. Map clicks are snapped to actual source observations; the click itself is not used as a sensor observation."));
+    });
+  });
+}
+
+void MainWindow::toggle_selected_query_enabled() {
+  if (!project_tree_ || !project_tree_->currentItem()) return;
+  QTreeWidgetItem *item = project_tree_->currentItem();
+  if (item->data(0, Qt::UserRole).toString() != QStringLiteral("query")) return;
+  const QString query_set = item->data(0, Qt::UserRole + 1).toString();
+  const QString query_id = item->data(0, Qt::UserRole + 2).toString();
+  const QString status = item->data(0, Qt::UserRole + 4).toString();
+  if (status != QStringLiteral("DRAFT")) {
+    QMessageBox::information(this, QStringLiteral("Frozen Query Set"),
+        QStringLiteral("Frozen Query Set revisions are immutable. Clone to a new draft before editing queries."));
+    return;
+  }
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_map_localization_benchmark/agt_mapstudio_workflow")}, &missing)) {
+    QMessageBox::critical(this, QStringLiteral("Query Set service unavailable"), missing);
+    return;
+  }
+  const bool enabled = !item->data(0, Qt::UserRole + 3).toBool();
+  const QString enabled_text = enabled ? QStringLiteral("true") : QStringLiteral("false");
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Change draft Query Set membership"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"),
+      {QStringLiteral("query-set-set-enabled"), query_set,
+       QStringLiteral("--id"), query_id, QStringLiteral("--enabled"), enabled_text});
+  start_relocalization_tool(invocation, [this, enabled, query_id](const ToolResult &result) {
+    if (!result.ok) {
+      project_status_label_->setText(QStringLiteral("Query update failed: %1").arg(result.error_summary));
+      return;
+    }
+    populate_project_tree();
+    project_status_label_->setText(QStringLiteral("Query %1 is now %2 in the draft revision.")
+        .arg(query_id, enabled ? QStringLiteral("ENABLED") : QStringLiteral("DISABLED")));
+  });
+}
+
+void MainWindow::delete_selected_draft_query() {
+  if (!project_tree_ || !project_tree_->currentItem()) return;
+  QTreeWidgetItem *item = project_tree_->currentItem();
+  if (item->data(0, Qt::UserRole).toString() != QStringLiteral("query")) return;
+  const QString query_set = item->data(0, Qt::UserRole + 1).toString();
+  const QString query_id = item->data(0, Qt::UserRole + 2).toString();
+  const QString status = item->data(0, Qt::UserRole + 4).toString();
+  if (status != QStringLiteral("DRAFT")) {
+    QMessageBox::information(this, QStringLiteral("Frozen Query Set"),
+        QStringLiteral("Frozen Query Set revisions are immutable. Clone to a new draft before editing queries."));
+    return;
+  }
+  if (QMessageBox::question(this, QStringLiteral("Delete draft query"),
+          QStringLiteral("Delete %1 from this draft Query Set? The frozen revisions remain unchanged.").arg(query_id),
+          QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
+    return;
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_map_localization_benchmark/agt_mapstudio_workflow")}, &missing)) {
+    QMessageBox::critical(this, QStringLiteral("Query Set service unavailable"), missing);
+    return;
+  }
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Delete a draft Query Set query"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"),
+      {QStringLiteral("query-set-delete-draft-query"), query_set,
+       QStringLiteral("--id"), query_id});
+  start_relocalization_tool(invocation, [this, query_id](const ToolResult &result) {
+    if (!result.ok) {
+      project_status_label_->setText(QStringLiteral("Query delete failed: %1").arg(result.error_summary));
+      return;
+    }
+    populate_project_tree();
+    show_query_set_markers(selected_query_set_path_);
+    project_status_label_->setText(QStringLiteral("Deleted draft query %1; the frozen revisions remain unchanged.").arg(query_id));
+  });
+}
+
+void MainWindow::sample_reviewed_rows() {
+  if (project_manifest_path_.isEmpty() || !session_.source_is_mapping_package() ||
+      topology_path_edit_->text().trimmed().isEmpty() ||
+      block_directory_edit_->text().trimmed().isEmpty()) {
+    QMessageBox::warning(this, QStringLiteral("Frozen structure, source and blocks required"),
+        QStringLiteral("Select a manually reviewed frozen annotation and a block set built against that exact annotation."));
+    return;
+  }
+  try {
+    const YAML::Node topology = YAML::LoadFile(topology_path_edit_->text().toStdString());
+    if (topology["annotation"]["status"].as<std::string>("draft") != "frozen" ||
+        !topology["annotation"]["manual_review_confirmed"].as<bool>(false)) {
+      QMessageBox::warning(this, QStringLiteral("Manual review required"),
+                           QStringLiteral("Only explicitly frozen, manually reviewed physical rows may be sampled."));
+      return;
+    }
+  } catch (const std::exception &error) {
+    QMessageBox::critical(this, QStringLiteral("Topology could not be read"), QString::fromUtf8(error.what()));
+    return;
+  }
+  bool accepted = false;
+  const QString id = QInputDialog::getText(this, QStringLiteral("Structure Query Set"),
+      QStringLiteral("Query Set ID"), QLineEdit::Normal,
+      QStringLiteral("greenhouse_sparse_v1"), &accepted).trimmed();
+  if (!accepted) return;
+  static const QRegularExpression safe_id(QStringLiteral("^[A-Za-z0-9_-]{1,80}$"));
+  if (!safe_id.match(id).hasMatch()) {
+    QMessageBox::warning(this, QStringLiteral("Invalid Query Set ID"),
+                         QStringLiteral("Use only ASCII letters, digits, underscore and hyphen."));
+    return;
+  }
+  const QString directory = QDir(QFileInfo(project_manifest_path_).absolutePath())
+      .filePath(QStringLiteral("query_sets/%1").arg(id));
+  if (!QDir().mkpath(directory)) {
+    QMessageBox::critical(this, QStringLiteral("Cannot create Query Set directory"), directory);
+    return;
+  }
+  const QString output = QDir(directory).filePath(QStringLiteral("draft.yaml"));
+  const QStringList ratio_options{QStringLiteral("0,0.25,0.5,0.75,1"),
+                                  QStringLiteral("0,0.5,1"),
+                                  QStringLiteral("0,1")};
+  QString ratios = ratio_options[1];
+  bool ratio_accepted = false;
+  ratios = QInputDialog::getItem(this, QStringLiteral("Sampling Density"),
+      QStringLiteral("Reviewed row sample ratios (entry / middle / exit)"), ratio_options, 1,
+      false, &ratio_accepted);
+  if (!ratio_accepted) return;
+  QStringList args{QStringLiteral("query-set-sample"), QStringLiteral("--id"), id,
+                   QStringLiteral("--map-package"), session_.source_package_dir(),
+                   QStringLiteral("--block-dir"), block_directory_edit_->text().trimmed(),
+                   QStringLiteral("--topology"), topology_path_edit_->text().trimmed(),
+                   QStringLiteral("--output"), output, QStringLiteral("--ratios"), ratios};
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Sample representative queries on reviewed rows"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"), args);
+  start_relocalization_tool(invocation, [this, output](const ToolResult &result) {
+    if (!result.ok) {
+      project_status_label_->setText(QStringLiteral("Structure sampling failed: %1").arg(result.error_summary));
+      return;
+    }
+    selected_query_set_path_ = output;
+    show_query_set_markers(output);
+    update_project_membership({output}, {}, [this](const ToolResult &save_result) {
+      project_status_label_->setText(save_result.ok
+          ? QStringLiteral("Draft Query Set generated from manually confirmed rows. Inspect markers and query rows, then freeze the revision.")
+          : QStringLiteral("Query Set was generated, but project reference save failed: %1").arg(save_result.error_summary));
+    });
+  });
+}
+
+void MainWindow::freeze_selected_query_set() {
+  if (selected_query_set_path_.isEmpty() || !QFileInfo::exists(selected_query_set_path_)) {
+    QMessageBox::information(this, QStringLiteral("Select a draft Query Set"),
+                             QStringLiteral("Select or create a draft Query Set before freezing."));
+    return;
+  }
+  try {
+    const YAML::Node draft = YAML::LoadFile(selected_query_set_path_.toStdString());
+    if (draft["status"].as<std::string>("") != "DRAFT") {
+      QMessageBox::information(this, QStringLiteral("Frozen Query Set"),
+                               QStringLiteral("Frozen Query Set revisions are immutable. Add new queries in a new draft revision."));
+      return;
+    }
+    const int revision = draft["revision"].as<int>(1) + 1;
+    const QString output = QFileInfo(selected_query_set_path_).dir().filePath(
+        QStringLiteral("frozen_r%1.yaml").arg(revision));
+    const auto invocation = ExternalToolRunner::ros2_run(
+        QStringLiteral("Freeze immutable Query Set revision"),
+        QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"),
+        {QStringLiteral("query-set-freeze"), selected_query_set_path_,
+         QStringLiteral("--output"), output});
+    start_relocalization_tool(invocation, [this, output](const ToolResult &result) {
+      if (!result.ok) {
+        project_status_label_->setText(QStringLiteral("Query Set freeze failed: %1").arg(result.error_summary));
+        return;
+      }
+      selected_query_set_path_ = output;
+      show_query_set_markers(output);
+      update_project_membership({output}, {}, [this](const ToolResult &save_result) {
+        project_status_label_->setText(save_result.ok
+            ? QStringLiteral("Frozen Query Set revision saved. Create a Relocalization Study from this exact digest.")
+            : QStringLiteral("Frozen Query Set exists, but project reference save failed: %1").arg(save_result.error_summary));
+      });
+    });
+  } catch (const std::exception &error) {
+    QMessageBox::critical(this, QStringLiteral("Query Set could not be read"), QString::fromUtf8(error.what()));
+  }
+}
+
+void MainWindow::create_relocalization_study() {
+  if (selected_query_set_path_.isEmpty() || !QFileInfo::exists(selected_query_set_path_)) {
+    QMessageBox::information(this, QStringLiteral("Select a frozen Query Set"),
+                             QStringLiteral("Select a frozen Query Set in the Project Browser first."));
+    return;
+  }
+  try {
+    const YAML::Node query_set = YAML::LoadFile(selected_query_set_path_.toStdString());
+    if (query_set["status"].as<std::string>("") != "FROZEN") {
+      QMessageBox::warning(this, QStringLiteral("Frozen Query Set required"),
+                           QStringLiteral("Freeze the Query Set revision before creating a Study."));
+      return;
+    }
+  } catch (const std::exception &error) {
+    QMessageBox::critical(this, QStringLiteral("Query Set could not be read"), QString::fromUtf8(error.what()));
+    return;
+  }
+  bool accepted = false;
+  const QString id = QInputDialog::getText(this, QStringLiteral("New Relocalization Study"),
+      QStringLiteral("Study ID"), QLineEdit::Normal,
+      QStringLiteral("greenhouse_relocalization_v1"), &accepted).trimmed();
+  if (!accepted) return;
+  static const QRegularExpression safe_id(QStringLiteral("^[A-Za-z0-9_-]{1,80}$"));
+  if (!safe_id.match(id).hasMatch()) {
+    QMessageBox::warning(this, QStringLiteral("Invalid Study ID"),
+                         QStringLiteral("Use only ASCII letters, digits, underscore and hyphen."));
+    return;
+  }
+  bool frames_accepted = false;
+  const QString frames = QInputDialog::getText(this, QStringLiteral("Study Query Windows"),
+      QStringLiteral("Query accumulation frames (subset of 1,3,5)"), QLineEdit::Normal,
+      QStringLiteral("1,3,5"), &frames_accepted).trimmed();
+  if (!frames_accepted) return;
+  const QString output_dir = QDir(QFileInfo(project_manifest_path_).absolutePath())
+      .filePath(QStringLiteral("studies/%1").arg(id));
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Create Relocalization Study"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"),
+      {QStringLiteral("study-create"), QStringLiteral("--id"), id,
+       QStringLiteral("--query-set"), selected_query_set_path_,
+       QStringLiteral("--output-dir"), output_dir,
+       QStringLiteral("--frames"), frames,
+       QStringLiteral("--candidate-top-k"), QStringLiteral("5")});
+  start_relocalization_tool(invocation, [this, output_dir](const ToolResult &result) {
+    if (!result.ok) {
+      project_status_label_->setText(QStringLiteral("Study creation failed: %1").arg(result.error_summary));
+      return;
+    }
+    const QString study_path = QDir(output_dir).filePath(QStringLiteral("study.yaml"));
+    selected_study_path_ = study_path;
+    update_project_membership({}, {study_path}, [this](const ToolResult &save_result) {
+      project_status_label_->setText(save_result.ok
+          ? QStringLiteral("Study queued with exact source, annotation, block and frozen Query Set references. Top-K is fixed at 5.")
+          : QStringLiteral("Study created, but project reference save failed: %1").arg(save_result.error_summary));
+    });
+  });
+}
+
+void MainWindow::run_selected_study() {
+  if (selected_study_path_.isEmpty() || !QFileInfo::exists(selected_study_path_)) {
+    QMessageBox::information(this, QStringLiteral("Select a Study"),
+                             QStringLiteral("Select a Study in the Project Browser first."));
+    return;
+  }
+  QStringList args{QStringLiteral("run-study"), selected_study_path_,
+                   QStringLiteral("--ros-install"),
+                   QDir::home().filePath(QStringLiteral("ros2_ws/install"))};
+  if (!native_localizer_path_edit_->text().trimmed().isEmpty())
+    args << QStringLiteral("--native-localizer-path") << native_localizer_path_edit_->text().trimmed();
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Run asynchronous offline Relocalization Study"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"), args);
+  study_job_running_ = true;
+  study_elapsed_start_ms_ = QDateTime::currentMSecsSinceEpoch();
+  cancel_study_button_->setEnabled(true);
+  study_poll_timer_->start();
+  project_status_label_->setText(QStringLiteral("QUEUED — waiting for the existing native GLOBAL/Top-K/GICP query worker."));
+  start_relocalization_tool(invocation, [this](const ToolResult &result) {
+    study_job_running_ = false;
+    study_poll_timer_->stop();
+    cancel_study_button_->setEnabled(false);
+    poll_study_job();
+    QString status = result.ok ? QStringLiteral("SUCCEEDED") : QStringLiteral("FAILED");
+    try {
+      const YAML::Node study = YAML::LoadFile(selected_study_path_.toStdString());
+      status = QString::fromStdString(study["status"].as<std::string>(status.toStdString()));
+    } catch (const std::exception &) {
+    }
+    project_status_label_->setText(result.ok
+        ? QStringLiteral("Study %1. Summary and evidence were written as a new immutable analysis result set.").arg(status)
+        : QStringLiteral("Study %1: %2").arg(status, result.error_summary));
+    populate_project_tree();
+    if (result.ok) show_study_result_markers(selected_study_path_, true);
+  });
+}
+
+void MainWindow::cancel_selected_study() {
+  if (!study_job_running_ || !tool_runner_.is_running()) return;
+  project_status_label_->setText(QStringLiteral("cancel_requested — waiting for the current query to stop safely."));
+  cancel_study_button_->setEnabled(false);
+  tool_runner_.cancel();
+}
+
+void MainWindow::poll_study_job() {
+  if (selected_study_path_.isEmpty() || !QFileInfo::exists(selected_study_path_)) return;
+  try {
+    const YAML::Node study = YAML::LoadFile(selected_study_path_.toStdString());
+    const YAML::Node job = study["job"];
+    const qint64 elapsed = qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - study_elapsed_start_ms_) / 1000;
+    project_status_label_->setText(
+        QStringLiteral("%1 — %2 / %3; current %4; failed %5; elapsed %6 s")
+            .arg(QString::fromStdString(study["status"].as<std::string>("UNKNOWN")))
+            .arg(job["completed"].as<int>(0)).arg(job["total"].as<int>(0))
+            .arg(QString::fromStdString(job["current_query"].as<std::string>("—")))
+            .arg(job["failed"].as<int>(0)).arg(elapsed));
+    if (job["cancel_requested"].as<bool>(false))
+      project_status_label_->setText(QStringLiteral("cancel_requested — ") + project_status_label_->text());
+  } catch (const std::exception &) {
+  }
+}
+
+void MainWindow::export_selected_study() {
+  if (selected_study_path_.isEmpty() || !QFileInfo::exists(selected_study_path_)) {
+    QMessageBox::information(this, QStringLiteral("Select a completed Study"),
+                             QStringLiteral("Select a Study with current evidence before exporting its report."));
+    return;
+  }
+  const QString parent = QFileDialog::getExistingDirectory(
+      this, QStringLiteral("Choose report parent directory"),
+      QFileInfo(selected_study_path_).absolutePath());
+  if (parent.isEmpty()) return;
+  const QString name = QFileInfo(selected_study_path_).dir().dirName();
+  const QString output = QDir(parent).filePath(QStringLiteral("%1_report_%2").arg(name, stamp()));
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Export study summary and candidate tables"),
+      QStringLiteral("agt_map_localization_benchmark"), QStringLiteral("agt_mapstudio_workflow"),
+      {QStringLiteral("study-export"), selected_study_path_,
+       QStringLiteral("--output-dir"), output});
+  start_relocalization_tool(invocation, [this, output](const ToolResult &result) {
+    project_status_label_->setText(result.ok
+        ? QStringLiteral("Study report exported: %1").arg(output)
+        : QStringLiteral("Study report export failed: %1").arg(result.error_summary));
+  });
+}
+
+void MainWindow::show_query_set_markers(const QString &path) {
+  if (!QFileInfo::exists(path)) return;
+  try {
+    const YAML::Node query_set = YAML::LoadFile(path.toStdString());
+    std::vector<std::array<double, 3>> points;
+    for (const auto &query : query_set["queries"]) {
+      if (query["enabled"] && !query["enabled"].as<bool>()) continue;
+      if (!query["resolved_position_m"] || query["resolved_position_m"].size() != 3) continue;
+      points.push_back({query["resolved_position_m"][0].as<double>(),
+                        query["resolved_position_m"][1].as<double>(),
+                        query["resolved_position_m"][2].as<double>()});
+    }
+    if (points.empty()) {
+      viewer_->clear_auxiliary_cloud(AuxiliaryLayer::Query);
+      return;
+    }
+    const QString preview = QDir(QDir::tempPath()).filePath(
+        QStringLiteral("agt_query_markers_%1.pcd")
+            .arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    std::ofstream output(preview.toStdString(), std::ios::out | std::ios::trunc);
+    output << "# .PCD v0.7 - Point Cloud Data file format\n"
+           << "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
+           << "WIDTH " << points.size() << "\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\n"
+           << "POINTS " << points.size() << "\nDATA ascii\n";
+    for (const auto &point : points)
+      output << point[0] << ' ' << point[1] << ' ' << point[2] << '\n';
+    output.close();
+    if (!output) throw std::runtime_error("could not write Query Set display markers");
+    LoadedPointCloud cloud;
+    std::string error;
+    if (!PCDLoader::load(preview.toStdString(), &cloud, &error))
+      throw std::runtime_error(error);
+    viewer_->set_auxiliary_cloud(AuxiliaryLayer::Query, cloud, true);
+    if (show_query_layer_) show_query_layer_->setChecked(true);
+  } catch (const std::exception &error) {
+    project_status_label_->setText(QStringLiteral("Query Set preview failed: %1").arg(error.what()));
+  }
+}
+
+void MainWindow::show_study_result_markers(const QString &path, bool select_study) {
+  if (path.isEmpty() || !QFileInfo::exists(path)) {
+    viewer_->clear_auxiliary_cloud(AuxiliaryLayer::StudyResults);
+    return;
+  }
+  StudyResultMarkerCloud markers;
+  QString error;
+  const QString classification = study_filter_combo_
+      ? study_filter_combo_->currentData().toString() : QStringLiteral("ALL");
+  const QString scene = study_scene_filter_combo_
+      ? study_scene_filter_combo_->currentData().toString() : QStringLiteral("ALL");
+  const QString frames = study_frames_filter_combo_
+      ? study_frames_filter_combo_->currentData().toString() : QStringLiteral("ALL");
+  if (!load_study_result_markers(path, classification, scene, frames, &markers, &error)) {
+    viewer_->clear_auxiliary_cloud(AuxiliaryLayer::StudyResults);
+    project_status_label_->setText(QStringLiteral("Study result markers unavailable: %1").arg(error));
+    return;
+  }
+  if (show_study_results_layer_) {
+    if (select_study) show_study_results_layer_->setChecked(!markers.cloud.xyz.empty());
+    viewer_->set_auxiliary_cloud(AuxiliaryLayer::StudyResults, markers.cloud,
+                                 show_study_results_layer_->isChecked(), markers.colors);
+  } else {
+    viewer_->set_auxiliary_cloud(AuxiliaryLayer::StudyResults, markers.cloud,
+                                 true, markers.colors);
+  }
 }
 
 void MainWindow::create_workflow_dock() {
@@ -911,8 +2065,10 @@ void MainWindow::create_relocalization_dock() {
   auto *structure_buttons = new QHBoxLayout();
   auto *load_structure_button = new QPushButton(QStringLiteral("Validate & show structure"), panel);
   auto *edit_structure_button = new QPushButton(QStringLiteral("Edit in new draft"), panel);
+  auto *freeze_structure_button = new QPushButton(QStringLiteral("Confirm Review & Freeze"), panel);
   structure_buttons->addWidget(load_structure_button);
   structure_buttons->addWidget(edit_structure_button);
+  structure_buttons->addWidget(freeze_structure_button);
   layout->addLayout(structure_buttons);
 
   auto *query_form = new QFormLayout();
@@ -967,15 +2123,30 @@ void MainWindow::create_relocalization_dock() {
   evidence_row->addWidget(open_evidence_button);
   layout->addLayout(evidence_row);
 
-  candidate_table_ = new QTableWidget(0, 6, panel);
-  candidate_table_->setHorizontalHeaderLabels({QStringLiteral("Rank"), QStringLiteral("Keyframe"),
-      QStringLiteral("Block"), QStringLiteral("Descriptor"), QStringLiteral("GICP"), QStringLiteral("Row")});
+  candidate_table_ = new QTableWidget(0, 12, panel);
+  candidate_table_->setHorizontalHeaderLabels({QStringLiteral("Rank"), QStringLiteral("Candidate KF"),
+      QStringLiteral("Block"), QStringLiteral("Row"), QStringLiteral("Candidate s"),
+      QStringLiteral("Global Score"), QStringLiteral("GICP Status"), QStringLiteral("Fitness"),
+      QStringLiteral("XY Error"), QStringLiteral("Yaw Error"), QStringLiteral("Classification"),
+      QStringLiteral("Runtime")});
   candidate_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
   candidate_table_->horizontalHeader()->setStretchLastSection(true);
   candidate_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
   candidate_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
   candidate_table_->setMaximumHeight(190);
   layout->addWidget(candidate_table_);
+  auto *candidate_actions = new QHBoxLayout();
+  auto *show_query_button = new QPushButton(QStringLiteral("Show Query"), panel);
+  auto *show_candidate_button = new QPushButton(QStringLiteral("Show Candidate"), panel);
+  auto *overlay_button = new QPushButton(QStringLiteral("Overlay"), panel);
+  auto *previous_candidate_button = new QPushButton(QStringLiteral("Previous Candidate"), panel);
+  auto *next_candidate_button = new QPushButton(QStringLiteral("Next Candidate"), panel);
+  candidate_actions->addWidget(show_query_button);
+  candidate_actions->addWidget(show_candidate_button);
+  candidate_actions->addWidget(overlay_button);
+  candidate_actions->addWidget(previous_candidate_button);
+  candidate_actions->addWidget(next_candidate_button);
+  layout->addLayout(candidate_actions);
   relocalization_details_label_ = new QLabel(
       QStringLiteral("Load evidence to inspect query provenance, block bindings, and candidate metrics."), panel);
   relocalization_details_label_->setWordWrap(true);
@@ -988,8 +2159,12 @@ void MainWindow::create_relocalization_dock() {
   show_blocks_layer_ = new QCheckBox(QStringLiteral("Block bounds and centers"), layer_group);
   show_query_layer_ = new QCheckBox(QStringLiteral("Query at estimated pose"), layer_group);
   show_candidate_layer_ = new QCheckBox(QStringLiteral("Selected candidate"), layer_group);
+  show_study_results_layer_ = new QCheckBox(QStringLiteral("Study result markers"), layer_group);
+  show_study_results_layer_->setToolTip(QStringLiteral(
+      "Empirical classifications: Correct (green), False Accept (red), Rejected (yellow), Timeout (purple), No Data (gray). Not a probability layer."));
   for (auto *check : {show_structure_layer_, show_blocks_layer_, show_query_layer_, show_candidate_layer_})
     layer_layout->addWidget(check);
+  layer_layout->addWidget(show_study_results_layer_);
   layout->addWidget(layer_group);
   layout->addStretch();
   scroll->setWidget(panel);
@@ -1014,10 +2189,41 @@ void MainWindow::create_relocalization_dock() {
   });
   connect(load_structure_button, &QPushButton::clicked, this, &MainWindow::load_structure_annotation);
   connect(edit_structure_button, &QPushButton::clicked, this, &MainWindow::start_structure_editor);
+  connect(freeze_structure_button, &QPushButton::clicked, this, &MainWindow::freeze_structure_review);
   connect(pick_point_button, &QPushButton::clicked, this, &MainWindow::pick_relocalization_point);
   connect(run_query_button, &QPushButton::clicked, this, &MainWindow::run_relocalization_query);
   connect(open_evidence_button, &QPushButton::clicked, this, &MainWindow::choose_relocalization_evidence);
   connect(candidate_table_, &QTableWidget::cellClicked, this, &MainWindow::select_candidate_overlay);
+  connect(show_query_button, &QPushButton::clicked, this, [this]() {
+    show_query_layer_->setChecked(true);
+    show_candidate_layer_->setChecked(false);
+  });
+  connect(show_candidate_button, &QPushButton::clicked, this, [this]() {
+    const int row = candidate_table_->currentRow();
+    if (row < 0) return;
+    show_candidate_layer_->setChecked(true);
+    select_candidate_overlay(row, 0);
+  });
+  connect(overlay_button, &QPushButton::clicked, this, [this]() {
+    const int row = candidate_table_->currentRow();
+    if (row < 0) return;
+    show_query_layer_->setChecked(true);
+    show_candidate_layer_->setChecked(true);
+    select_candidate_overlay(row, 0);
+  });
+  const auto move_candidate = [this](int delta) {
+    const int count = candidate_table_->rowCount();
+    if (count == 0) return;
+    const int current = candidate_table_->currentRow() < 0 ? 0 : candidate_table_->currentRow();
+    const int next = (current + delta + count) % count;
+    candidate_table_->setCurrentCell(next, 0);
+    candidate_table_->selectRow(next);
+    select_candidate_overlay(next, 0);
+  };
+  connect(previous_candidate_button, &QPushButton::clicked, this,
+          [move_candidate]() { move_candidate(-1); });
+  connect(next_candidate_button, &QPushButton::clicked, this,
+          [move_candidate]() { move_candidate(1); });
   connect(show_structure_layer_, &QCheckBox::toggled, this, [this](bool on) {
     viewer_->set_auxiliary_visible(AuxiliaryLayer::Structure, on);
   });
@@ -1029,6 +2235,9 @@ void MainWindow::create_relocalization_dock() {
   });
   connect(show_candidate_layer_, &QCheckBox::toggled, this, [this](bool on) {
     viewer_->set_auxiliary_visible(AuxiliaryLayer::Candidate, on);
+  });
+  connect(show_study_results_layer_, &QCheckBox::toggled, this, [this](bool on) {
+    viewer_->set_auxiliary_visible(AuxiliaryLayer::StudyResults, on);
   });
 }
 
@@ -1120,7 +2329,10 @@ void MainWindow::display_block_preview(const QString &directory) {
     }
     block_directory_edit_->setText(directory);
     viewer_->set_auxiliary_cloud(AuxiliaryLayer::Blocks, cloud, show_blocks_layer_->isChecked());
-    relocalization_status_label_->setText(QStringLiteral("Block set verified and displayed. Bounds are sparse display-only points."));
+    const QString language = language_chinese_action_ && language_chinese_action_->isChecked()
+        ? QStringLiteral("zh_CN") : QStringLiteral("en");
+    relocalization_status_label_->setText(UiLanguage::display_text(
+        QStringLiteral("Block set verified and displayed. Bounds are sparse display-only points."), language));
   });
 }
 
@@ -1225,6 +2437,34 @@ void MainWindow::start_structure_editor() {
     QMessageBox::critical(this, QStringLiteral("Draft revision already exists"), draft);
     return;
   }
+  QFile manifest(QDir(session_.source_package_dir()).filePath(QStringLiteral("manifest.yaml")));
+  if (!manifest.open(QIODevice::ReadOnly)) {
+    QMessageBox::critical(this, QStringLiteral("Cannot identify mapping source"),
+                          QStringLiteral("Could not read the source manifest for the authoring workspace."));
+    return;
+  }
+  const QString map_identity = QString::fromLatin1(
+      QCryptographicHash::hash(manifest.readAll(), QCryptographicHash::Sha256).toHex().left(24));
+  const QString site_workspace = QDir(evidence_root_edit_->text()).filePath(
+      QStringLiteral("structure_authoring/%1").arg(map_identity));
+  if (!QDir().mkpath(site_workspace)) {
+    QMessageBox::critical(this, QStringLiteral("Cannot create authoring workspace"), site_workspace);
+    return;
+  }
+  QString structure_config;
+  try {
+    structure_config = QDir(QString::fromStdString(
+        ament_index_cpp::get_package_share_directory("agt_greenhouse_annotation")))
+            .filePath(QStringLiteral("config/greenhouse_structure_current.yaml"));
+  } catch (const std::exception &error) {
+    QMessageBox::critical(this, QStringLiteral("Structure configuration unavailable"),
+                          QString::fromUtf8(error.what()));
+    return;
+  }
+  if (!QFileInfo::exists(structure_config)) {
+    QMessageBox::critical(this, QStringLiteral("Structure configuration unavailable"), structure_config);
+    return;
+  }
   bool opened_frozen_as_draft = false;
   if (!topology_path_edit_->text().isEmpty() && QFileInfo::exists(topology_path_edit_->text())) {
     try {
@@ -1261,16 +2501,66 @@ void MainWindow::start_structure_editor() {
   }
   const QStringList args{QStringLiteral("run"), QStringLiteral("agt_greenhouse_annotation"),
       QStringLiteral("greenhouse_annotator"), QStringLiteral("--map-package"),
-      session_.source_package_dir(), QStringLiteral("--output"), draft};
+      session_.source_package_dir(), QStringLiteral("--output"), draft,
+      QStringLiteral("--site-workspace"), site_workspace,
+      QStringLiteral("--structure-config"), structure_config};
   if (!QProcess::startDetached(QStringLiteral("ros2"), args)) {
     QMessageBox::critical(this, QStringLiteral("Annotator did not start"),
                           QStringLiteral("Could not start the existing greenhouse annotation tool."));
     return;
   }
   topology_path_edit_->setText(draft);
-  relocalization_status_label_->setText(opened_frozen_as_draft
-      ? QStringLiteral("Existing annotation tool opened a new editable revision derived from the frozen annotation; manual review was reset. Save/review there, then validate and reload this path.")
-      : QStringLiteral("Existing annotation tool opened with a separate working revision. Save/review there, then validate and reload this path."));
+  const QString editor_status = opened_frozen_as_draft
+      ? QStringLiteral("Reference editor opened a new working revision derived from the frozen annotation. It restores this map's separate reference-line draft; proposed lines are not confirmed physical IDs.")
+      : QStringLiteral("Reference editor opened with a separate working revision. First use generates map-bound row and aisle references; edits autosave separately and remain distinct from confirmed physical topology.");
+  const QString language = language_chinese_action_ && language_chinese_action_->isChecked()
+      ? QStringLiteral("zh_CN") : QStringLiteral("en");
+  relocalization_status_label_->setText(UiLanguage::display_text(editor_status, language));
+}
+
+void MainWindow::freeze_structure_review() {
+  if (!session_.source_is_mapping_package() || topology_path_edit_->text().trimmed().isEmpty()) {
+    QMessageBox::warning(this, QStringLiteral("Source and topology required"),
+                         QStringLiteral("Select the edited schema-v1 topology and open its source package first."));
+    return;
+  }
+  const QString topology = QFileInfo(topology_path_edit_->text().trimmed()).absoluteFilePath();
+  try {
+    const YAML::Node annotation = YAML::LoadFile(topology.toStdString());
+    if (annotation["annotation"]["status"] &&
+        annotation["annotation"]["status"].as<std::string>() == "frozen") {
+      QMessageBox::information(this, QStringLiteral("Annotation already frozen"),
+                               QStringLiteral("Frozen annotation revisions are immutable. Create a new draft to edit."));
+      return;
+    }
+  } catch (const std::exception &error) {
+    QMessageBox::critical(this, QStringLiteral("Topology could not be read"), QString::fromUtf8(error.what()));
+    return;
+  }
+  const auto answer = QMessageBox::question(
+      this, QStringLiteral("Confirm manual structure review"),
+      QStringLiteral("Confirm that you personally reviewed the physical row IDs, row geometry, direction, entry/exit and headlands in the annotation editor.\n\n"
+                     "This creates a new frozen revision. The software will not infer physical row identity."),
+      QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+  if (answer != QMessageBox::Yes) return;
+  const QString output_dir = QDir(QFileInfo(topology).absolutePath()).filePath(
+      QStringLiteral("frozen_%1_%2").arg(stamp(), QUuid::createUuid().toString(QUuid::WithoutBraces).left(8)));
+  const QString output = QDir(output_dir).filePath(QStringLiteral("greenhouse_topology.yaml"));
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Freeze manually reviewed greenhouse annotation"),
+      QStringLiteral("agt_greenhouse_annotation"), QStringLiteral("greenhouse_annotation_freeze"),
+      {QStringLiteral("--topology"), topology, QStringLiteral("--output"), output,
+       QStringLiteral("--confirm-manual-review")});
+  start_relocalization_tool(invocation, [this, output](const ToolResult &result) {
+    if (!result.ok) {
+      relocalization_status_label_->setText(QStringLiteral("Structure freeze failed: %1").arg(result.error_summary));
+      return;
+    }
+    topology_path_edit_->setText(output);
+    load_structure_annotation();
+    project_status_label_->setText(QStringLiteral(
+        "Structure revision frozen after explicit human confirmation. Build a new block set against this exact annotation before row-based Query Set sampling."));
+  });
 }
 
 void MainWindow::pick_relocalization_point() {
@@ -1401,17 +2691,44 @@ void MainWindow::load_relocalization_evidence() {
         const YAML::Node blocks = candidate["candidate_block_ids"];
         QStringList block_ids;
         for (const auto &id : blocks) block_ids << QString::fromStdString(id.as<std::string>());
-        const auto descriptor = candidate["descriptor_sector_similarity"];
         const auto attempted = candidate["gicp_attempted"];
         const auto converged = candidate["gicp_converged"];
+        const auto query_pose = query["map_pose"];
+        const auto estimate = candidate["gicp_final_pose"];
+        const bool reference_known = manifest["reference"]["same_session"].as<bool>(false) ||
+                                     manifest["reference"]["independent_ground_truth"].as<bool>(false);
+        QString xy_error = QStringLiteral("N/A");
+        QString yaw_error = QStringLiteral("N/A");
+        if (reference_known && estimate && estimate["x"] && estimate["y"] &&
+            query_pose["x_m"] && query_pose["y_m"]) {
+          const double dx = estimate["x"].as<double>() - query_pose["x_m"].as<double>();
+          const double dy = estimate["y"].as<double>() - query_pose["y_m"].as<double>();
+          xy_error = QStringLiteral("%1 m").arg(std::hypot(dx, dy), 0, 'f', 3);
+        }
+        if (reference_known && estimate && estimate["yaw_deg"] && query_pose["yaw_deg"]) {
+          const double delta = estimate["yaw_deg"].as<double>() - query_pose["yaw_deg"].as<double>();
+          yaw_error = QStringLiteral("%1 deg").arg(std::abs(std::remainder(delta, 360.0)), 0, 'f', 2);
+        }
+        const YAML::Node runtime = candidate["runtime_ms"] ? candidate["runtime_ms"]
+            : (candidate["gicp_elapsed_ms"] ? candidate["gicp_elapsed_ms"]
+               : candidate["bbs_elapsed_ms"]);
         const QString values[] = {
           QString::number(candidate["rank"].as<int>()),
           QString::number(candidate["candidate_keyframe"].as<int>()),
           block_ids.join(QStringLiteral(",")),
-          yaml_number_or_unknown(descriptor, 3),
+          QString::fromStdString(candidate["row_id"].as<std::string>("UNKNOWN")),
+          candidate["along_row_s_m"] && !candidate["along_row_s_m"].IsNull()
+              ? QStringLiteral("%1 m").arg(candidate["along_row_s_m"].as<double>(), 0, 'f', 2)
+              : QStringLiteral("N/A"),
+          yaml_number_or_unknown(candidate["bbs_score"], 4),
           gicp_state(attempted, converged),
-          QString::fromStdString(candidate["row_id"].as<std::string>())};
-        for (int column = 0; column < 6; ++column)
+          yaml_number_or_unknown(candidate["gicp_fitness"], 5),
+          xy_error,
+          yaw_error,
+          QString::fromStdString(candidate["classification"].as<std::string>("UNKNOWN")),
+          runtime ? QStringLiteral("%1 ms").arg(runtime.as<double>(), 0, 'f', 1)
+                  : QStringLiteral("N/A")};
+        for (int column = 0; column < 12; ++column)
           candidate_table_->setItem(row, column, new QTableWidgetItem(values[column]));
       }
       loaded_evidence_directory_ = evidence;
@@ -2141,7 +3458,8 @@ void MainWindow::set_source(const QString &pcd_path, const QString &package_dir)
         ? QStringLiteral("Open a mapping source package to enable block-based offline relocalization.")
         : QStringLiteral("Mapping source loaded. Build or load a checksum-verified immutable block set."));
   for (auto layer : {AuxiliaryLayer::Structure, AuxiliaryLayer::Blocks,
-                     AuxiliaryLayer::Query, AuxiliaryLayer::Candidate})
+                     AuxiliaryLayer::Query, AuxiliaryLayer::Candidate,
+                     AuxiliaryLayer::StudyResults})
     viewer_->clear_auxiliary_cloud(layer);
   session_.publish_target().map_root = default_map_root_;
   session_.publish_target().map_id =
