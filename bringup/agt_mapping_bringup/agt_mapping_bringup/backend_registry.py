@@ -95,6 +95,11 @@ def validate_profile(profile: dict[str, Any], expected_id: str) -> dict[str, Any
         raise BackendSelectionError('no-loop profile enables loop, GPS, or global correction')
     if expected_id == 'lio_sam_noloop' and mode != 'no_loop':
         raise BackendSelectionError('lio_sam_noloop cannot select a loop-enabled mode')
+    if expected_id == 'fast_livo2_lio':
+        if mode != 'lio_only' or backend['loop_closure'] or backend['gps_factor'] \
+                or backend['external_global_correction']:
+            raise BackendSelectionError(
+                'fast_livo2_lio must be LIO-only with loop, GPS, and external correction disabled')
     if expected_id in {'lio_sam_noloop', 'point_lio', 'fast_livo2_lio'} and backend.get('experimental') is True:
         raise BackendSelectionError(f'{expected_id} must not be silently reclassified as experimental')
     if expected_id == 'lio_sam_loop_experimental':
@@ -125,6 +130,17 @@ def _verify_local_provenance(profile: dict[str, Any]) -> None:
     actual_hash = _sha256(config)
     if actual_hash != expected_hash:
         raise BackendSelectionError(f'backend config hash mismatch for {config}')
+    if backend['id'] == 'fast_livo2_lio':
+        try:
+            import yaml
+            document = yaml.safe_load(config.read_text(encoding='utf-8'))
+            parameters = document['/**']['ros__parameters']
+            common = parameters['common']
+        except (KeyError, TypeError, OSError, ValueError, yaml.YAMLError) as exc:
+            raise BackendSelectionError(f'cannot inspect FAST-LIVO2 LIO-only config: {exc}') from exc
+        if common.get('img_en') != 0 or common.get('lidar_en') != 1:
+            raise BackendSelectionError(
+                'FAST-LIVO2 default requires common.img_en=0 and common.lidar_en=1')
     for executable_value in backend.get('required_executables', []):
         executable = Path(executable_value).expanduser()
         if not executable.is_file() or not os.access(executable, os.X_OK):
@@ -193,21 +209,21 @@ def resolve_backend(
     profile_dir: Path = PROFILE_DIR,
     check_sources: bool = True,
 ) -> dict[str, Any]:
-    """Load and validate an explicitly selected backend profile.
+    """Load and validate the user-selected default or one explicit backend.
 
-    No backend is implicitly selected until one passes current-bag acceptance.
-    Experimental/legacy profiles require an explicit opt-in.
+    FAST-LIO2 is not part of the supported selection policy. Other experimental
+    profiles continue to require explicit opt-in.
     """
     selection = _load_yaml(Path(selection_path))
     if backend_id is None or not str(backend_id).strip():
         default = selection.get('default_backend')
         if default not in BACKEND_IDS:
-            candidate = selection.get('candidate_default_backend', 'none')
             raise BackendSelectionError(
-                f'default backend is not established; explicitly select a reviewed backend '
-                f'(current candidate: {candidate})')
+                'default backend is not established; select a supported backend explicitly')
         backend_id = str(default)
     backend_id = str(backend_id)
+    if backend_id == 'fast_lio2_legacy':
+        raise BackendSelectionError('FAST-LIO2 is disabled by the mapping backend policy')
     profile = validate_profile(_load_yaml(_profile_path(Path(profile_dir), backend_id)), backend_id)
     backend = profile['backend']
     if backend.get('experimental') is True and not allow_experimental_backend:

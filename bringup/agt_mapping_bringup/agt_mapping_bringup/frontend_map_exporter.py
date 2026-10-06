@@ -37,6 +37,10 @@ def main(args=None) -> int:
             profile = yaml.safe_load(self.profile_path.read_text(encoding='utf-8'))
             self.mapping_backend = profile['backend']
             self.sensor = profile['sensor']
+            self.lidar_topic = str(self.declare_parameter(
+                'input_lidar_topic', self.sensor['lidar_topic']).value)
+            self.imu_topic = str(self.declare_parameter(
+                'input_imu_topic', self.sensor['imu_topic']).value)
             self.output_dir.mkdir(parents=True, exist_ok=True)
             self.package_root = self.output_dir / 'map_package'
             self.records = []
@@ -149,8 +153,8 @@ def main(args=None) -> int:
                     'mapping_backend': backend,
                     'source': {
                         'rosbag': self.bag_path,
-                        'lidar_topic': self.sensor['lidar_topic'],
-                        'imu_topic': self.sensor['imu_topic'],
+                        'lidar_topic': self.lidar_topic,
+                        'imu_topic': self.imu_topic,
                     },
                     'frames': {
                         'map': self.map_frame, 'body': self.body_frame,

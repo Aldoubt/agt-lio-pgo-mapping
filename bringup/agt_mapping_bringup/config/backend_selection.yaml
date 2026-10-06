@@ -1,6 +1,5 @@
 schema_version: 1
-# LIO-SAM no-loop failed repeated-replay consistency; Point-LIO and FAST-LIVO2
-# each have only one current-bag run. No default backend is established.
-default_backend: DEFAULT_NOT_ESTABLISHED
-candidate_default_backend: none
-acceptance_bag: /home/yangxuan/rosbags/green-house
+# Product default selected by the user. This records policy, not comparative
+# algorithm superiority or a claim of independent ground-truth accuracy.
+default_backend: fast_livo2_lio
+selection_basis: user_designated_default

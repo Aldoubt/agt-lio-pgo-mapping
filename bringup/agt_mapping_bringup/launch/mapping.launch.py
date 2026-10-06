@@ -108,7 +108,7 @@ def _compose(context):
         ))
     elif backend['id'] == 'fast_livo2_lio':
         actions.append(Node(
-            package='fast_livo', executable='fastlivo_mapping', name='fastlivo_mapping', output='screen',
+            package='fast_livo', executable='fastlivo_mapping', name='fastlivo_mapping', output='log',
             parameters=[backend['config_path'], {'use_sim_time': True}],
         ))
     elif backend['id'] == 'fast_lio2_legacy':
@@ -119,7 +119,7 @@ def _compose(context):
     else:
         raise RuntimeError(f'no launch chain is implemented for explicit backend {backend["id"]}')
 
-    profile_path = PROFILE_DIR / f'{backend_id}.yaml'
+    profile_path = PROFILE_DIR / f'{backend["id"]}.yaml'
     actions.append(Node(
         package='agt_mapping_frontend_adapter', executable='mapping_frontend_adapter_node',
         name='mapping_frontend_adapter', output='screen',

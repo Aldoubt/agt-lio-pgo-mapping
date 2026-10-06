@@ -18,6 +18,7 @@
   <exec_depend>agt_fastlio_backend</exec_depend>
   <exec_depend>agt_mapping_frontend_adapter</exec_depend>
   <exec_depend>agt_pgo_backend</exec_depend>
+  <exec_depend>fast_livo</exec_depend>
   <exec_depend>fastlio2</exec_depend>
   <exec_depend>pgo</exec_depend>
   <exec_depend>rviz2</exec_depend>

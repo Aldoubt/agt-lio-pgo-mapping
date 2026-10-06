@@ -81,7 +81,7 @@ class LaunchContractTests(unittest.TestCase):
             'lidar_topic': 'auto', 'imu_topic': 'auto', 'playback_rate': '1.0',
             'startup_timeout': '45', 'export_timeout': '180', 'drain_seconds': '3',
             'start_rviz': 'false', 'start_paused': 'false', 'auto_export': 'true', 'keep_open': 'false',
-            'reference_mode': 'pgo',
+            'reference_mode': 'frontend', 'mapping_backend': '',
         })
         share = Path(__file__).resolve().parents[1]
         replacements = {
@@ -182,24 +182,31 @@ class LaunchContractTests(unittest.TestCase):
 
     def test_critical_node_zero_exit_is_still_unexpected(self):
         self.compose()
-        following = self.callback('pgo_node')(self.event(0), self.context)
+        following = self.callback('fastlivo_mapping')(self.event(0), self.context)
         self.assertTrue(any(isinstance(a, Failure) for a in following))
 
-    def test_lio_uses_explicit_topic_remapping_not_unused_parameter(self):
+    def test_fastlivo_uses_profile_and_selected_bag_topics(self):
         actions = self.compose()
-        lio = next(a for a in actions if isinstance(a, Node) and a.kwargs.get('executable') == 'lio_node')
-        self.assertIn(('/agt/sensors/imu/data', '/livox/imu'), lio.kwargs['remappings'])
-        self.assertNotIn('imu_topic', lio.kwargs['parameters'][0])
+        lio = next(a for a in actions if isinstance(a, Node) and a.kwargs.get('executable') == 'fastlivo_mapping')
+        self.assertEqual(lio.kwargs['package'], 'fast_livo')
+        overrides = lio.kwargs['parameters'][1]
+        self.assertEqual(overrides['common.lid_topic'], '/livox/lidar')
+        self.assertEqual(overrides['common.imu_topic'], '/livox/imu')
+        self.assertTrue(overrides['use_sim_time'])
 
-    def test_fastlio_reference_mode_does_not_launch_pgo(self):
-        actions = self.compose(reference_mode='fastlio')
+    def test_fastlivo_source_mode_does_not_launch_fastlio2_or_pgo(self):
+        actions = self.compose(reference_mode='frontend')
         executables = [a.kwargs.get('executable') for a in actions if isinstance(a, Node)]
-        self.assertIn('fastlio_reference_exporter', executables)
+        self.assertIn('fastlivo_mapping', executables)
+        self.assertIn('frontend_map_exporter', executables)
+        self.assertNotIn('lio_node', executables)
+        self.assertNotIn('fastlio_reference_exporter', executables)
         self.assertNotIn('pgo_node', executables)
         self.assertNotIn('pgo_backend_node', executables)
         self.assertNotIn('mapping_artifact_exporter', executables)
         session = json.loads((self.output / 'session.json').read_text())
-        self.assertEqual(session['options']['reference_mode'], 'fastlio')
+        self.assertEqual(session['options']['reference_mode'], 'frontend')
+        self.assertEqual(session['options']['mapping_backend'], 'fast_livo2_lio')
 
     def test_paused_and_rate_are_forwarded_to_player_argv(self):
         self.compose(start_paused='true', playback_rate='2.5')

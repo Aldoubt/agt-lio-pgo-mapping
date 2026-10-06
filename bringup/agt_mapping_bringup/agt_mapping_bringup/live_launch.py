@@ -25,7 +25,8 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 from .live_source import inspect_live_config
-from .preflight import frontend_remappings, parse_bool, validate_number
+from .backend_registry import BackendSelectionError, PROFILE_DIR, resolve_backend
+from .preflight import parse_bool, validate_number
 from .session_launch import _raise_launch_error
 from .session_lock import acquire_domain_lease
 from .session_state import create_session, mark_session
@@ -40,8 +41,8 @@ def launch_live_session(context, *, sensor_only=False):
     """Legacy Bunker hardware owner by default; YHS path owns only one MID360.
 
     sensor_only never resolves Bunker/YHS chassis config, starts a base driver,
-    publishes a robot TF, or selects a map. It still runs the same recorder,
-    mapping estimator, PGO and verified artifact exporter.
+    publishes a robot TF, or selects a map. Both paths use the selected LIO-only
+    frontend and paired source-package exporter; this function never starts PGO.
     """
     def value(name):
         return LaunchConfiguration(name).perform(context)
@@ -60,13 +61,22 @@ def launch_live_session(context, *, sensor_only=False):
         'publish_freq': source.publish_freq,
         'frame_id': value('frame_id'),
         'mapping_sensor_owner': 'yhs_sensor_only' if sensor_only else 'bunker_legacy_hardware',
+        'mapping_backend': value('mapping_backend').strip(),
         **{key: parse_bool(value(key)) for key in ('start_rviz', 'keep_open')},
     }
     if options['export_timeout'] <= options['drain_seconds']:
         raise ValueError('export_timeout must exceed drain_seconds')
     share = Path(get_package_share_directory('agt_mapping_bringup'))
-    lio_config = share / 'config' / 'fastlio2_mid360.yaml'
-    remappings = frontend_remappings(lio_config, source.imu_topic)
+    try:
+        profile = resolve_backend(options['mapping_backend'] or None)
+    except BackendSelectionError as exc:
+        raise ValueError(str(exc)) from exc
+    backend = profile['backend']
+    options['mapping_backend'] = backend['id']
+    sensor = profile['sensor']
+    mapping = profile['mapping']
+    if backend['id'] != 'fast_livo2_lio':
+        raise ValueError(f"live mapping does not yet support backend {backend['id']!r}")
     text = lambda v: ParameterValue(str(v), value_type=str)
     if sensor_only:
         # The YHS mapping path is sensor-only: do not resolve Bunker, do not
@@ -90,28 +100,47 @@ def launch_live_session(context, *, sensor_only=False):
                 'enable_camera_gimbal': 'false',
             }.items())
     nodes = [
-        Node(package='agt_mid360_adapter', executable='mid360_adapter_node',
-             parameters=[{'input_topic': source.lidar_topic}]),
-        Node(package='fastlio2', namespace='fastlio2', executable='lio_node',
-             parameters=[{'config_path': text(lio_config), 'use_sim_time': False}],
-             remappings=remappings),
-        Node(package='agt_fastlio_backend', executable='fastlio_backend_node',
-             parameters=[{'use_sim_time': False}]),
-        Node(package='pgo', executable='pgo_node',
-             parameters=[{'config_path': text(share / 'config' / 'pgo_frontend.yaml'),
-                          'use_sim_time': False}]),
-        Node(package='agt_pgo_backend', executable='pgo_backend_node',
-             parameters=[{'use_sim_time': False, 'pgo_output_dir': text(output / 'pgo_raw')}]),
-        Node(package='agt_mapping_exporter', executable='mapping_artifact_exporter',
-             parameters=[{'use_sim_time': False, 'output_dir': text(output)}]),
+        Node(package='fast_livo', executable='fastlivo_mapping', name='fastlivo_mapping', output='log',
+             parameters=[backend['config_path'], {
+                 'use_sim_time': False,
+                 'common.lid_topic': source.lidar_topic,
+                 'common.imu_topic': source.imu_topic,
+             }]),
+        Node(package='agt_mapping_frontend_adapter', executable='mapping_frontend_adapter_node',
+             name='mapping_frontend_adapter', output='screen', parameters=[{
+                 'backend_id': backend['id'], 'source_commit': backend['source_commit'],
+                 'input_odom_topic': backend['output_odom_topic'],
+                 'input_cloud_topic': backend['output_cloud_topic'],
+                 'input_path_topic': backend['output_path_topic'],
+                 'input_lidar_topic': source.lidar_topic, 'input_imu_topic': source.imu_topic,
+                 'cloud_frame_mode': backend['output_cloud_frame_mode'],
+                 'body_frame': sensor['body_frame'], 'lidar_frame': sensor['lidar_frame'],
+                 'max_sync_slop_s': backend.get('max_cloud_odom_slop_s', 0.05),
+                 'T_body_lidar.x': sensor['T_body_lidar_translation_m'][0],
+                 'T_body_lidar.y': sensor['T_body_lidar_translation_m'][1],
+                 'T_body_lidar.z': sensor['T_body_lidar_translation_m'][2],
+                 'T_body_lidar.qx': sensor['T_body_lidar_quaternion_xyzw'][0],
+                 'T_body_lidar.qy': sensor['T_body_lidar_quaternion_xyzw'][1],
+                 'T_body_lidar.qz': sensor['T_body_lidar_quaternion_xyzw'][2],
+                 'T_body_lidar.qw': sensor['T_body_lidar_quaternion_xyzw'][3],
+             }]),
+        Node(package='agt_mapping_bringup', executable='frontend_map_exporter',
+             name='frontend_map_exporter', output='screen', parameters=[{
+                 'output_dir': text(output), 'bag_path': str(output / 'raw_bag'),
+                 'profile_path': str(PROFILE_DIR / f"{backend['id']}.yaml"),
+                 'input_lidar_topic': source.lidar_topic, 'input_imu_topic': source.imu_topic,
+                 'keyframe_distance_m': float(mapping['keyframe_distance_m']),
+                 'keyframe_rotation_deg': float(mapping['keyframe_rotation_deg']),
+                 'body_frame': sensor['body_frame'],
+             }]),
     ]
-    labels = ['sensor adapter', 'FAST-LIO2', 'frontend bridge', 'PGO', 'PGO bridge',
-              'artifact exporter']
+    labels = ['FAST-LIVO2 LIO-only', 'frontend normalization adapter', 'frontend map exporter']
     recorder = ExecuteProcess(cmd=raw_record_command(output, source.lidar_topic, source.imu_topic),
                               output='screen')
     ready = Node(package='agt_mapping_bringup', executable='mapping_wait_ready', output='screen',
                  parameters=[{'output_dir': text(output), 'startup_timeout': options['startup_timeout'],
                               'lidar_topic': source.lidar_topic, 'imu_topic': source.imu_topic,
+                              'reference_mode': 'frontend', 'mapping_backend': backend['id'],
                               'require_publishers': True}])
     supervisor = Node(package='agt_mapping_bringup', executable='mapping_live_supervisor', output='screen',
                       parameters=[{'output_dir': text(output),
@@ -120,7 +149,8 @@ def launch_live_session(context, *, sensor_only=False):
                                    'imu_topic': source.imu_topic}])
     finalizer = Node(package='agt_mapping_bringup', executable='mapping_export_verified', output='screen',
                      parameters=[{'output_dir': text(output), 'export_timeout': options['export_timeout'],
-                                  'drain_seconds': options['drain_seconds']}])
+                                  'drain_seconds': options['drain_seconds'],
+                                  'reference_mode': 'frontend'}])
 
     def fail(message):
         mark_session(output, 'failed', message)

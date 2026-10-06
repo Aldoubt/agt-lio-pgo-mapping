@@ -4,6 +4,7 @@ These supplement, not replace, the stand-in lifecycle tests and real bag runs.
 """
 import importlib
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -63,7 +64,7 @@ class RealLaunchSdkTests(unittest.TestCase):
             context.launch_configurations.update({
                 'bag_path': str(bag), 'output_dir': str(root / 'output'),
                 'lidar_topic': 'auto', 'imu_topic': 'auto', 'playback_rate': '1.0',
-                'reference_mode': 'pgo',
+                'reference_mode': 'frontend', 'mapping_backend': '',
                 'startup_timeout': '45', 'export_timeout': '180', 'drain_seconds': '3',
                 'start_rviz': 'false', 'start_paused': 'false',
                 'auto_export': 'true', 'keep_open': 'false',
@@ -73,8 +74,10 @@ class RealLaunchSdkTests(unittest.TestCase):
                 with patch.object(implementation, 'get_package_share_directory', return_value=str(share)), \
                         patch.object(implementation, 'acquire_domain_lease', return_value=lease):
                     actions = implementation.launch_session(context)
-            self.assertEqual(sum(isinstance(action, Node) for action in actions), 7)
-            self.assertEqual(sum(isinstance(action, RegisterEventHandler) for action in actions), 10)
+            self.assertEqual(sum(isinstance(action, Node) for action in actions), 4)
+            self.assertEqual(sum(isinstance(action, RegisterEventHandler) for action in actions), 7)
+            session = json.loads((root / 'output' / 'session.json').read_text())
+            self.assertEqual(session['options']['mapping_backend'], 'fast_livo2_lio')
 
 
 if __name__ == '__main__':

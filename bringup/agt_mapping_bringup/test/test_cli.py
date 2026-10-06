@@ -116,19 +116,25 @@ class CliTests(unittest.TestCase):
         stub.write_text('#!' + sys.executable + '\n'
                         'import json,os,sys\n'
                         'if sys.argv[1:3] == ["pkg","executables"]:\n'
-                        ' print("agt_mapping_bringup mapping_wait_ready")\n'
-                        ' print("agt_mapping_bringup mapping_export_verified")\n'
+                        ' if sys.argv[3] == "agt_mapping_bringup":\n'
+                        '  print("agt_mapping_bringup mapping_wait_ready")\n'
+                        '  print("agt_mapping_bringup mapping_export_verified")\n'
+                        ' elif sys.argv[3] == "agt_mapping_frontend_adapter":\n'
+                        '  print("agt_mapping_frontend_adapter mapping_frontend_adapter_node")\n'
+                        'elif sys.argv[1:3] == ["pkg","prefix"]:\n'
+                        ' print("/opt/ros/humble/share/fast_livo")\n'
                         'else:\n'
                         ' open(os.environ["RECORD"],"w").write(json.dumps(sys.argv[1:]))\n')
         stub.chmod(0o755)
-        ros, overlay = self.root / 'ros.bash', self.root / 'overlay.bash'
+        ros, backend, overlay = self.root / 'ros.bash', self.root / 'backend.bash', self.root / 'overlay.bash'
         ros.write_text('# mock ROS setup\n')
+        backend.write_text('# mock backend setup\n')
         overlay.write_text('# mock overlay\n')
         record = self.root / 'argv.json'
         unsafe = 'bag_path:=spaces;$(touch SHOULD_NOT_EXIST)'
         environment = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ['PATH'], RECORD=str(record))
         result = subprocess.run(['bash', str(REPOSITORY / 'scripts/mapping_launch_env.sh'),
-                                 str(ros), str(overlay), 'ros2', 'launch', unsafe],
+                                 str(ros), str(backend), str(overlay), 'ros2', 'launch', unsafe],
                                 env=environment, cwd=self.root, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(record.read_text()), ['launch', unsafe])

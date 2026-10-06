@@ -20,9 +20,13 @@ def test_registry_enumerates_only_explicit_backend_ids():
     }
 
 
-def test_current_selection_fails_closed_until_acceptance_is_recorded():
-    with pytest.raises(BackendSelectionError, match='default backend is not established'):
-        resolve_backend(check_sources=False)
+def test_default_is_user_selected_fast_livo2_lio():
+    profile = resolve_backend(check_sources=False)
+    assert profile['backend']['id'] == 'fast_livo2_lio'
+    assert profile['backend']['mode'] == 'lio_only'
+    assert profile['backend']['loop_closure'] is False
+    assert profile['backend']['gps_factor'] is False
+    assert profile['backend']['external_global_correction'] is False
 
 
 def test_lio_sam_candidate_is_explicit_no_loop():
@@ -39,10 +43,15 @@ def test_unsupported_backend_fails_closed():
 
 
 def test_fastlio2_requires_explicit_experimental_opt_in():
-    with pytest.raises(BackendSelectionError, match='allow_experimental_backend'):
+    with pytest.raises(BackendSelectionError, match='FAST-LIO2 is disabled'):
         resolve_backend('fast_lio2_legacy', check_sources=False)
-    assert resolve_backend('fast_lio2_legacy', check_sources=False,
-                           allow_experimental_backend=True)['backend']['status'] == 'experimental_legacy'
+
+
+def test_fast_livo_profile_cannot_enable_visual_or_global_correction():
+    profile = resolve_backend('fast_livo2_lio', check_sources=False)
+    profile['backend']['external_global_correction'] = True
+    with pytest.raises(BackendSelectionError, match='must be LIO-only'):
+        validate_profile(profile, 'fast_livo2_lio')
 
 
 def test_loop_profile_cannot_be_mislabeled_as_no_loop():
