@@ -16,6 +16,7 @@
 #include <QPoint>
 #include <QPolygon>
 #include <QTimer>
+#include <QVector3D>
 #include <QVector4D>
 
 #include <QKeyEvent>
@@ -24,6 +25,7 @@
 
 #include <memory>
 #include <optional>
+#include <array>
 #include <vector>
 
 namespace agt_map_studio {
@@ -46,6 +48,7 @@ inline bool is_geometry_color_mode(PointColorMode mode) {
 
 // How a selection is drawn in Select/Delete mode.
 enum class SelectionTool { ScreenRect, PolygonPrism, Sphere };
+enum class AuxiliaryLayer { Structure = 0, Blocks = 1, Query = 2, Candidate = 3 };
 
 class PointCloudViewer : public QOpenGLWidget, protected QOpenGLFunctions {
   Q_OBJECT
@@ -55,6 +58,11 @@ public:
   ~PointCloudViewer() override;
 
   void set_cloud(LoadedPointCloud cloud, const QString &filename);
+  void set_auxiliary_cloud(AuxiliaryLayer layer, const LoadedPointCloud &cloud,
+                           bool visible = true);
+  void set_auxiliary_visible(AuxiliaryLayer layer, bool visible);
+  void clear_auxiliary_cloud(AuxiliaryLayer layer);
+  void set_query_pick_mode(bool enabled) { query_pick_mode_ = enabled; }
   void reset_camera();
   bool save_view(const QString &path, QString *error) const;
   void set_camera_speeds(float speed, float fast_speed);
@@ -107,6 +115,7 @@ signals:
   void stats_changed(const QString &text);
   void delete_requested_outside_delete_mode();
   void confidence_voxel_selected(std::size_t index);
+  void map_point_selected(double x, double y, double z);
 
 protected:
   void initializeGL() override;
@@ -129,6 +138,7 @@ private:
   void upload_confidence_cloud();
   void upload_confidence_statuses();
   void upload_confidence_colors();
+  void upload_auxiliary_clouds();
   bool confidence_mode() const;
   const std::vector<float> &active_xyz() const;
   SelectionManager *active_selection_manager() const;
@@ -175,6 +185,17 @@ private:
   bool confidence_colors_dirty_ = true;
   QString cached_stats_text_;
   bool gl_ready_ = false;
+  struct AuxiliaryCloud {
+    QOpenGLBuffer positions{QOpenGLBuffer::VertexBuffer};
+    QOpenGLBuffer statuses{QOpenGLBuffer::VertexBuffer};
+    QOpenGLBuffer colors{QOpenGLBuffer::VertexBuffer};
+    std::vector<float> xyz;
+    QVector3D color;
+    bool visible = false;
+    bool dirty = true;
+  };
+  std::array<AuxiliaryCloud, 4> auxiliary_clouds_;
+  bool query_pick_mode_ = false;
   bool left_drag_ = false;
   bool right_drag_ = false;
   bool selecting_ = false;

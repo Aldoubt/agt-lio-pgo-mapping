@@ -23,8 +23,11 @@ class QComboBox;
 class QDockWidget;
 class QDoubleSpinBox;
 class QLabel;
+class QLineEdit;
 class QMenu;
 class QPushButton;
+class QSpinBox;
+class QTableWidget;
 class QToolBar;
 
 namespace agt_map_studio {
@@ -99,6 +102,16 @@ private slots:
   void show_controls();
   void show_workflow_help();
   void show_stats(const QString &text);
+  void start_structure_editor();
+  void build_keyframe_blocks();
+  void load_keyframe_blocks();
+  void run_relocalization_query();
+  void load_relocalization_evidence();
+  void choose_relocalization_evidence();
+  void choose_topology_annotation();
+  void load_structure_annotation();
+  void pick_relocalization_point();
+  void select_candidate_overlay(int row, int column);
 
   // Workflow steps (each is asynchronous; completion continues the queue).
   void run_refine();
@@ -115,12 +128,17 @@ private:
   void create_actions();
   void create_workflow_dock();
   void create_confidence_dock();
+  void create_relocalization_dock();
+  void display_block_preview(const QString &directory);
+  void start_relocalization_tool(const ToolInvocation &invocation,
+                                 std::function<void(const ToolResult &)> on_done);
   void clear_confidence_view();
   void clear_geometry_view();
   void set_point_color_mode(PointColorMode mode);
   void refresh_confidence_editor_ui();
   void update_edit_state_label();
   bool confirm_discard_confidence_edits();
+  bool validate_relocalization_output_root(QString *error) const;
   void load_config(const QString &path);
   void apply_erase_rectangle(double min_x, double min_y, double max_x, double max_y);
   void apply_obstacle_line(double start_x, double start_y, double end_x, double end_y,
@@ -149,10 +167,36 @@ private:
   QToolBar *occupancy_toolbar_ = nullptr;
   QDockWidget *workflow_dock_ = nullptr;
   QDockWidget *confidence_dock_ = nullptr;
+  QDockWidget *relocalization_dock_ = nullptr;
   QLabel *confidence_details_label_ = nullptr;
   QLabel *geometry_summary_label_ = nullptr;
   QLabel *confidence_status_label_ = nullptr;
   QLabel *confidence_edit_state_label_ = nullptr;
+  QLabel *relocalization_status_label_ = nullptr;
+  QLabel *relocalization_details_label_ = nullptr;
+  QLineEdit *block_directory_edit_ = nullptr;
+  QLineEdit *native_localizer_path_edit_ = nullptr;
+  QLineEdit *topology_path_edit_ = nullptr;
+  QLineEdit *evidence_root_edit_ = nullptr;
+  QLineEdit *evidence_path_edit_ = nullptr;
+  QLineEdit *query_x_edit_ = nullptr;
+  QLineEdit *query_y_edit_ = nullptr;
+  QLineEdit *row_id_edit_ = nullptr;
+  QDoubleSpinBox *along_row_s_spin_ = nullptr;
+  QComboBox *query_mode_combo_ = nullptr;
+  QComboBox *query_frames_combo_ = nullptr;
+  QSpinBox *block_keyframe_count_spin_ = nullptr;
+  QSpinBox *query_keyframe_spin_ = nullptr;
+  QSpinBox *candidate_top_k_spin_ = nullptr;
+  QTableWidget *candidate_table_ = nullptr;
+  QCheckBox *show_structure_layer_ = nullptr;
+  QCheckBox *show_blocks_layer_ = nullptr;
+  QCheckBox *show_query_layer_ = nullptr;
+  QCheckBox *show_candidate_layer_ = nullptr;
+  QString loaded_evidence_directory_;
+  double picked_query_x_ = 0.0;
+  double picked_query_y_ = 0.0;
+  bool has_picked_query_point_ = false;
   QComboBox *confidence_override_mode_combo_ = nullptr;
   QComboBox *confidence_reason_combo_ = nullptr;
   QCheckBox *confidence_custom_low_check_ = nullptr;

@@ -19,10 +19,12 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
@@ -30,14 +32,20 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QImage>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPixmap>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -45,8 +53,13 @@
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QStatusBar>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QToolBar>
+#include <QHeaderView>
+#include <QUuid>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -71,6 +84,49 @@ constexpr const char *kRelocPackage = "agt_global_relocalization_native";
 constexpr const char *kRelocTool = "build_relocalization_assets";
 constexpr const char *kConverterPackage = "agt_map_converter";
 constexpr const char *kManagerPackage = "agt_map_manager";
+
+bool yaml_has_value(const YAML::Node &node) {
+  return node.IsDefined() && !node.IsNull();
+}
+
+QString yaml_number_or_unknown(const YAML::Node &node, int precision) {
+  return yaml_has_value(node)
+      ? QString::number(node.as<double>(), 'f', precision)
+      : QStringLiteral("UNKNOWN");
+}
+
+QString yaml_boolean_or_unknown(const YAML::Node &node,
+                                const QString &true_value,
+                                const QString &false_value) {
+  if (!yaml_has_value(node)) return QStringLiteral("UNKNOWN");
+  return node.as<bool>() ? true_value : false_value;
+}
+
+QString gicp_state(const YAML::Node &attempted, const YAML::Node &converged) {
+  if (!yaml_has_value(attempted)) return QStringLiteral("UNKNOWN");
+  if (!attempted.as<bool>()) return QStringLiteral("NOT ATTEMPTED");
+  if (!yaml_has_value(converged)) return QStringLiteral("UNKNOWN");
+  return converged.as<bool>() ? QStringLiteral("CONVERGED")
+                              : QStringLiteral("NOT CONVERGED");
+}
+
+std::filesystem::path normalized_path(const QString &path) {
+  std::error_code error;
+  const auto absolute = std::filesystem::absolute(path.toStdString(), error);
+  if (error) return std::filesystem::path(path.toStdString()).lexically_normal();
+  const auto canonical = std::filesystem::weakly_canonical(absolute, error);
+  return error ? absolute.lexically_normal() : canonical;
+}
+
+bool path_is_same_or_within(const QString &candidate, const QString &root) {
+  const auto child = normalized_path(candidate);
+  const auto boundary = normalized_path(root);
+  auto child_part = child.begin();
+  for (auto boundary_part = boundary.begin(); boundary_part != boundary.end(); ++boundary_part, ++child_part) {
+    if (child_part == child.end() || *child_part != *boundary_part) return false;
+  }
+  return true;
+}
 
 bool validate_mapping_parent(const QString &directory, QString *error) {
   // Same validator invoked by agt_spatial_map_export. No shell, no write,
@@ -119,6 +175,7 @@ MainWindow::MainWindow(const QString &config_path, QWidget *parent)
   create_actions();
   create_workflow_dock();
   create_confidence_dock();
+  create_relocalization_dock();
   load_config(config_path);
   session_.publish_target().map_root = default_map_root_;
   workflow_panel_->set_publish_target(session_.publish_target());
@@ -126,6 +183,19 @@ MainWindow::MainWindow(const QString &config_path, QWidget *parent)
   connect(viewer_, &PointCloudViewer::stats_changed, this, &MainWindow::show_stats);
   connect(viewer_, &PointCloudViewer::confidence_voxel_selected, this,
           &MainWindow::inspect_confidence_voxel);
+  connect(viewer_, &PointCloudViewer::map_point_selected, this,
+          [this](double x, double y, double) {
+    picked_query_x_ = x;
+    picked_query_y_ = y;
+    has_picked_query_point_ = true;
+    if (query_x_edit_) query_x_edit_->setText(QString::number(x, 'f', 3));
+    if (query_y_edit_) query_y_edit_->setText(QString::number(y, 'f', 3));
+    if (query_mode_combo_) query_mode_combo_->setCurrentIndex(1);
+    if (relocalization_status_label_) {
+      relocalization_status_label_->setText(
+          QStringLiteral("Map click stored; query will snap to nearest keyframe and record distance."));
+    }
+  });
   connect(viewer_, &PointCloudViewer::delete_requested_outside_delete_mode, this, [this]() {
     statusBar()->showMessage(viewer_->showing_confidence()
         ? QStringLiteral("Confidence voxels cannot be deleted; use override intent in the editor")
@@ -789,6 +859,725 @@ void MainWindow::create_confidence_dock() {
   }
 }
 
+void MainWindow::create_relocalization_dock() {
+  relocalization_dock_ = new QDockWidget(QStringLiteral("Relocalization MVP"), this);
+  relocalization_dock_->setObjectName(QStringLiteral("relocalization_mvp_dock"));
+  relocalization_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+  auto *scroll = new QScrollArea(relocalization_dock_);
+  scroll->setWidgetResizable(true);
+  auto *panel = new QWidget(scroll);
+  auto *layout = new QVBoxLayout(panel);
+  auto *intro = new QLabel(QStringLiteral(
+      "Offline inspection only. Source geometry remains read-only. Block size, query frames, "
+      "and candidate Top-K are independent parameters. Block PCDs support visualization and "
+      "leakage exclusion; existing per-keyframe GLOBAL/Top-K/GICP remains the analysis engine."), panel);
+  intro->setWordWrap(true);
+  layout->addWidget(intro);
+
+  relocalization_status_label_ = new QLabel(QStringLiteral("Open a validated mapping source package to begin."), panel);
+  relocalization_status_label_->setWordWrap(true);
+  relocalization_status_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  layout->addWidget(relocalization_status_label_);
+
+  auto *output_form = new QFormLayout();
+  evidence_root_edit_ = new QLineEdit(
+      QDir::home().filePath(QStringLiteral("ros2_ws/experiments/mapstudio_relocalization_mvp")), panel);
+  output_form->addRow(QStringLiteral("New assets root"), evidence_root_edit_);
+  block_keyframe_count_spin_ = new QSpinBox(panel);
+  block_keyframe_count_spin_->setRange(1, 200);
+  block_keyframe_count_spin_->setValue(11);
+  output_form->addRow(QStringLiteral("Block keyframes"), block_keyframe_count_spin_);
+  layout->addLayout(output_form);
+  auto *block_buttons = new QHBoxLayout();
+  auto *build_blocks_button = new QPushButton(QStringLiteral("Build new blocks"), panel);
+  auto *load_blocks_button = new QPushButton(QStringLiteral("Load blocks"), panel);
+  block_buttons->addWidget(build_blocks_button);
+  block_buttons->addWidget(load_blocks_button);
+  layout->addLayout(block_buttons);
+  block_directory_edit_ = new QLineEdit(panel);
+  block_directory_edit_->setReadOnly(true);
+  block_directory_edit_->setPlaceholderText(QStringLiteral("Select an immutable block-set directory"));
+  layout->addWidget(block_directory_edit_);
+
+  auto *topology_form = new QFormLayout();
+  topology_path_edit_ = new QLineEdit(panel);
+  topology_path_edit_->setReadOnly(true);
+  auto *topology_row = new QHBoxLayout();
+  topology_row->addWidget(topology_path_edit_);
+  auto *browse_topology = new QPushButton(QStringLiteral("Browse"), panel);
+  topology_row->addWidget(browse_topology);
+  topology_form->addRow(QStringLiteral("Schema v1 topology"), topology_row);
+  layout->addLayout(topology_form);
+  auto *structure_buttons = new QHBoxLayout();
+  auto *load_structure_button = new QPushButton(QStringLiteral("Validate & show structure"), panel);
+  auto *edit_structure_button = new QPushButton(QStringLiteral("Edit in new draft"), panel);
+  structure_buttons->addWidget(load_structure_button);
+  structure_buttons->addWidget(edit_structure_button);
+  layout->addLayout(structure_buttons);
+
+  auto *query_form = new QFormLayout();
+  query_mode_combo_ = new QComboBox(panel);
+  query_mode_combo_->addItem(QStringLiteral("Keyframe"), QStringLiteral("keyframe"));
+  query_mode_combo_->addItem(QStringLiteral("Map point (snap to keyframe)"), QStringLiteral("map_point"));
+  query_mode_combo_->addItem(QStringLiteral("Reviewed row position"), QStringLiteral("row_position"));
+  query_form->addRow(QStringLiteral("Query selection"), query_mode_combo_);
+  query_keyframe_spin_ = new QSpinBox(panel);
+  query_keyframe_spin_->setRange(0, 2000000);
+  query_form->addRow(QStringLiteral("Keyframe ID"), query_keyframe_spin_);
+  auto *click_row = new QHBoxLayout();
+  query_x_edit_ = new QLineEdit(panel); query_x_edit_->setReadOnly(true); query_x_edit_->setPlaceholderText(QStringLiteral("map x"));
+  query_y_edit_ = new QLineEdit(panel); query_y_edit_->setReadOnly(true); query_y_edit_->setPlaceholderText(QStringLiteral("map y"));
+  auto *pick_point_button = new QPushButton(QStringLiteral("Pick on 3D map"), panel);
+  click_row->addWidget(query_x_edit_); click_row->addWidget(query_y_edit_); click_row->addWidget(pick_point_button);
+  query_form->addRow(QStringLiteral("Map point"), click_row);
+  row_id_edit_ = new QLineEdit(panel);
+  row_id_edit_->setPlaceholderText(QStringLiteral("confirmed physical row ID"));
+  query_form->addRow(QStringLiteral("Row ID"), row_id_edit_);
+  along_row_s_spin_ = new QDoubleSpinBox(panel);
+  along_row_s_spin_->setRange(0.0, 100000.0);
+  along_row_s_spin_->setDecimals(2);
+  along_row_s_spin_->setSuffix(QStringLiteral(" m"));
+  query_form->addRow(QStringLiteral("Along row s"), along_row_s_spin_);
+  query_frames_combo_ = new QComboBox(panel);
+  for (int frames : {1, 3, 5}) query_frames_combo_->addItem(QString::number(frames), frames);
+  query_form->addRow(QStringLiteral("Query accumulation frames"), query_frames_combo_);
+  candidate_top_k_spin_ = new QSpinBox(panel);
+  candidate_top_k_spin_->setRange(1, 50);
+  candidate_top_k_spin_->setValue(10);
+  query_form->addRow(QStringLiteral("Candidate Top-K"), candidate_top_k_spin_);
+  native_localizer_path_edit_ = new QLineEdit(panel);
+  native_localizer_path_edit_->setReadOnly(true);
+  native_localizer_path_edit_->setPlaceholderText(
+      QStringLiteral("Installed default; select a trace-capable existing binary if required"));
+  auto *native_localizer_row = new QHBoxLayout();
+  native_localizer_row->addWidget(native_localizer_path_edit_);
+  auto *browse_native_localizer = new QPushButton(QStringLiteral("Browse"), panel);
+  native_localizer_row->addWidget(browse_native_localizer);
+  query_form->addRow(QStringLiteral("Native localizer override"), native_localizer_row);
+  layout->addLayout(query_form);
+  auto *run_query_button = new QPushButton(QStringLiteral("Run offline query and save evidence"), panel);
+  layout->addWidget(run_query_button);
+
+  auto *evidence_row = new QHBoxLayout();
+  evidence_path_edit_ = new QLineEdit(panel);
+  evidence_path_edit_->setReadOnly(true);
+  evidence_path_edit_->setPlaceholderText(QStringLiteral("Saved immutable evidence directory"));
+  evidence_row->addWidget(evidence_path_edit_);
+  auto *open_evidence_button = new QPushButton(QStringLiteral("Load"), panel);
+  evidence_row->addWidget(open_evidence_button);
+  layout->addLayout(evidence_row);
+
+  candidate_table_ = new QTableWidget(0, 6, panel);
+  candidate_table_->setHorizontalHeaderLabels({QStringLiteral("Rank"), QStringLiteral("Keyframe"),
+      QStringLiteral("Block"), QStringLiteral("Descriptor"), QStringLiteral("GICP"), QStringLiteral("Row")});
+  candidate_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+  candidate_table_->horizontalHeader()->setStretchLastSection(true);
+  candidate_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+  candidate_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  candidate_table_->setMaximumHeight(190);
+  layout->addWidget(candidate_table_);
+  relocalization_details_label_ = new QLabel(
+      QStringLiteral("Load evidence to inspect query provenance, block bindings, and candidate metrics."), panel);
+  relocalization_details_label_->setWordWrap(true);
+  relocalization_details_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  layout->addWidget(relocalization_details_label_);
+
+  auto *layer_group = new QGroupBox(QStringLiteral("Independent display layers"), panel);
+  auto *layer_layout = new QVBoxLayout(layer_group);
+  show_structure_layer_ = new QCheckBox(QStringLiteral("Structure / scene markers"), layer_group);
+  show_blocks_layer_ = new QCheckBox(QStringLiteral("Block bounds and centers"), layer_group);
+  show_query_layer_ = new QCheckBox(QStringLiteral("Query at estimated pose"), layer_group);
+  show_candidate_layer_ = new QCheckBox(QStringLiteral("Selected candidate"), layer_group);
+  for (auto *check : {show_structure_layer_, show_blocks_layer_, show_query_layer_, show_candidate_layer_})
+    layer_layout->addWidget(check);
+  layout->addWidget(layer_group);
+  layout->addStretch();
+  scroll->setWidget(panel);
+  relocalization_dock_->setWidget(scroll);
+  addDockWidget(Qt::RightDockWidgetArea, relocalization_dock_);
+  tabifyDockWidget(workflow_dock_, relocalization_dock_);
+  relocalization_dock_->setMinimumWidth(400);
+  if (view_menu_) {
+    auto *toggle = relocalization_dock_->toggleViewAction();
+    toggle->setText(QStringLiteral("Relocalization MVP Panel"));
+    view_menu_->addAction(toggle);
+  }
+
+  connect(build_blocks_button, &QPushButton::clicked, this, &MainWindow::build_keyframe_blocks);
+  connect(load_blocks_button, &QPushButton::clicked, this, &MainWindow::load_keyframe_blocks);
+  connect(browse_topology, &QPushButton::clicked, this, &MainWindow::choose_topology_annotation);
+  connect(browse_native_localizer, &QPushButton::clicked, this, [this]() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Select existing trace-capable native localizer"),
+        QDir::home().filePath(QStringLiteral("ros2_ws/experiments")));
+    if (!path.isEmpty()) native_localizer_path_edit_->setText(path);
+  });
+  connect(load_structure_button, &QPushButton::clicked, this, &MainWindow::load_structure_annotation);
+  connect(edit_structure_button, &QPushButton::clicked, this, &MainWindow::start_structure_editor);
+  connect(pick_point_button, &QPushButton::clicked, this, &MainWindow::pick_relocalization_point);
+  connect(run_query_button, &QPushButton::clicked, this, &MainWindow::run_relocalization_query);
+  connect(open_evidence_button, &QPushButton::clicked, this, &MainWindow::choose_relocalization_evidence);
+  connect(candidate_table_, &QTableWidget::cellClicked, this, &MainWindow::select_candidate_overlay);
+  connect(show_structure_layer_, &QCheckBox::toggled, this, [this](bool on) {
+    viewer_->set_auxiliary_visible(AuxiliaryLayer::Structure, on);
+  });
+  connect(show_blocks_layer_, &QCheckBox::toggled, this, [this](bool on) {
+    viewer_->set_auxiliary_visible(AuxiliaryLayer::Blocks, on);
+  });
+  connect(show_query_layer_, &QCheckBox::toggled, this, [this](bool on) {
+    viewer_->set_auxiliary_visible(AuxiliaryLayer::Query, on);
+  });
+  connect(show_candidate_layer_, &QCheckBox::toggled, this, [this](bool on) {
+    viewer_->set_auxiliary_visible(AuxiliaryLayer::Candidate, on);
+  });
+}
+
+void MainWindow::start_relocalization_tool(const ToolInvocation &invocation,
+                                            std::function<void(const ToolResult &)> on_done) {
+  if (tool_runner_.is_running() || confidence_review_runner_.is_running()) {
+    QMessageBox::information(this, QStringLiteral("Busy"),
+                             QStringLiteral("Another Studio tool is still running."));
+    return;
+  }
+  tool_callback_ = std::move(on_done);
+  if (relocalization_status_label_)
+    relocalization_status_label_->setText(QStringLiteral("RUNNING — %1").arg(invocation.label));
+  tool_runner_.start(invocation);  // no implicit workflow log write into the source package area
+}
+
+void MainWindow::build_keyframe_blocks() {
+  if (!session_.source_is_mapping_package()) {
+    QMessageBox::warning(this, QStringLiteral("Mapping source required"),
+                         QStringLiteral("Open a validated mapping source package first."));
+    return;
+  }
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_mapping_artifacts/agt_build_keyframe_blocks")}, &missing)) {
+    QMessageBox::critical(this, QStringLiteral("Block producer unavailable"), missing);
+    return;
+  }
+  QString output_error;
+  if (!validate_relocalization_output_root(&output_error)) {
+    QMessageBox::warning(this, QStringLiteral("Unsafe output root"), output_error);
+    return;
+  }
+  const QString root = QDir::cleanPath(evidence_root_edit_->text().trimmed());
+  if (root.isEmpty()) return;
+  const QString output = QDir(root).filePath(
+      QStringLiteral("blocks_k%1_%2_%3")
+          .arg(block_keyframe_count_spin_->value()).arg(stamp())
+          .arg(QUuid::createUuid().toString(QUuid::WithoutBraces).left(8)));
+  QStringList arguments{QStringLiteral("--source-package"), session_.source_package_dir(),
+                        QStringLiteral("--output"), output,
+                        QStringLiteral("--block-keyframe-count"),
+                        QString::number(block_keyframe_count_spin_->value())};
+  if (!topology_path_edit_->text().isEmpty())
+    arguments << QStringLiteral("--topology") << topology_path_edit_->text();
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Build immutable keyframe blocks"), QStringLiteral("agt_mapping_artifacts"),
+      QStringLiteral("agt_build_keyframe_blocks"), arguments);
+  start_relocalization_tool(invocation, [this, output](const ToolResult &result) {
+    if (!result.ok) {
+      relocalization_status_label_->setText(
+          QStringLiteral("Block build failed: %1").arg(result.error_summary));
+      return;
+    }
+    block_directory_edit_->setText(output);
+    display_block_preview(output);
+  });
+}
+
+void MainWindow::display_block_preview(const QString &directory) {
+  QString output_error;
+  if (!validate_relocalization_output_root(&output_error)) {
+    relocalization_status_label_->setText(QStringLiteral("Unsafe preview output: %1").arg(output_error));
+    return;
+  }
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_mapping_artifacts/agt_export_keyframe_block_preview")}, &missing)) {
+    relocalization_status_label_->setText(QStringLiteral("Block assets verified by producer; preview tool unavailable: %1").arg(missing));
+    return;
+  }
+  const QString preview_dir = QDir(evidence_root_edit_->text()).filePath(
+      QStringLiteral("_studio_preview/%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+  const QString output = QDir(preview_dir).filePath(QStringLiteral("block_bounds_display_only.pcd"));
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Verify and preview block bounds"), QStringLiteral("agt_mapping_artifacts"),
+      QStringLiteral("agt_export_keyframe_block_preview"),
+      {QStringLiteral("--block-dir"), directory,
+       QStringLiteral("--source-package"), session_.source_package_dir(),
+       QStringLiteral("--output-pcd"), output});
+  start_relocalization_tool(invocation, [this, output, directory](const ToolResult &result) {
+    if (!result.ok) {
+      relocalization_status_label_->setText(QStringLiteral("Block preview failed: %1").arg(result.error_summary));
+      return;
+    }
+    LoadedPointCloud cloud;
+    std::string error;
+    if (!PCDLoader::load(output.toStdString(), &cloud, &error)) {
+      relocalization_status_label_->setText(QStringLiteral("Could not load block preview: %1").arg(QString::fromStdString(error)));
+      return;
+    }
+    block_directory_edit_->setText(directory);
+    viewer_->set_auxiliary_cloud(AuxiliaryLayer::Blocks, cloud, show_blocks_layer_->isChecked());
+    relocalization_status_label_->setText(QStringLiteral("Block set verified and displayed. Bounds are sparse display-only points."));
+  });
+}
+
+void MainWindow::load_keyframe_blocks() {
+  const QString directory = QFileDialog::getExistingDirectory(
+      this, QStringLiteral("Load immutable block set"), evidence_root_edit_->text());
+  if (directory.isEmpty()) return;
+  block_directory_edit_->setText(directory);
+  display_block_preview(directory);
+}
+
+void MainWindow::choose_topology_annotation() {
+  const QString path = QFileDialog::getOpenFileName(
+      this, QStringLiteral("Open schema-v1 greenhouse topology"),
+      session_.source_package_dir(), QStringLiteral("Topology YAML (*.yaml *.yml)"));
+  if (!path.isEmpty()) topology_path_edit_->setText(path);
+}
+
+void MainWindow::load_structure_annotation() {
+  if (!session_.source_is_mapping_package() || topology_path_edit_->text().isEmpty()) {
+    QMessageBox::warning(this, QStringLiteral("Source and topology required"),
+                         QStringLiteral("Open a mapping source and select its topology YAML."));
+    return;
+  }
+  QString output_error;
+  if (!validate_relocalization_output_root(&output_error)) {
+    QMessageBox::warning(this, QStringLiteral("Unsafe structure preview output"), output_error);
+    return;
+  }
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_mapping_artifacts/agt_export_structure_overlay")}, &missing)) {
+    QMessageBox::critical(this, QStringLiteral("Structure loader unavailable"), missing);
+    return;
+  }
+  const QString scratch = QDir(evidence_root_edit_->text()).filePath(
+      QStringLiteral("_studio_preview/structure_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+  const QString overlay = QDir(scratch).filePath(QStringLiteral("structure_display_only.pcd"));
+  const QString metadata = QDir(scratch).filePath(QStringLiteral("structure_overlay.json"));
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Validate and display row/headland annotation"), QStringLiteral("agt_mapping_artifacts"),
+      QStringLiteral("agt_export_structure_overlay"),
+      {QStringLiteral("--source-package"), session_.source_package_dir(),
+       QStringLiteral("--topology"), topology_path_edit_->text(),
+       QStringLiteral("--output-pcd"), overlay, QStringLiteral("--output-json"), metadata});
+  start_relocalization_tool(invocation, [this, overlay, metadata](const ToolResult &result) {
+    if (!result.ok) {
+      relocalization_status_label_->setText(QStringLiteral("Structure validation failed: %1").arg(result.error_summary));
+      return;
+    }
+    try {
+      const YAML::Node info = YAML::LoadFile(metadata.toStdString());
+      const auto rows = info["rows"] ? info["rows"].size() : 0U;
+      const auto heads = info["headlands"] ? info["headlands"].size() : 0U;
+      const auto scenes = info["scenes"] ? info["scenes"].size() : 0U;
+      const bool confirmed = info["manual_review_confirmed"] && info["manual_review_confirmed"].as<bool>();
+      if (QFileInfo::exists(overlay)) {
+        LoadedPointCloud cloud;
+        std::string error;
+        if (!PCDLoader::load(overlay.toStdString(), &cloud, &error))
+          throw std::runtime_error(error);
+        viewer_->set_auxiliary_cloud(AuxiliaryLayer::Structure, cloud, show_structure_layer_->isChecked());
+      } else {
+        viewer_->clear_auxiliary_cloud(AuxiliaryLayer::Structure);
+      }
+      show_structure_layer_->setEnabled(rows + heads + scenes > 0);
+      relocalization_status_label_->setText(
+          QStringLiteral("Structure validated against this exact source: %1 row(s), %2 headland(s), %3 manual scene(s); %4. Unconfirmed physical IDs stay UNKNOWN.")
+              .arg(static_cast<qulonglong>(rows)).arg(static_cast<qulonglong>(heads))
+              .arg(static_cast<qulonglong>(scenes))
+              .arg(confirmed ? QStringLiteral("FROZEN / MANUALLY REVIEWED") : QStringLiteral("DRAFT / NOT REVIEWED")));
+    } catch (const std::exception &error) {
+      relocalization_status_label_->setText(QStringLiteral("Structure overlay could not be loaded: %1").arg(error.what()));
+    }
+  });
+}
+
+void MainWindow::start_structure_editor() {
+  if (!session_.source_is_mapping_package()) {
+    QMessageBox::warning(this, QStringLiteral("Mapping source required"),
+                         QStringLiteral("Open a mapping source package before creating a topology draft."));
+    return;
+  }
+  QString output_error;
+  if (!validate_relocalization_output_root(&output_error)) {
+    QMessageBox::warning(this, QStringLiteral("Unsafe annotation draft output"), output_error);
+    return;
+  }
+  if (!ExternalToolRunner::program_available(QStringLiteral("ros2"))) {
+    QMessageBox::critical(this, QStringLiteral("ROS 2 unavailable"), QStringLiteral("Source ROS 2 Humble and the workspace overlay first."));
+    return;
+  }
+  const QString revision = QStringLiteral("%1_%2").arg(stamp())
+      .arg(QUuid::createUuid().toString(QUuid::WithoutBraces).left(8));
+  const QString draft_dir = QDir(evidence_root_edit_->text()).filePath(
+      QStringLiteral("annotation_drafts/%1").arg(revision));
+  if (!QDir().mkpath(draft_dir)) {
+    QMessageBox::critical(this, QStringLiteral("Cannot create draft directory"), draft_dir);
+    return;
+  }
+  const QString draft = QDir(draft_dir).filePath(QStringLiteral("greenhouse_topology.yaml"));
+  if (QFileInfo::exists(draft)) {
+    QMessageBox::critical(this, QStringLiteral("Draft revision already exists"), draft);
+    return;
+  }
+  bool opened_frozen_as_draft = false;
+  if (!topology_path_edit_->text().isEmpty() && QFileInfo::exists(topology_path_edit_->text())) {
+    try {
+      const QString selected = topology_path_edit_->text();
+      YAML::Node draft_topology = YAML::LoadFile(selected.toStdString());
+      const QString status = QString::fromStdString(
+          draft_topology["annotation"]["status"].as<std::string>("UNKNOWN"));
+      if (status == QStringLiteral("frozen")) {
+        QFile frozen_file(selected);
+        if (!frozen_file.open(QIODevice::ReadOnly))
+          throw std::runtime_error("could not read the selected frozen annotation");
+        const QByteArray source_hash = QCryptographicHash::hash(
+            frozen_file.readAll(), QCryptographicHash::Sha256).toHex();
+        draft_topology["annotation"]["status"] = "draft";
+        draft_topology["annotation"]["manual_review_confirmed"] = false;
+        draft_topology["annotation"].remove("frozen_at");
+        draft_topology["annotation"]["derived_from_file"] = selected.toStdString();
+        draft_topology["annotation"]["derived_from_sha256"] = source_hash.toStdString();
+        opened_frozen_as_draft = true;
+      }
+      YAML::Emitter emitter;
+      emitter << draft_topology;
+      std::ofstream output(draft.toStdString(), std::ios::binary | std::ios::out | std::ios::trunc);
+      if (!output || !emitter.good())
+        throw std::runtime_error("could not serialize the separate topology draft");
+      output << emitter.c_str() << '\n';
+      output.close();
+      if (!output) throw std::runtime_error("could not finish writing the separate topology draft");
+    } catch (const std::exception &error) {
+      QMessageBox::critical(this, QStringLiteral("Cannot create topology draft"),
+                            QString::fromUtf8(error.what()));
+      return;
+    }
+  }
+  const QStringList args{QStringLiteral("run"), QStringLiteral("agt_greenhouse_annotation"),
+      QStringLiteral("greenhouse_annotator"), QStringLiteral("--map-package"),
+      session_.source_package_dir(), QStringLiteral("--output"), draft};
+  if (!QProcess::startDetached(QStringLiteral("ros2"), args)) {
+    QMessageBox::critical(this, QStringLiteral("Annotator did not start"),
+                          QStringLiteral("Could not start the existing greenhouse annotation tool."));
+    return;
+  }
+  topology_path_edit_->setText(draft);
+  relocalization_status_label_->setText(opened_frozen_as_draft
+      ? QStringLiteral("Existing annotation tool opened a new editable revision derived from the frozen annotation; manual review was reset. Save/review there, then validate and reload this path.")
+      : QStringLiteral("Existing annotation tool opened with a separate working revision. Save/review there, then validate and reload this path."));
+}
+
+void MainWindow::pick_relocalization_point() {
+  if (!viewer_->has_cloud()) return;
+  query_mode_combo_->setCurrentIndex(1);
+  viewer_->set_mode(InteractionMode::Navigate);
+  viewer_->set_query_pick_mode(true);
+  relocalization_status_label_->setText(QStringLiteral("Click once on the 3D map. The click selects the nearest source keyframe; it is not a sensor observation."));
+  viewer_->setFocus();
+}
+
+void MainWindow::run_relocalization_query() {
+  if (!session_.source_is_mapping_package() || block_directory_edit_->text().isEmpty()) {
+    QMessageBox::warning(this, QStringLiteral("Source and blocks required"),
+                         QStringLiteral("Open a mapping source and load/build a verified block set first."));
+    return;
+  }
+  QString output_error;
+  if (!validate_relocalization_output_root(&output_error)) {
+    QMessageBox::warning(this, QStringLiteral("Unsafe evidence output"), output_error);
+    return;
+  }
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_map_localization_benchmark/agt_run_relocalization_query")}, &missing)) {
+    QMessageBox::critical(this, QStringLiteral("Offline query unavailable"), missing);
+    return;
+  }
+  QStringList arguments{QStringLiteral("--map-package"), session_.source_package_dir(),
+      QStringLiteral("--block-dir"), block_directory_edit_->text(),
+      QStringLiteral("--output-root"), evidence_root_edit_->text(),
+      QStringLiteral("--query-accumulation-frames"), query_frames_combo_->currentData().toString(),
+      QStringLiteral("--candidate-top-k"), QString::number(candidate_top_k_spin_->value())};
+  if (!topology_path_edit_->text().trimmed().isEmpty())
+    arguments << QStringLiteral("--topology") << topology_path_edit_->text().trimmed();
+  if (!native_localizer_path_edit_->text().trimmed().isEmpty())
+    arguments << QStringLiteral("--native-localizer-path")
+              << native_localizer_path_edit_->text().trimmed();
+  const QString mode = query_mode_combo_->currentData().toString();
+  if (mode == QStringLiteral("keyframe")) {
+    arguments << QStringLiteral("--query-keyframe") << QString::number(query_keyframe_spin_->value());
+  } else if (mode == QStringLiteral("map_point")) {
+    if (!has_picked_query_point_) {
+      QMessageBox::information(this, QStringLiteral("Pick a map point"),
+                               QStringLiteral("Use Pick on 3D map and click near the desired location first."));
+      return;
+    }
+    arguments << QStringLiteral("--map-x") << QString::number(picked_query_x_, 'g', 12)
+              << QStringLiteral("--query-y") << QString::number(picked_query_y_, 'g', 12);
+  } else {
+    if (topology_path_edit_->text().isEmpty() || row_id_edit_->text().trimmed().isEmpty()) {
+      QMessageBox::warning(this, QStringLiteral("Reviewed row required"),
+                           QStringLiteral("Select a frozen topology and a physical row ID."));
+      return;
+    }
+    arguments << QStringLiteral("--row-position") << QStringLiteral("--row-id")
+              << row_id_edit_->text().trimmed() << QStringLiteral("--along-row-s-m")
+              << QString::number(along_row_s_spin_->value(), 'g', 12);
+  }
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Run sparse offline GLOBAL/Top-K/GICP query"),
+      QStringLiteral("agt_map_localization_benchmark"),
+      QStringLiteral("agt_run_relocalization_query"), arguments);
+  start_relocalization_tool(invocation, [this](const ToolResult &result) {
+    if (!result.ok) {
+      relocalization_status_label_->setText(QStringLiteral("Query job failed: %1").arg(result.error_summary));
+      return;
+    }
+    const QRegularExpression expression(QStringLiteral("\\\"evidence_path\\\"\\s*:\\s*\\\"([^\\\"]+)\\\""));
+    const auto match = expression.match(result.output);
+    if (match.hasMatch()) {
+      evidence_path_edit_->setText(match.captured(1));
+      load_relocalization_evidence();
+    } else {
+      relocalization_status_label_->setText(QStringLiteral("Query completed, but its evidence path was not found in tool output."));
+    }
+  });
+}
+
+void MainWindow::choose_relocalization_evidence() {
+  const QString path = QFileDialog::getExistingDirectory(
+      this, QStringLiteral("Load saved Relocalization Evidence"), evidence_root_edit_->text());
+  if (path.isEmpty()) return;
+  evidence_path_edit_->setText(path);
+  load_relocalization_evidence();
+}
+
+void MainWindow::load_relocalization_evidence() {
+  const QString evidence = evidence_path_edit_->text();
+  if (evidence.isEmpty() || !QFileInfo::exists(evidence)) return;
+  if (!session_.source_is_mapping_package()) {
+    QMessageBox::warning(this, QStringLiteral("Source required for staleness check"),
+                         QStringLiteral("Open the exact mapping source before loading evidence."));
+    return;
+  }
+  if (block_directory_edit_->text().isEmpty()) {
+    QMessageBox::warning(this, QStringLiteral("Block set required for staleness check"),
+                         QStringLiteral("Load the exact immutable block set before loading evidence."));
+    return;
+  }
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_map_localization_benchmark/agt_verify_relocalization_evidence")}, &missing)) {
+    QMessageBox::critical(this, QStringLiteral("Evidence verifier unavailable"), missing);
+    return;
+  }
+  QStringList args{evidence, QStringLiteral("--map-package"), session_.source_package_dir()};
+  if (!block_directory_edit_->text().isEmpty())
+    args << QStringLiteral("--block-dir") << block_directory_edit_->text();
+  if (!topology_path_edit_->text().isEmpty())
+    args << QStringLiteral("--topology") << topology_path_edit_->text();
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Verify evidence and current source/block identity"),
+      QStringLiteral("agt_map_localization_benchmark"),
+      QStringLiteral("agt_verify_relocalization_evidence"), args);
+  start_relocalization_tool(invocation, [this, evidence](const ToolResult &result) {
+    if (!result.ok) {
+      relocalization_status_label_->setText(QStringLiteral("Evidence invalid: %1").arg(result.error_summary));
+      return;
+    }
+    try {
+      const YAML::Node manifest = YAML::LoadFile(QDir(evidence).filePath(QStringLiteral("manifest.yaml")).toStdString());
+      const YAML::Node query = manifest["query"];
+      const YAML::Node evidence_node = manifest["evidence"];
+      const YAML::Node candidates = evidence_node["candidate_ambiguity"]["candidates"];
+      candidate_table_->setRowCount(0);
+      for (const auto &candidate : candidates) {
+        const int row = candidate_table_->rowCount();
+        candidate_table_->insertRow(row);
+        const YAML::Node blocks = candidate["candidate_block_ids"];
+        QStringList block_ids;
+        for (const auto &id : blocks) block_ids << QString::fromStdString(id.as<std::string>());
+        const auto descriptor = candidate["descriptor_sector_similarity"];
+        const auto attempted = candidate["gicp_attempted"];
+        const auto converged = candidate["gicp_converged"];
+        const QString values[] = {
+          QString::number(candidate["rank"].as<int>()),
+          QString::number(candidate["candidate_keyframe"].as<int>()),
+          block_ids.join(QStringLiteral(",")),
+          yaml_number_or_unknown(descriptor, 3),
+          gicp_state(attempted, converged),
+          QString::fromStdString(candidate["row_id"].as<std::string>())};
+        for (int column = 0; column < 6; ++column)
+          candidate_table_->setItem(row, column, new QTableWidgetItem(values[column]));
+      }
+      loaded_evidence_directory_ = evidence;
+      const QString query_overlay_path = QDir(evidence).filePath(
+          QStringLiteral("analysis/visualization/query_at_estimated_pose_display_only.pcd"));
+      if (QFileInfo::exists(query_overlay_path)) {
+        LoadedPointCloud cloud;
+        std::string error;
+        if (PCDLoader::load(query_overlay_path.toStdString(), &cloud, &error))
+          viewer_->set_auxiliary_cloud(AuxiliaryLayer::Query, cloud, show_query_layer_->isChecked());
+      } else {
+        viewer_->clear_auxiliary_cloud(AuxiliaryLayer::Query);
+      }
+      viewer_->clear_auxiliary_cloud(AuxiliaryLayer::Candidate);
+      show_query_layer_->setEnabled(QFileInfo::exists(query_overlay_path));
+      show_candidate_layer_->setEnabled(candidates.size() > 0);
+      QStringList details;
+      const auto source = manifest["source"];
+      const auto block_set = manifest["block_set"];
+      const auto algorithm = manifest["algorithm"];
+      const auto pose = query["map_pose"];
+      details << QStringLiteral("Query: %1 | KF %2 | t=%3 | x/y/yaw=%4 / %5 / %6 deg | row=%7 | s=%8 | frames=%9")
+          .arg(QString::fromStdString(source["identity"].as<std::string>()))
+          .arg(query["keyframe"].as<int>())
+          .arg(query["timestamp"].as<double>(), 0, 'f', 6)
+          .arg(yaml_number_or_unknown(pose["x_m"], 3))
+          .arg(yaml_number_or_unknown(pose["y_m"], 3))
+          .arg(yaml_number_or_unknown(pose["yaw_deg"], 2))
+          .arg(QString::fromStdString(query["row_id"].as<std::string>()))
+          .arg(query["along_row_s_m"] && !query["along_row_s_m"].IsNull()
+                   ? QString::number(query["along_row_s_m"].as<double>(), 'f', 2)
+                   : QStringLiteral("UNKNOWN"))
+          .arg(query["query_accumulation_frames"].as<int>());
+      details << QStringLiteral("Block set: %1 r%2 | block size=%3 | query-excluded blocks=%4 | frames=%5")
+          .arg(QString::fromStdString(block_set["block_set_id"].as<std::string>()))
+          .arg(block_set["revision"].as<int>())
+          .arg(block_set["block_keyframe_count"].as<int>())
+          .arg(static_cast<qulonglong>(block_set["query_excluded_block_ids"]
+                                           ? block_set["query_excluded_block_ids"].size() : 0U))
+          .arg(static_cast<qulonglong>(block_set["query_excluded_keyframes"]
+                                           ? block_set["query_excluded_keyframes"].size() : 0U));
+      const auto query_blocks = block_set["query_block_details"];
+      for (const auto &block : query_blocks) {
+        const auto bounds = block["bbox"];
+        details << QStringLiteral("Excluded %1 r%2 center KF %3; frames [%4]; bounds %5; cloud SHA-256 %6")
+            .arg(QString::fromStdString(block["block_id"].as<std::string>()))
+            .arg(block["revision"].as<int>()).arg(block["center_keyframe_id"].as<int>())
+            .arg(QString::fromStdString(YAML::Dump(block["ordered_patch_ids"])))
+            .arg(QString::fromStdString(YAML::Dump(bounds)))
+            .arg(QString::fromStdString(block["output_content_sha256"].as<std::string>()));
+      }
+      details << QStringLiteral("Analysis: Top-K=%1 | config SHA-256=%2 | native candidate binary SHA-256=%3")
+          .arg(algorithm["candidate_top_k"].as<int>())
+          .arg(QString::fromStdString(algorithm["config_digest"].as<std::string>()))
+          .arg(QString::fromStdString(algorithm["binary_sha256"]["candidate_bbs_gicp_localizer"].as<std::string>()));
+      details << QStringLiteral("Reference: %1 (same-session=%2, independent ground truth=%3) | raw trace: %4")
+          .arg(QString::fromStdString(manifest["reference"]["type"].as<std::string>()))
+          .arg(manifest["reference"]["same_session"].as<bool>() ? QStringLiteral("yes") : QStringLiteral("no"))
+          .arg(manifest["reference"]["independent_ground_truth"].as<bool>() ? QStringLiteral("yes") : QStringLiteral("no"))
+          .arg(QString::fromStdString(manifest["analysis_artifacts"]["raw_trace"].as<std::string>()));
+      relocalization_details_label_->setText(details.join(QLatin1Char('\n')));
+      const QString revision_state = result.output.contains(QStringLiteral("\"revision_state\": \"STALE\""))
+          ? QStringLiteral("STALE")
+          : (result.output.contains(QStringLiteral("\"revision_state\": \"CURRENT\""))
+             ? QStringLiteral("CURRENT") : QStringLiteral("BLOCK NOT CHECKED"));
+      relocalization_status_label_->setText(
+          QStringLiteral("Evidence integrity PASS; revision %1. Query KF %2, %3 accumulated frame(s), row %4; reference is %5, not independent ground truth. Select a candidate row to overlay it.")
+              .arg(revision_state).arg(query["keyframe"].as<int>())
+              .arg(query["query_accumulation_frames"].as<int>())
+              .arg(QString::fromStdString(query["row_id"].as<std::string>()))
+              .arg(QString::fromStdString(manifest["reference"]["type"].as<std::string>())));
+    } catch (const std::exception &error) {
+      relocalization_status_label_->setText(QStringLiteral("Evidence manifest could not be loaded: %1").arg(error.what()));
+    }
+  });
+}
+
+void MainWindow::select_candidate_overlay(int row, int) {
+  if (loaded_evidence_directory_.isEmpty() || row < 0 || !candidate_table_->item(row, 0)) return;
+  const int rank = candidate_table_->item(row, 0)->text().toInt();
+  QString output_error;
+  if (!validate_relocalization_output_root(&output_error)) {
+    relocalization_status_label_->setText(QStringLiteral("Unsafe candidate preview output: %1").arg(output_error));
+    return;
+  }
+  try {
+    const YAML::Node manifest = YAML::LoadFile(
+        QDir(loaded_evidence_directory_).filePath(QStringLiteral("manifest.yaml")).toStdString());
+    YAML::Node candidate;
+    const YAML::Node candidates = manifest["evidence"]["candidate_ambiguity"]["candidates"];
+    for (const auto &item : candidates) {
+      if (item["rank"].as<int>() == rank) {
+        candidate = static_cast<const YAML::Node &>(item);
+        break;
+      }
+    }
+    if (!candidate) throw std::runtime_error("selected rank is absent from the evidence manifest");
+    QStringList details;
+    details << QStringLiteral("Selected candidate rank %1: KF %2 patch %3 | block(s) %4 | row %5 | s=%6")
+        .arg(rank).arg(candidate["candidate_keyframe"].as<int>())
+        .arg(QString::fromStdString(candidate["candidate_patch_id"].as<std::string>()))
+        .arg(QString::fromStdString(YAML::Dump(candidate["candidate_block_ids"])))
+        .arg(QString::fromStdString(candidate["row_id"].as<std::string>()))
+        .arg(candidate["along_row_s_m"] && !candidate["along_row_s_m"].IsNull()
+                 ? QString::number(candidate["along_row_s_m"].as<double>(), 'f', 2)
+                 : QStringLiteral("UNKNOWN"));
+    details << QStringLiteral("Descriptor sector similarity=%1 | ring distance=%2 | BBS score=%3 | GICP attempted=%4 converged=%5 fitness=%6")
+        .arg(yaml_number_or_unknown(candidate["descriptor_sector_similarity"], 4))
+        .arg(yaml_number_or_unknown(candidate["descriptor_ring_distance"], 4))
+        .arg(yaml_number_or_unknown(candidate["bbs_score"], 4))
+        .arg(yaml_boolean_or_unknown(candidate["gicp_attempted"], QStringLiteral("yes"), QStringLiteral("no")))
+        .arg(gicp_state(candidate["gicp_attempted"], candidate["gicp_converged"]))
+        .arg(yaml_number_or_unknown(candidate["gicp_fitness"], 5));
+    details << QStringLiteral("Reference-relative classification=%1 | estimated XY error=%2 m | yaw error=%3 deg | BBS time=%4 ms")
+        .arg(QString::fromStdString(candidate["classification"].as<std::string>()))
+        .arg(candidate["classification"].as<std::string>() != "UNKNOWN" &&
+                     manifest["evidence"]["empirical_global_result"]["reference_error"]["xy_m"] &&
+                     !manifest["evidence"]["empirical_global_result"]["reference_error"]["xy_m"].IsNull()
+                 ? QString::number(manifest["evidence"]["empirical_global_result"]["reference_error"]["xy_m"].as<double>(), 'f', 3)
+                 : QStringLiteral("UNKNOWN"))
+        .arg(candidate["classification"].as<std::string>() != "UNKNOWN" &&
+                     manifest["evidence"]["empirical_global_result"]["reference_error"]["yaw_deg"] &&
+                     !manifest["evidence"]["empirical_global_result"]["reference_error"]["yaw_deg"].IsNull()
+                 ? QString::number(manifest["evidence"]["empirical_global_result"]["reference_error"]["yaw_deg"].as<double>(), 'f', 2)
+                 : QStringLiteral("UNKNOWN"))
+        .arg(yaml_number_or_unknown(candidate["bbs_elapsed_ms"], 1));
+    relocalization_details_label_->setText(details.join(QLatin1Char('\n')));
+  } catch (const std::exception &error) {
+    relocalization_details_label_->setText(QStringLiteral("Candidate metadata could not be loaded: %1").arg(error.what()));
+  }
+  QString missing;
+  if (!tools_available({QStringLiteral("agt_map_localization_benchmark/agt_export_relocalization_candidate")}, &missing)) {
+    relocalization_status_label_->setText(QStringLiteral("Candidate overlay tool unavailable: %1").arg(missing));
+    return;
+  }
+  const QString scratch = QDir(evidence_root_edit_->text()).filePath(
+      QStringLiteral("_studio_preview/candidate_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+  const QString output = QDir(scratch).filePath(QStringLiteral("candidate_display_only.pcd"));
+  QStringList arguments{QStringLiteral("--evidence-dir"), loaded_evidence_directory_,
+                        QStringLiteral("--map-package"), session_.source_package_dir(),
+                        QStringLiteral("--block-dir"), block_directory_edit_->text(),
+                        QStringLiteral("--rank"), QString::number(rank),
+                        QStringLiteral("--output-pcd"), output};
+  if (!topology_path_edit_->text().isEmpty())
+    arguments << QStringLiteral("--topology") << topology_path_edit_->text();
+  const auto invocation = ExternalToolRunner::ros2_run(
+      QStringLiteral("Load verified Top-K candidate overlay"),
+      QStringLiteral("agt_map_localization_benchmark"),
+      QStringLiteral("agt_export_relocalization_candidate"),
+      arguments);
+  start_relocalization_tool(invocation, [this, output, rank](const ToolResult &result) {
+    if (!result.ok) {
+      relocalization_status_label_->setText(QStringLiteral("Candidate overlay unavailable: %1").arg(result.error_summary));
+      return;
+    }
+    LoadedPointCloud cloud;
+    std::string error;
+    if (!PCDLoader::load(output.toStdString(), &cloud, &error)) {
+      relocalization_status_label_->setText(QStringLiteral("Candidate PCD failed to load: %1").arg(QString::fromStdString(error)));
+      return;
+    }
+    viewer_->set_auxiliary_cloud(AuxiliaryLayer::Candidate, cloud, show_candidate_layer_->isChecked());
+    relocalization_status_label_->setText(QStringLiteral("Candidate rank %1 loaded in source map frame; display only, analysis inputs unchanged.").arg(rank));
+  });
+}
+
 void MainWindow::set_point_color_mode(PointColorMode mode) {
   const bool confidence = mode != PointColorMode::Height && mode != PointColorMode::Solid;
   if (confidence && confidence_model_.empty()) return;
@@ -857,6 +1646,11 @@ void MainWindow::refresh_confidence_editor_ui() {
 }
 
 bool MainWindow::confirm_discard_confidence_edits() {
+  if (tool_runner_.is_running()) {
+    QMessageBox::warning(this, QStringLiteral("Map Studio job running"),
+        QStringLiteral("Wait for the current mapping, block, structure, or relocalization job to finish before switching sources."));
+    return false;
+  }
   if (confidence_review_runner_.is_running()) {
     QMessageBox::warning(this, QStringLiteral("Core review running"),
         QStringLiteral("Wait until the separate core review finishes before switching "
@@ -868,6 +1662,30 @@ bool MainWindow::confirm_discard_confidence_edits() {
       QStringLiteral("Unsaved manual confidence override intent would be lost. "
                      "Discard edits? The source map and verified derivative are unchanged."),
       QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Discard;
+}
+
+bool MainWindow::validate_relocalization_output_root(QString *error) const {
+  const QString root = QDir::cleanPath(evidence_root_edit_ ? evidence_root_edit_->text().trimmed() : QString());
+  if (root.isEmpty() || root == QStringLiteral(".")) {
+    if (error) *error = QStringLiteral("Choose a new-asset output root first.");
+    return false;
+  }
+  if (session_.source_is_mapping_package() &&
+      path_is_same_or_within(root, session_.source_package_dir())) {
+    if (error) *error = QStringLiteral("The output root must be outside the read-only mapping source package.");
+    return false;
+  }
+  if (block_directory_edit_ && !block_directory_edit_->text().isEmpty() &&
+      path_is_same_or_within(root, block_directory_edit_->text())) {
+    if (error) *error = QStringLiteral("The output root must be outside the immutable block set.");
+    return false;
+  }
+  if (evidence_path_edit_ && !evidence_path_edit_->text().isEmpty() &&
+      path_is_same_or_within(root, evidence_path_edit_->text())) {
+    if (error) *error = QStringLiteral("The output root must be outside the immutable evidence bundle.");
+    return false;
+  }
+  return true;
 }
 
 void MainWindow::clear_geometry_view() {
@@ -1299,6 +2117,32 @@ void MainWindow::set_source(const QString &pcd_path, const QString &package_dir)
     base = QDir(info.absolutePath()).filePath(info.completeBaseName() + QStringLiteral("_studio"));
   }
   session_.set_work_dir(base);
+  if (block_directory_edit_) block_directory_edit_->clear();
+  if (topology_path_edit_) topology_path_edit_->clear();
+  if (evidence_path_edit_) evidence_path_edit_->clear();
+  if (candidate_table_) candidate_table_->setRowCount(0);
+  loaded_evidence_directory_.clear();
+  has_picked_query_point_ = false;
+  if (query_x_edit_) query_x_edit_->clear();
+  if (query_y_edit_) query_y_edit_->clear();
+  if (query_keyframe_spin_) {
+    int maximum = 2000000;
+    if (!package_dir.isEmpty()) {
+      try {
+        const YAML::Node metadata = YAML::LoadFile(QDir(package_dir).filePath(QStringLiteral("metadata.yaml")).toStdString());
+        maximum = std::max(0, metadata["keyframe_count"].as<int>(1) - 1);
+      } catch (const std::exception &) {}
+    }
+    query_keyframe_spin_->setRange(0, maximum);
+    query_keyframe_spin_->setValue(std::min(query_keyframe_spin_->value(), maximum));
+  }
+  if (relocalization_status_label_)
+    relocalization_status_label_->setText(package_dir.isEmpty()
+        ? QStringLiteral("Open a mapping source package to enable block-based offline relocalization.")
+        : QStringLiteral("Mapping source loaded. Build or load a checksum-verified immutable block set."));
+  for (auto layer : {AuxiliaryLayer::Structure, AuxiliaryLayer::Blocks,
+                     AuxiliaryLayer::Query, AuxiliaryLayer::Candidate})
+    viewer_->clear_auxiliary_cloud(layer);
   session_.publish_target().map_root = default_map_root_;
   session_.publish_target().map_id =
       QFileInfo(package_dir.isEmpty() ? pcd_path : package_dir).completeBaseName();
@@ -2598,10 +3442,6 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     event->ignore();
     return;
   }
-  if (!confirm_discard_confidence_edits()) {
-    event->ignore();
-    return;
-  }
   if (tool_runner_.is_running()) {
     if (QMessageBox::question(this, QStringLiteral("Tool running"),
                               QStringLiteral("An external tool is still running. Cancel it and quit?"),
@@ -2610,6 +3450,14 @@ void MainWindow::closeEvent(QCloseEvent *event) {
       return;
     }
     cancel_tool();
+  }
+  if (confidence_editor_.dirty() &&
+      QMessageBox::warning(this, QStringLiteral("DIRTY spatial overrides"),
+          QStringLiteral("Unsaved manual confidence override intent would be lost. Discard edits? "
+                         "The source map and verified derivative are unchanged."),
+          QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Discard) {
+    event->ignore();
+    return;
   }
   const bool unapplied = (session_.has_3d_edits() && session_.state(WorkflowSession::Refine) != StageState::Fresh) ||
                          (session_.has_2d_edits() && session_.state(WorkflowSession::Patch) != StageState::Fresh);

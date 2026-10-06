@@ -1,5 +1,9 @@
 # AGT LIO–PGO Mapping
 
+## MapStudio Relocalization MVP — SOFTWARE PARTIAL
+
+Implemented: immutable keyframe blocks and index, evidence contracts, sparse offline GLOBAL/Top-K/GICP queries, candidate inspection and query/candidate overlays. The KF590 green-house run recorded a same-session `FALSE_ACCEPT` diagnostic. Reviewed row/headland freeze, row-middle/end/headland query coverage, a representative 20–50 query set, interactive close/reopen acceptance, independent localization ground truth, and the scientific conclusion remain incomplete. This is not production-ready.
+
 ROS 2 Humble 的三维 LiDAR 建图框架：支持选择 LIO-SAM no-loop、Point-LIO、FAST-LIVO2 LIO-only，保留 FAST-LIO2 legacy/experimental；统一前端与地图包接口，现有 PGO、BBS/GICP 与地图审阅流程继续保留。
 
 它面向建图研究协作，不包含 Nav2、定位运行时、HMI、RTK 或底盘控制。FAST-LIO2、PGO、HBA 和 Batch-LIO 保持为锁定版本的外部依赖；本仓库只实现稳定的传感器、前后端和地图产物接口。

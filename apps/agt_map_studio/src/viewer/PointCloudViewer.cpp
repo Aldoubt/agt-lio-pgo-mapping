@@ -46,6 +46,11 @@ PointCloudViewer::~PointCloudViewer() {
     confidence_status_buffer_.destroy();
     confidence_color_buffer_.destroy();
     axis_buffer_.destroy();
+    for (auto &layer : auxiliary_clouds_) {
+      layer.positions.destroy();
+      layer.statuses.destroy();
+      layer.colors.destroy();
+    }
     doneCurrent();
   }
 }
@@ -54,6 +59,11 @@ void PointCloudViewer::set_cloud(LoadedPointCloud cloud,
                                  const QString &filename) {
   cloud_ = std::move(cloud);
   filename_ = filename;
+  for (auto &layer : auxiliary_clouds_) {
+    layer.xyz.clear();
+    layer.visible = false;
+    layer.dirty = true;
+  }
   status_buffer_dirty_ = true;
   if (has_cloud()) {
     reset_camera();
@@ -61,9 +71,50 @@ void PointCloudViewer::set_cloud(LoadedPointCloud cloud,
   if (gl_ready_) {
     makeCurrent();
     upload_cloud();
+    upload_auxiliary_clouds();
     doneCurrent();
   }
   emit_stats();
+  update();
+}
+
+void PointCloudViewer::set_auxiliary_cloud(AuxiliaryLayer layer_id,
+                                            const LoadedPointCloud &cloud,
+                                            bool visible) {
+  auto &layer = auxiliary_clouds_.at(static_cast<std::size_t>(layer_id));
+  layer.xyz = cloud.xyz;
+  layer.visible = visible && !layer.xyz.empty();
+  const QVector3D colors[] = {QVector3D(0.20F, 0.90F, 0.35F),
+                              QVector3D(0.70F, 0.45F, 1.00F),
+                              QVector3D(0.05F, 0.90F, 1.00F),
+                              QVector3D(1.00F, 0.34F, 0.08F)};
+  layer.color = colors[static_cast<std::size_t>(layer_id)];
+  layer.dirty = true;
+  if (gl_ready_) {
+    makeCurrent();
+    upload_auxiliary_clouds();
+    doneCurrent();
+  }
+  update();
+}
+
+void PointCloudViewer::set_auxiliary_visible(AuxiliaryLayer layer_id,
+                                              bool visible) {
+  auto &layer = auxiliary_clouds_.at(static_cast<std::size_t>(layer_id));
+  layer.visible = visible && !layer.xyz.empty();
+  update();
+}
+
+void PointCloudViewer::clear_auxiliary_cloud(AuxiliaryLayer layer_id) {
+  auto &layer = auxiliary_clouds_.at(static_cast<std::size_t>(layer_id));
+  layer.xyz.clear();
+  layer.visible = false;
+  layer.dirty = true;
+  if (gl_ready_) {
+    makeCurrent();
+    upload_auxiliary_clouds();
+    doneCurrent();
+  }
   update();
 }
 
@@ -461,6 +512,11 @@ void PointCloudViewer::initializeGL() {
   confidence_status_buffer_.create();
   confidence_color_buffer_.create();
   axis_buffer_.create();
+  for (auto &layer : auxiliary_clouds_) {
+    layer.positions.create();
+    layer.statuses.create();
+    layer.colors.create();
+  }
   const float axis[] = {
       0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
       0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
@@ -475,6 +531,7 @@ void PointCloudViewer::initializeGL() {
   upload_confidence_cloud();
   upload_confidence_statuses();
   upload_confidence_colors();
+  upload_auxiliary_clouds();
 }
 
 void PointCloudViewer::resizeGL(int width, int height) {
@@ -495,6 +552,10 @@ void PointCloudViewer::paintGL() {
     if (confidence_colors_dirty_) upload_confidence_colors();
   } else if (status_buffer_dirty_) {
     upload_statuses();
+  }
+  if (std::any_of(auxiliary_clouds_.begin(), auxiliary_clouds_.end(),
+                  [](const AuxiliaryCloud &layer) { return layer.dirty; })) {
+    upload_auxiliary_clouds();
   }
   if (shader_) {
     shader_->bind();
@@ -531,6 +592,29 @@ void PointCloudViewer::paintGL() {
       shader_->disableAttributeArray("a_status");
       if (confidence) shader_->disableAttributeArray("a_rgb");
       positions.release();
+    }
+    shader_->setUniformValue("u_height_coloring", 0);
+    shader_->setUniformValue("u_confidence_mode", 1);
+    shader_->setUniformValue("u_point_size", std::max(3.0F, point_size_ + 1.5F));
+    for (auto &layer : auxiliary_clouds_) {
+      if (!layer.visible || layer.xyz.empty() || !layer.positions.isCreated() ||
+          !layer.statuses.isCreated() || !layer.colors.isCreated()) continue;
+      layer.positions.bind();
+      shader_->enableAttributeArray("a_position");
+      shader_->setAttributeBuffer("a_position", GL_FLOAT, 0, 3);
+      layer.statuses.bind();
+      shader_->enableAttributeArray("a_status");
+      shader_->setAttributeBuffer("a_status", GL_FLOAT, 0, 1);
+      layer.colors.bind();
+      shader_->enableAttributeArray("a_rgb");
+      shader_->setAttributeBuffer("a_rgb", GL_FLOAT, 0, 3);
+      glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(layer.xyz.size() / 3U));
+      shader_->disableAttributeArray("a_position");
+      shader_->disableAttributeArray("a_status");
+      shader_->disableAttributeArray("a_rgb");
+      layer.colors.release();
+      layer.statuses.release();
+      layer.positions.release();
     }
     if (show_axis_ && axis_buffer_.isCreated()) {
       draw_axes(mvp);
@@ -768,6 +852,36 @@ void PointCloudViewer::upload_confidence_colors() {
   confidence_colors_dirty_ = false;
 }
 
+void PointCloudViewer::upload_auxiliary_clouds() {
+  if (!gl_ready_) return;
+  for (auto &layer : auxiliary_clouds_) {
+    if (!layer.dirty || !layer.positions.isCreated() ||
+        !layer.statuses.isCreated() || !layer.colors.isCreated()) continue;
+    layer.positions.bind();
+    layer.positions.setUsagePattern(QOpenGLBuffer::StaticDraw);
+    layer.positions.allocate(layer.xyz.empty() ? nullptr : layer.xyz.data(),
+                             static_cast<int>(layer.xyz.size() * sizeof(float)));
+    layer.positions.release();
+    std::vector<float> statuses(layer.xyz.size() / 3U, 0.0F);
+    layer.statuses.bind();
+    layer.statuses.setUsagePattern(QOpenGLBuffer::StaticDraw);
+    layer.statuses.allocate(statuses.empty() ? nullptr : statuses.data(),
+                            static_cast<int>(statuses.size() * sizeof(float)));
+    layer.statuses.release();
+    std::vector<float> colors;
+    colors.reserve(statuses.size() * 3U);
+    for (std::size_t i = 0; i < statuses.size(); ++i) {
+      colors.insert(colors.end(), {layer.color.x(), layer.color.y(), layer.color.z()});
+    }
+    layer.colors.bind();
+    layer.colors.setUsagePattern(QOpenGLBuffer::StaticDraw);
+    layer.colors.allocate(colors.empty() ? nullptr : colors.data(),
+                          static_cast<int>(colors.size() * sizeof(float)));
+    layer.colors.release();
+    layer.dirty = false;
+  }
+}
+
 void PointCloudViewer::tick() {
   camera_.update(0.016F);
   update();
@@ -848,6 +962,14 @@ void PointCloudViewer::keyReleaseEvent(QKeyEvent *event) {
 void PointCloudViewer::mousePressEvent(QMouseEvent *event) {
   setFocus();
   last_mouse_position_ = event->pos();
+  if (query_pick_mode_ && event->button() == Qt::LeftButton && has_cloud()) {
+    query_pick_mode_ = false;
+    left_drag_ = false;
+    const auto point = unproject_to_ground(event->pos(), cloud_.center().z());
+    if (point) emit map_point_selected(point->x(), point->y(), point->z());
+    event->accept();
+    return;
+  }
   if (confidence_mode() && event->button() == Qt::LeftButton &&
       (event->modifiers() & Qt::ControlModifier)) {
     pick_confidence_voxel(event->pos());
