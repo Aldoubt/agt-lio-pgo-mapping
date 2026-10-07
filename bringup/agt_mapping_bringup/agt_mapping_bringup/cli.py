@@ -47,6 +47,7 @@ def parser():
                       help='Map from the connected MID360 instead of a bag; always records a raw bag')
     live.add_argument('--robot', choices=('bunker_v1', 'yhs_v1'), default='bunker_v1',
                       help='live sensor owner; YHS requires an explicit YHS IP config and never starts a chassis')
+    live.add_argument('--fastlio-config', help='Mounted measured FAST-LIO2 calibration YAML; no image rebuild')
     live.add_argument('--livox-config', help='livox_ros_driver2 MID360 JSON (YHS: REQUIRED; no Bunker default)')
     live.add_argument('--publish-freq', type=float, default=10.0, help='Livox publish frequency Hz (5/10/20/50)')
     live.add_argument('--frame-id', default='livox_frame', help='Livox driver frame_id')
@@ -88,6 +89,11 @@ def _live_plan(args, workspace, setup, ros_setup, start_rviz):
         'startup_timeout': args.startup_timeout, 'export_timeout': args.export_timeout,
         'drain_seconds': args.drain_seconds,
     }
+    if args.fastlio_config:
+        lio = Path(args.fastlio_config).expanduser().resolve()
+        if not lio.is_file():
+            raise PreflightError(f'FAST-LIO2 configuration missing: {lio}')
+        parameters['fastlio_config'] = str(lio)
     launch_file = ('mapping_live_yhs_mid360.launch.py' if args.robot == 'yhs_v1'
                    else 'mapping_live_mid360.launch.py')
     command = ['ros2', 'launch', 'agt_mapping_bringup', launch_file]

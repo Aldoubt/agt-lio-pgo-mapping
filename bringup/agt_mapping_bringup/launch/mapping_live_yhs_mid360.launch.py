@@ -15,6 +15,8 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument('livox_config',
                               description='Required YHS-specific MID360 host/lidar IP JSON; never use Bunker default'),
+        DeclareLaunchArgument('fastlio_config', default_value='',
+                              description='Optional mounted FAST-LIO2 calibration YAML'),
         DeclareLaunchArgument('output_dir', description='New or empty mapping run output directory'),
         DeclareLaunchArgument('lidar_topic', default_value='/livox/lidar'),
         DeclareLaunchArgument('imu_topic', default_value='/livox/imu'),

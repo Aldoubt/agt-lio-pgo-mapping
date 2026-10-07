@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import yaml
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -35,6 +36,7 @@ class MappingArtifactExporter(Node):
     def __init__(self):
         super().__init__('mapping_artifact_exporter')
         self.declare_parameter('output_dir', 'output')
+        self.declare_parameter('calibration_file', '')
         self.declare_parameter('keyframes_topic', '/mapping/backend/keyframes')
         self.declare_parameter('map_pose_topic', '/mapping/backend/map_pose')
         self.declare_parameter('status_topic', '/mapping/backend/status')
@@ -55,7 +57,9 @@ class MappingArtifactExporter(Node):
         self.backend_status = message.data
         if '"optimized":true' in message.data:
             source = message.data.split('"artifact_source":"', 1)[1].split('"', 1)[0]
-            root = ArtifactWriter(Path(self.get_parameter('output_dir').value)).write_optimized_pgo(source)
+            calibration_path = self.get_parameter('calibration_file').value
+            calibration = yaml.safe_load(Path(calibration_path).read_text()) if calibration_path else None
+            root = ArtifactWriter(Path(self.get_parameter('output_dir').value)).write_optimized_pgo(source, calibration)
             self.get_logger().info(f'Wrote mapping artifact: {root}')
 
 

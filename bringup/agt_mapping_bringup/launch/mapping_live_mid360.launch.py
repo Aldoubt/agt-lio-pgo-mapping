@@ -8,6 +8,8 @@ from agt_mapping_bringup.live_launch import launch_live_session
 def generate_launch_description():
     arguments = [
         DeclareLaunchArgument('livox_config', description='livox_ros_driver2 MID360 user config JSON'),
+        DeclareLaunchArgument('fastlio_config', default_value='',
+                              description='Optional mounted FAST-LIO2 calibration YAML'),
         DeclareLaunchArgument('output_dir', description='New or empty run output directory'),
         DeclareLaunchArgument('lidar_topic', default_value='/livox/lidar'),
         DeclareLaunchArgument('imu_topic', default_value='/livox/imu'),

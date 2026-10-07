@@ -65,7 +65,10 @@ def launch_live_session(context, *, sensor_only=False):
     if options['export_timeout'] <= options['drain_seconds']:
         raise ValueError('export_timeout must exceed drain_seconds')
     share = Path(get_package_share_directory('agt_mapping_bringup'))
-    lio_config = share / 'config' / 'fastlio2_mid360.yaml'
+    external_lio = value('fastlio_config').strip()
+    lio_config = Path(external_lio).expanduser().resolve() if external_lio else share / 'config' / 'fastlio2_mid360.yaml'
+    if not lio_config.is_file():
+        raise ValueError(f'FAST-LIO2 calibration does not exist: {lio_config}')
     remappings = frontend_remappings(lio_config, source.imu_topic)
     text = lambda v: ParameterValue(str(v), value_type=str)
     if sensor_only:
@@ -103,7 +106,8 @@ def launch_live_session(context, *, sensor_only=False):
         Node(package='agt_pgo_backend', executable='pgo_backend_node',
              parameters=[{'use_sim_time': False, 'pgo_output_dir': text(output / 'pgo_raw')}]),
         Node(package='agt_mapping_exporter', executable='mapping_artifact_exporter',
-             parameters=[{'use_sim_time': False, 'output_dir': text(output)}]),
+             parameters=[{'use_sim_time': False, 'output_dir': text(output),
+                          'calibration_file': text(lio_config)}]),
     ]
     labels = ['sensor adapter', 'FAST-LIO2', 'frontend bridge', 'PGO', 'PGO bridge',
               'artifact exporter']
