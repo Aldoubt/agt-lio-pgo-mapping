@@ -1,0 +1,3 @@
+seq,segment_id,x,y,yaw,direction,v_ref,curvature,clearance,semantic_ref,event_ref
+0,s000,0.0,0.0,0.0,F,0.2,0.0,1.0,row_0,
+1,s000,1.0,0.0,0.0,F,0.2,0.0,1.0,row_0,stop_a

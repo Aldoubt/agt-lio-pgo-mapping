@@ -1,0 +1,49 @@
+# Scenario matrix only. This is not a Map, Route, Site, or Authoring API schema.
+fixture_set: a0-authoring-contract
+cases:
+  - id: normal_site_route
+    site_fixture: site_valid
+    route_fixture: route_ready
+    route_manifest_sha256: sha256:a4857f25af97bcbfbf61f7168f498f497dab639196d4ec686ef653b261ed650a
+    route_csv_sha256: sha256:653d22b4a29489a180ce773252730628d4496cf9da28ce8a1522daa20dfac922
+    expected: SUCCEEDED
+    verifies: [site_validation, site_summary_digest, route_csv_digest, exact_map_ref]
+  - id: invalid_route_draft
+    route_status: DRAFT
+    expected: INVALID
+    observed_code: route_not_ready
+  - id: stale_source_digest
+    route_map_digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    expected: STALE
+    observed_code: route_map_binding_mismatch
+    facade_status_projection: PROPOSED
+  - id: wrong_map_identity
+    route_map_id: other_site
+    expected: INVALID
+    target_code: exact_map_ref_mismatch
+    facade_status_projection: PROPOSED
+  - id: wrong_profile_digest
+    expected_profile_digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    expected: INVALID
+    observed_code: route_vehicle_binding_mismatch
+  - id: tampered_site_asset
+    mutate: site_valid/map/navigation.pgm
+    expected: TAMPERED
+    observed_code: HASH_MISMATCH
+  - id: tampered_route_csv
+    mutate: route_ready/route.csv
+    expected: TAMPERED
+    observed_code: route_csv_hash_mismatch
+  - id: unsupported_optional_layer
+    layer_type: future_layer_not_registered
+    expected: UNSUPPORTED
+    facade_status_projection: PROPOSED
+  - id: unknown_annotation_value
+    datum: {state: UNKNOWN, reason: not_manually_annotated}
+    expected: UNKNOWN
+    is_operation_status: false
+
+# Cross-asset fixture references use the existing Site 1.0 and READY Route
+# fields. Runtime Site->Route resolver interoperability remains unimplemented.
+site_map_hash: af55d856bab8fcd0b28973cb21cfbd317cd4ced76bf0d4033051e95ae477a565
+profile_digest_fixture_only: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

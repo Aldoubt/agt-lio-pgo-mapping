@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agt.example/contracts/research_asset_contract_v1.schema.json",
+  "title": "AGT Research Asset Contract V1",
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+    "reviewStatus": {"type": "string", "enum": ["DRAFT", "REVIEWED", "FROZEN"]},
+    "platform": {"type": "string", "enum": ["HANDHELD", "VEHICLE", "UNKNOWN"]},
+    "stage": {"type": "string", "enum": ["SPARSE", "TRANSITION", "DENSE", "UNKNOWN"]},
+    "xy": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}], "minItems": 2, "maxItems": 2},
+    "xyz": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}], "minItems": 3, "maxItems": 3},
+    "sessionManifest": {
+      "type": "object", "required": ["schema_id", "schema_version", "session_id", "map_package", "map_pcd", "source_hash", "reference_frame", "acquisition_platform", "acquisition_platform_status", "growth_stage", "growth_stage_status", "evidence"],
+      "properties": {
+        "schema_id": {"const": "agt.research_session_manifest"}, "schema_version": {"const": 1},
+        "session_id": {"type": "string", "minLength": 1}, "map_package": {"type": "string", "minLength": 1},
+        "map_pcd": {"type": "string", "minLength": 1}, "source_hash": {"$ref": "#/$defs/sha256"},
+        "package_manifest_hash": {"$ref": "#/$defs/sha256"}, "bag_metadata_hash": {"$ref": "#/$defs/sha256"},
+        "reference_frame": {"type": "string", "minLength": 1},
+        "acquisition_platform": {"$ref": "#/$defs/platform"},
+        "acquisition_platform_status": {"type": "string", "enum": ["USER_DECLARED", "FILE_VERIFIED", "UNKNOWN"]},
+        "growth_stage": {"$ref": "#/$defs/stage"},
+        "growth_stage_status": {"type": "string", "enum": ["USER_DECLARED", "FILE_VERIFIED", "UNKNOWN"]},
+        "mapping_backend": {"type": "string"}, "source_bag": {"type": "string"},
+        "evidence": {"type": "array", "items": {"type": "object", "required": ["field", "source", "status"], "properties": {"field": {"type": "string"}, "source": {"type": "string"}, "status": {"type": "string"}, "note": {"type": "string"}}}}
+      }, "additionalProperties": true
+    },
+    "datasetManifest": {
+      "type": "object", "required": ["schema_id", "schema_version", "dataset_id", "reference_frame", "sessions", "alignment_contract"],
+      "properties": {
+        "schema_id": {"const": "agt.research_dataset_manifest"}, "schema_version": {"const": 1},
+        "dataset_id": {"type": "string", "minLength": 1}, "reference_frame": {"type": "string", "minLength": 1},
+        "sessions": {"type": "array", "minItems": 2, "items": {"type": "object", "required": ["session_id", "manifest"], "properties": {"session_id": {"type": "string"}, "manifest": {"type": "string"}}}},
+        "alignment_contract": {"type": "string", "minLength": 1}, "annotation_schema": {"const": "agt.research_annotations/v1"}
+      }, "additionalProperties": true
+    },
+    "alignmentContract": {
+      "type": "object", "required": ["schema_id", "schema_version", "alignment_id", "source_session_id", "target_session_id", "source_frame", "target_frame", "reference_frame", "transform_direction", "matrix_4x4", "source_hash", "target_hash", "review_status", "method"],
+      "properties": {
+        "schema_id": {"const": "agt.research_alignment_contract"}, "schema_version": {"const": 1},
+        "alignment_id": {"type": "string"}, "source_session_id": {"type": "string"}, "target_session_id": {"type": "string"},
+        "source_frame": {"type": "string"}, "target_frame": {"type": "string"}, "reference_frame": {"type": "string"},
+        "transform_direction": {"const": "T_target_from_source"},
+        "matrix_4x4": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}},
+        "source_hash": {"$ref": "#/$defs/sha256"}, "target_hash": {"$ref": "#/$defs/sha256"},
+        "status": {"type": "string", "enum": ["APPROXIMATE", "REVIEWED", "FROZEN"]}, "review_status": {"$ref": "#/$defs/reviewStatus"},
+        "method": {"type": "string"}, "provenance_path": {"type": "string"}, "provenance_hash": {"$ref": "#/$defs/sha256"}
+      }, "additionalProperties": true
+    },
+    "geometry": {
+      "oneOf": [
+        {"type": "object", "required": ["kind", "coordinates_xy_m"], "properties": {"kind": {"const": "polygon_xy"}, "coordinates_xy_m": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/xy"}}}, "additionalProperties": false},
+        {"type": "object", "required": ["kind", "coordinates_xy_m"], "properties": {"kind": {"const": "polyline_xy"}, "coordinates_xy_m": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/xy"}}}, "additionalProperties": false},
+        {"type": "object", "required": ["kind", "xyz_m"], "properties": {"kind": {"const": "point_xyz"}, "xyz_m": {"$ref": "#/$defs/xyz"}}, "additionalProperties": false},
+        {"oneOf": [
+          {"type": "object", "required": ["kind", "shape", "min_xyz_m", "max_xyz_m"], "properties": {"kind": {"const": "selection_3d"}, "shape": {"const": "aabb"}, "min_xyz_m": {"$ref": "#/$defs/xyz"}, "max_xyz_m": {"$ref": "#/$defs/xyz"}}, "additionalProperties": false},
+          {"type": "object", "required": ["kind", "shape", "coordinates_xy_m", "z_range_m"], "properties": {"kind": {"const": "selection_3d"}, "shape": {"const": "polygon_prism"}, "coordinates_xy_m": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/xy"}}, "z_range_m": {"$ref": "#/$defs/xy"}}, "additionalProperties": false},
+          {"type": "object", "required": ["kind", "shape", "center_xyz_m", "radius_m"], "properties": {"kind": {"const": "selection_3d"}, "shape": {"const": "sphere"}, "center_xyz_m": {"$ref": "#/$defs/xyz"}, "radius_m": {"type": "number", "exclusiveMinimum": 0}}, "additionalProperties": false}
+        ]}
+      ]
+    },
+    "annotation": {
+      "type": "object", "required": ["schema_id", "schema_version", "dataset_id", "annotation_version", "review_status", "reference_frame", "source_hashes", "annotations"],
+      "properties": {
+        "schema_id": {"const": "agt.research_annotations"}, "schema_version": {"const": 1}, "dataset_id": {"type": "string"},
+        "annotation_version": {"type": "string"}, "review_status": {"$ref": "#/$defs/reviewStatus"}, "reference_frame": {"type": "string"},
+        "source_hashes": {"type": "object", "minProperties": 2, "additionalProperties": {"$ref": "#/$defs/sha256"}},
+        "reviewer": {"type": ["string", "null"]}, "reviewed_at": {"type": ["string", "null"]},
+        "annotations": {"type": "array", "items": {"type": "object", "required": ["annotation_id", "annotation_type", "geometry", "review_status", "source_session_ids"], "properties": {"annotation_id": {"type": "string"}, "annotation_type": {"type": "string", "enum": ["greenhouse_boundary", "navigation_interior", "harvested_region", "transition_region", "dense_vegetation_region", "external_background", "fixed_frame_region", "fixed_column_region", "stable_structure_roi", "corner", "frame_edge", "custom"]}, "geometry": {"$ref": "#/$defs/geometry"}, "review_status": {"$ref": "#/$defs/reviewStatus"}, "source_session_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}}, "source_candidate_id": {"type": "string"}, "notes": {"type": "string"}}}}
+      }, "additionalProperties": true
+    },
+    "analysisConfiguration": {
+      "type": "object", "required": ["schema_id", "schema_version", "dataset_id", "annotation_version", "alignment_id", "analysis", "input_hashes"],
+      "properties": {"schema_id": {"const": "agt.research_analysis_configuration"}, "schema_version": {"const": 1}, "dataset_id": {"type": "string"}, "annotation_version": {"type": "string"}, "alignment_id": {"type": "string"}, "analysis": {"type": "object"}, "input_hashes": {"type": "object", "additionalProperties": {"$ref": "#/$defs/sha256"}}}, "additionalProperties": true
+    },
+    "experimentResult": {
+      "type": "object", "required": ["schema_id", "schema_version", "result_id", "dataset_id", "annotation_version", "alignment_id", "analysis_configuration_hash", "result_path", "result_hashes", "review_status", "paper_statistics_eligible"],
+      "properties": {"schema_id": {"const": "agt.research_experiment_result"}, "schema_version": {"const": 1}, "result_id": {"type": "string"}, "dataset_id": {"type": "string"}, "annotation_version": {"type": "string"}, "alignment_id": {"type": "string"}, "analysis_configuration_hash": {"$ref": "#/$defs/sha256"}, "result_path": {"type": "string"}, "result_hashes": {"type": "object", "additionalProperties": {"$ref": "#/$defs/sha256"}}, "review_status": {"$ref": "#/$defs/reviewStatus"}, "paper_statistics_eligible": {"type": "boolean"}}, "additionalProperties": true
+    },
+    "projectManifest": {
+      "type": "object", "required": ["schema_id", "schema_version", "dataset_manifest", "alignment_contract", "annotation_file", "analysis_configuration", "experiment_result", "primary_session_id", "comparison_session_id"],
+      "properties": {"schema_id": {"const": "agt.mapstudio_research_project"}, "schema_version": {"const": 1}, "dataset_manifest": {"type": "string"}, "alignment_contract": {"type": "string"}, "annotation_file": {"type": "string"}, "analysis_configuration": {"type": "string"}, "experiment_result": {"type": "string"}, "candidate_roi_file": {"type": "string"}, "primary_session_id": {"type": "string"}, "comparison_session_id": {"type": "string"}}, "additionalProperties": true
+    }
+  }
+}

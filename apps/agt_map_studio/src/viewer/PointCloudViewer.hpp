@@ -3,6 +3,7 @@
 #include "confidence/SpatialConfidenceModel.hpp"
 #include "geometry/GeometryEvidenceModel.hpp"
 #include "confidence/SpatialConfidenceEditor.hpp"
+#include "annotation/ResearchAnnotationModel.hpp"
 #include "io/PCDLoader.hpp"
 #include "selection/SelectionBox.h"
 #include "selection/SelectionManager.h"
@@ -14,6 +15,7 @@
 #include <QOpenGLShaderProgram>
 #include <QOpenGLWidget>
 #include <QPoint>
+#include <QPointF>
 #include <QPolygon>
 #include <QTimer>
 #include <QVector3D>
@@ -48,7 +50,7 @@ inline bool is_geometry_color_mode(PointColorMode mode) {
 
 // How a selection is drawn in Select/Delete mode.
 enum class SelectionTool { ScreenRect, PolygonPrism, Sphere };
-enum class AuxiliaryLayer { Structure = 0, Blocks = 1, Query = 2, Candidate = 3 };
+enum class AuxiliaryLayer { Structure = 0, Blocks = 1, Query = 2, Candidate = 3, Comparison = 4 };
 
 class PointCloudViewer : public QOpenGLWidget, protected QOpenGLFunctions {
   Q_OBJECT
@@ -58,16 +60,20 @@ public:
   ~PointCloudViewer() override;
 
   void set_cloud(LoadedPointCloud cloud, const QString &filename);
+  void set_primary_visible(bool visible);
   void set_auxiliary_cloud(AuxiliaryLayer layer, const LoadedPointCloud &cloud,
-                           bool visible = true);
+                           bool visible = true, float opacity = 1.0F);
   void set_auxiliary_visible(AuxiliaryLayer layer, bool visible);
+  void set_auxiliary_opacity(AuxiliaryLayer layer, float opacity);
   void clear_auxiliary_cloud(AuxiliaryLayer layer);
   void set_query_pick_mode(bool enabled) { query_pick_mode_ = enabled; }
   void reset_camera();
+  void zoom_by(float wheel_delta);
   bool save_view(const QString &path, QString *error) const;
   void set_camera_speeds(float speed, float fast_speed);
   void set_show_axis(bool enabled);
   void set_dark_background(bool enabled);
+  void set_chinese_ui(bool enabled);
   void set_height_coloring(bool enabled);
   void set_color_mode(PointColorMode mode);
   PointColorMode color_mode() const { return color_mode_; }
@@ -83,6 +89,15 @@ public:
   void adjust_point_size(float delta);
   void set_point_size(float size);
   void set_selection_manager(SelectionManager *manager);
+  void set_annotation_overlays(const QVector<AnnotationPolygonOverlay> &overlays);
+  void set_annotation_mode(bool enabled);
+  void begin_annotation_polygon();
+  void begin_annotation_geometry(const QString &geometry_kind);
+  void finish_annotation_polygon();
+  void cancel_annotation_polygon();
+  void set_selected_annotation(const QString &annotation_id);
+  int selected_annotation_vertex() const { return selected_annotation_vertex_index_; }
+  bool annotation_drawing() const { return annotation_drawing_; }
   void set_mode(InteractionMode mode);
   InteractionMode mode() const { return mode_; }
   void set_selection_tool(SelectionTool tool);
@@ -116,6 +131,17 @@ signals:
   void delete_requested_outside_delete_mode();
   void confidence_voxel_selected(std::size_t index);
   void map_point_selected(double x, double y, double z);
+  void annotation_polygon_created(const QVector<QPointF> &vertices_xy_m);
+  void annotation_polygon_edited(const QString &annotation_id,
+                                 const QVector<QPointF> &vertices_xy_m);
+  void annotation_geometry_created(const QString &geometry_kind,
+                                   const QVector<QPointF> &vertices_xy_m);
+  void annotation_geometry_edited(const QString &annotation_id,
+                                  const QString &geometry_kind,
+                                  const QVector<QPointF> &vertices_xy_m);
+  void annotation_coordinate_changed(double x, double y, double z);
+  void annotation_delete_requested(const QString &annotation_id);
+  void annotation_vertex_delete_requested(const QString &annotation_id, int vertex_index);
 
 protected:
   void initializeGL() override;
@@ -149,12 +175,16 @@ private:
   QString mode_text() const;
   QString tool_text() const;
   std::optional<QPoint> project(std::size_t index, const QMatrix4x4 &mvp) const;
+  std::optional<QPoint> project_xy(const QPointF &point, const QMatrix4x4 &mvp) const;
   std::optional<Eigen::Vector3f> unproject_to_ground(const QPoint &screen, float z) const;
   bool passes_z_window(float z) const;
   bool visible_for_selection(std::size_t index) const;
   bool confidence_stable(std::size_t index) const;
   std::size_t confidence_stable_count() const;
   void finish_polygon_selection();
+  bool pick_annotation_vertex(const QPoint &screen, int *vertex_index) const;
+  void finish_annotation_vertex_drag();
+  float zoom_anchor_height() const;
 
   LoadedPointCloud cloud_;
   QString filename_;
@@ -181,6 +211,7 @@ private:
   Eigen::Vector3f confidence_min_bound_ = Eigen::Vector3f::Zero();
   Eigen::Vector3f confidence_max_bound_ = Eigen::Vector3f::Zero();
   bool stable_only_ = false;
+  bool primary_visible_ = true;
   bool confidence_status_dirty_ = true;
   bool confidence_colors_dirty_ = true;
   QString cached_stats_text_;
@@ -191,10 +222,11 @@ private:
     QOpenGLBuffer colors{QOpenGLBuffer::VertexBuffer};
     std::vector<float> xyz;
     QVector3D color;
+    float opacity = 1.0F;
     bool visible = false;
     bool dirty = true;
   };
-  std::array<AuxiliaryCloud, 4> auxiliary_clouds_;
+  std::array<AuxiliaryCloud, 5> auxiliary_clouds_;
   bool query_pick_mode_ = false;
   bool left_drag_ = false;
   bool right_drag_ = false;
@@ -208,8 +240,20 @@ private:
   bool z_window_enabled_ = false;
   double z_window_min_ = -1.0;
   double z_window_max_ = 3.0;
+  bool chinese_ui_ = false;
   double sphere_radius_ = 0.5;
   QPoint last_mouse_position_;
+  bool annotation_mode_ = false;
+  bool annotation_drawing_ = false;
+  QString annotation_geometry_kind_ = QStringLiteral("polygon_xy");
+  bool annotation_vertex_dragging_ = false;
+  QString selected_annotation_id_;
+  QVector<AnnotationPolygonOverlay> annotation_overlays_;
+  QVector<QPointF> pending_annotation_xy_;
+  QVector<QPointF> drag_original_vertices_;
+  int dragged_annotation_index_ = -1;
+  int dragged_vertex_index_ = -1;
+  int selected_annotation_vertex_index_ = -1;
 };
 
 }  // namespace agt_map_studio

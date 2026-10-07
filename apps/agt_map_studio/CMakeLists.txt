@@ -29,6 +29,8 @@ endif()
 
 add_executable(map_viewer
   src/main.cpp
+  src/annotation/AisleProposalGenerator.cpp
+  src/annotation/ResearchAnnotationModel.cpp
   src/io/PCDLoader.cpp
   src/confidence/SpatialConfidenceModel.cpp
   src/confidence/SpatialConfidenceLoader.cpp
@@ -166,6 +168,19 @@ if(BUILD_TESTING)
     ${QT_WIDGETS_TARGET}
     yaml-cpp
   )
+
+  ament_add_gtest(test_research_annotation_model
+    test/test_research_annotation_model.cpp
+    src/annotation/ResearchAnnotationModel.cpp)
+  target_include_directories(test_research_annotation_model PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_compile_definitions(test_research_annotation_model PRIVATE ${PCL_DEFINITIONS})
+  target_link_libraries(test_research_annotation_model ${QT_WIDGETS_TARGET} Eigen3::Eigen)
+
+  ament_add_gtest(test_aisle_proposal_generator
+    test/test_aisle_proposal_generator.cpp
+    src/annotation/AisleProposalGenerator.cpp)
+  target_include_directories(test_aisle_proposal_generator PRIVATE src)
+  target_link_libraries(test_aisle_proposal_generator ${QT_WIDGETS_TARGET})
 
   ament_add_gtest(test_occupancy_viewer
     test/test_occupancy_viewer.cpp

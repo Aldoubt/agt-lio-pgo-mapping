@@ -93,6 +93,15 @@ void CameraController::pan(float dx, float dy) {
   target_ += delta;
 }
 
+void CameraController::pan_world(const QVector3D &delta) {
+  position_ += delta;
+  target_ += delta;
+}
+
+void CameraController::focus_height(float z) {
+  pan_world(QVector3D(0.0F, 0.0F, z - target_.z()));
+}
+
 void CameraController::zoom(float wheel_delta) {
   const float scale = qExp(-wheel_delta * 0.001F);
   const float new_distance = std::clamp(distance() * scale, 0.02F, 1.0e7F);

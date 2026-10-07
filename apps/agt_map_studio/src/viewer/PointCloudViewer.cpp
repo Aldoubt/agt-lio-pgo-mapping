@@ -80,21 +80,34 @@ void PointCloudViewer::set_cloud(LoadedPointCloud cloud,
 
 void PointCloudViewer::set_auxiliary_cloud(AuxiliaryLayer layer_id,
                                             const LoadedPointCloud &cloud,
-                                            bool visible) {
+                                            bool visible, float opacity) {
   auto &layer = auxiliary_clouds_.at(static_cast<std::size_t>(layer_id));
   layer.xyz = cloud.xyz;
   layer.visible = visible && !layer.xyz.empty();
   const QVector3D colors[] = {QVector3D(0.20F, 0.90F, 0.35F),
                               QVector3D(0.70F, 0.45F, 1.00F),
                               QVector3D(0.05F, 0.90F, 1.00F),
-                              QVector3D(1.00F, 0.34F, 0.08F)};
+                              QVector3D(1.00F, 0.34F, 0.08F),
+                              QVector3D(1.00F, 0.52F, 0.02F)};
   layer.color = colors[static_cast<std::size_t>(layer_id)];
+  layer.opacity = std::clamp(opacity, 0.05F, 1.0F);
   layer.dirty = true;
   if (gl_ready_) {
     makeCurrent();
     upload_auxiliary_clouds();
     doneCurrent();
   }
+  update();
+}
+
+void PointCloudViewer::set_primary_visible(bool visible) {
+  if (primary_visible_ == visible) return;
+  primary_visible_ = visible;
+  update();
+}
+
+void PointCloudViewer::set_auxiliary_opacity(AuxiliaryLayer layer_id, float opacity) {
+  auxiliary_clouds_.at(static_cast<std::size_t>(layer_id)).opacity = std::clamp(opacity, 0.05F, 1.0F);
   update();
 }
 
@@ -245,6 +258,60 @@ void PointCloudViewer::set_selection_manager(SelectionManager *manager) {
   update();
 }
 
+void PointCloudViewer::set_annotation_overlays(const QVector<AnnotationPolygonOverlay> &overlays) {
+  annotation_overlays_ = overlays;
+  update();
+}
+
+void PointCloudViewer::set_annotation_mode(bool enabled) {
+  annotation_mode_ = enabled;
+  annotation_vertex_dragging_ = false;
+  annotation_drawing_ = false;
+  pending_annotation_xy_.clear();
+  setFocus();
+  update();
+}
+
+void PointCloudViewer::begin_annotation_polygon() {
+  begin_annotation_geometry(QStringLiteral("polygon_xy"));
+}
+
+void PointCloudViewer::begin_annotation_geometry(const QString &geometry_kind) {
+  annotation_mode_ = true;
+  annotation_drawing_ = true;
+  annotation_geometry_kind_ = geometry_kind;
+  annotation_vertex_dragging_ = false;
+  pending_annotation_xy_.clear();
+  setFocus();
+  update();
+}
+
+void PointCloudViewer::finish_annotation_polygon() {
+  const int minimum = annotation_geometry_kind_ == QStringLiteral("polygon_xy") ? 3 : 2;
+  if (pending_annotation_xy_.size() >= minimum) {
+    emit annotation_geometry_created(annotation_geometry_kind_, pending_annotation_xy_);
+    if (annotation_geometry_kind_ == QStringLiteral("polygon_xy"))
+      emit annotation_polygon_created(pending_annotation_xy_);
+  }
+  pending_annotation_xy_.clear();
+  annotation_drawing_ = false;
+  update();
+}
+
+void PointCloudViewer::cancel_annotation_polygon() {
+  pending_annotation_xy_.clear();
+  annotation_drawing_ = false;
+  annotation_vertex_dragging_ = false;
+  update();
+}
+
+void PointCloudViewer::set_selected_annotation(const QString &annotation_id) {
+  selected_annotation_id_ = annotation_id;
+  selected_annotation_vertex_index_ = -1;
+  for (auto &overlay : annotation_overlays_) overlay.selected = overlay.annotation_id == annotation_id;
+  update();
+}
+
 void PointCloudViewer::set_mode(InteractionMode mode) {
   mode_ = mode;
   selecting_ = false;
@@ -267,7 +334,15 @@ void PointCloudViewer::set_z_window(bool enabled, double z_min, double z_max) {
   z_window_enabled_ = enabled;
   z_window_min_ = std::min(z_min, z_max);
   z_window_max_ = std::max(z_min, z_max);
+  camera_.focus_height(zoom_anchor_height());
   emit_stats();
+  update();
+}
+
+void PointCloudViewer::set_chinese_ui(bool enabled) {
+  chinese_ui_ = enabled;
+  emit_stats();
+  update();
 }
 
 bool PointCloudViewer::passes_z_window(float z) const {
@@ -347,7 +422,24 @@ void PointCloudViewer::reset_camera() {
   } else {
     camera_ = CameraController();
   }
+  camera_.focus_height(zoom_anchor_height());
   update();
+}
+
+void PointCloudViewer::zoom_by(float wheel_delta) {
+  camera_.focus_height(zoom_anchor_height());
+  camera_.zoom(wheel_delta);
+  update();
+}
+
+float PointCloudViewer::zoom_anchor_height() const {
+  if (z_window_enabled_) {
+    return static_cast<float>((z_window_min_ + z_window_max_) * 0.5);
+  }
+  if (confidence_mode()) {
+    return (confidence_min_bound_.z() + confidence_max_bound_.z()) * 0.5F;
+  }
+  return has_cloud() ? cloud_.center().z() : camera_.target().z();
 }
 
 QString PointCloudViewer::stats_text() const {
@@ -355,18 +447,26 @@ QString PointCloudViewer::stats_text() const {
   const std::size_t selected = manager ? manager->selected_count() : 0U;
   QString text;
   if (confidence_mode()) {
-    text = QStringLiteral("Single-session confidence voxels: %1 | Selected: %2 | Stable preview: %3 | Mode: %4")
+    text = chinese_ui_
+        ? QStringLiteral("单期置信度体素：%1 | 已选：%2 | 稳定预览：%3 | 模式：%4")
+        : QStringLiteral("Single-session confidence voxels: %1 | Selected: %2 | Stable preview: %3 | Mode: %4");
+    text = text
         .arg(static_cast<qulonglong>(confidence_model_->voxels().size()))
         .arg(static_cast<qulonglong>(selected))
         .arg(static_cast<qulonglong>(confidence_stable_count()))
         .arg(mode_text());
-    if (stable_only_) text += QStringLiteral(" | Show Stable Only");
-    if (is_geometry_color_mode(color_mode_)) text += QStringLiteral(" | Geometry read-only (not confidence)");
+    if (stable_only_) text += chinese_ui_ ? QStringLiteral(" | 仅显示稳定预览") : QStringLiteral(" | Show Stable Only");
+    if (is_geometry_color_mode(color_mode_))
+      text += chinese_ui_ ? QStringLiteral(" | 几何只读（非置信度）")
+                          : QStringLiteral(" | Geometry read-only (not confidence)");
   } else {
     const QString name = filename_.isEmpty() ? QStringLiteral("(none)") : filename_;
     const std::size_t deleted = selection_manager_ ? selection_manager_->deleted_count() : 0U;
     const std::size_t visible = selection_manager_ ? selection_manager_->visible_count() : point_count();
-    text = QStringLiteral("File: %1 | Total: %2 | Selected: %3 | Deleted: %4 | Visible: %5 | Mode: %6")
+    text = chinese_ui_
+        ? QStringLiteral("文件：%1 | 总点数：%2 | 已选：%3 | 已删除：%4 | 可见：%5 | 模式：%6")
+        : QStringLiteral("File: %1 | Total: %2 | Selected: %3 | Deleted: %4 | Visible: %5 | Mode: %6");
+    text = text
         .arg(name)
         .arg(static_cast<qulonglong>(point_count()))
         .arg(static_cast<qulonglong>(selected))
@@ -374,26 +474,33 @@ QString PointCloudViewer::stats_text() const {
         .arg(static_cast<qulonglong>(visible))
         .arg(mode_text());
   }
-  if (mode_ != InteractionMode::Navigate) text += QStringLiteral(" / %1").arg(tool_text());
+  if (mode_ != InteractionMode::Navigate)
+    text += chinese_ui_ ? QStringLiteral(" / %1").arg(tool_text())
+                        : QStringLiteral(" / %1").arg(tool_text());
   if (z_window_enabled_) {
-    text += QStringLiteral(" | Z [%1, %2]").arg(z_window_min_, 0, 'f', 2).arg(z_window_max_, 0, 'f', 2);
+    text += chinese_ui_
+        ? QStringLiteral(" | Z裁剪 [%1, %2] 米").arg(z_window_min_, 0, 'f', 2).arg(z_window_max_, 0, 'f', 2)
+        : QStringLiteral(" | Z [%1, %2]").arg(z_window_min_, 0, 'f', 2).arg(z_window_max_, 0, 'f', 2);
   }
-  return text + QStringLiteral(" | FPS: %1").arg(fps_, 0, 'f', 1);
+  return text + (chinese_ui_ ? QStringLiteral(" | 帧率：%1").arg(fps_, 0, 'f', 1)
+                             : QStringLiteral(" | FPS: %1").arg(fps_, 0, 'f', 1));
 }
 
 QString PointCloudViewer::tool_text() const {
   switch (tool_) {
-    case SelectionTool::PolygonPrism: return QStringLiteral("Polygon");
-    case SelectionTool::Sphere: return QStringLiteral("Sphere %1m").arg(sphere_radius_, 0, 'f', 2);
-    default: return QStringLiteral("Rect");
+    case SelectionTool::PolygonPrism: return chinese_ui_ ? QStringLiteral("多边形") : QStringLiteral("Polygon");
+    case SelectionTool::Sphere:
+      return chinese_ui_ ? QStringLiteral("球形 %1米").arg(sphere_radius_, 0, 'f', 2)
+                         : QStringLiteral("Sphere %1m").arg(sphere_radius_, 0, 'f', 2);
+    default: return chinese_ui_ ? QStringLiteral("矩形") : QStringLiteral("Rect");
   }
 }
 
 QString PointCloudViewer::mode_text() const {
   switch (mode_) {
-    case InteractionMode::Select: return QStringLiteral("Select");
-    case InteractionMode::Delete: return QStringLiteral("Delete");
-    default: return QStringLiteral("Navigate");
+    case InteractionMode::Select: return chinese_ui_ ? QStringLiteral("选择") : QStringLiteral("Select");
+    case InteractionMode::Delete: return chinese_ui_ ? QStringLiteral("删除") : QStringLiteral("Delete");
+    default: return chinese_ui_ ? QStringLiteral("浏览") : QStringLiteral("Navigate");
   }
 }
 
@@ -469,6 +576,10 @@ void PointCloudViewer::initializeGL() {
     uniform int u_confidence_mode;
     uniform float u_z_min;
     uniform float u_z_max;
+    uniform int u_clip_z_enabled;
+    uniform float u_clip_z_min;
+    uniform float u_clip_z_max;
+    uniform float u_layer_alpha;
     varying float v_height;
     varying float v_status;
     varying vec3 v_rgb;
@@ -483,6 +594,8 @@ void PointCloudViewer::initializeGL() {
     }
 
     void main() {
+      if (u_clip_z_enabled == 1 &&
+          (v_height < u_clip_z_min || v_height > u_clip_z_max)) discard;
       if (v_status > 2.5) {
         discard;
       } else if (v_status > 1.5) {
@@ -490,7 +603,7 @@ void PointCloudViewer::initializeGL() {
       } else if (v_status > 0.5) {
         gl_FragColor = vec4(1.0, 0.75, 0.05, 1.0);
       } else if (u_confidence_mode == 1) {
-        gl_FragColor = vec4(v_rgb, 1.0);
+        gl_FragColor = vec4(v_rgb, u_layer_alpha);
       } else {
         gl_FragColor = u_height_coloring == 1
             ? vec4(height_color(v_height), 1.0)
@@ -565,12 +678,16 @@ void PointCloudViewer::paintGL() {
     shader_->setUniformValue("u_confidence_mode", confidence ? 1 : 0);
     shader_->setUniformValue("u_z_min", cloud_.min_bound.z());
     shader_->setUniformValue("u_z_max", cloud_.max_bound.z());
+    shader_->setUniformValue("u_clip_z_enabled", z_window_enabled_ ? 1 : 0);
+    shader_->setUniformValue("u_clip_z_min", static_cast<float>(z_window_min_));
+    shader_->setUniformValue("u_clip_z_max", static_cast<float>(z_window_max_));
+    shader_->setUniformValue("u_layer_alpha", 1.0F);
     shader_->setUniformValue(
         "u_color", dark_background_ ? QVector4D(1.0F, 1.0F, 1.0F, 1.0F)
                                      : QVector4D(0.12F, 0.12F, 0.12F, 1.0F));
     QOpenGLBuffer &positions = confidence ? confidence_buffer_ : cloud_buffer_;
     QOpenGLBuffer &statuses = confidence ? confidence_status_buffer_ : status_buffer_;
-    if (!active_xyz().empty() && positions.isCreated() && statuses.isCreated() &&
+    if ((confidence || primary_visible_) && !active_xyz().empty() && positions.isCreated() && statuses.isCreated() &&
         (!confidence || confidence_color_buffer_.isCreated())) {
       positions.bind();
       shader_->enableAttributeArray("a_position");
@@ -595,10 +712,18 @@ void PointCloudViewer::paintGL() {
     }
     shader_->setUniformValue("u_height_coloring", 0);
     shader_->setUniformValue("u_confidence_mode", 1);
-    shader_->setUniformValue("u_point_size", std::max(3.0F, point_size_ + 1.5F));
-    for (auto &layer : auxiliary_clouds_) {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    for (std::size_t layer_index = 0; layer_index < auxiliary_clouds_.size(); ++layer_index) {
+      auto &layer = auxiliary_clouds_[layer_index];
       if (!layer.visible || layer.xyz.empty() || !layer.positions.isCreated() ||
           !layer.statuses.isCreated() || !layer.colors.isCreated()) continue;
+      const bool comparison_layer = layer_index == static_cast<std::size_t>(AuxiliaryLayer::Comparison);
+      shader_->setUniformValue("u_point_size", comparison_layer
+          ? std::max(1.25F, point_size_ * 0.8F)
+          : std::max(3.0F, point_size_ + 1.5F));
+      shader_->setUniformValue("u_layer_alpha", layer.opacity);
       layer.positions.bind();
       shader_->enableAttributeArray("a_position");
       shader_->setAttributeBuffer("a_position", GL_FLOAT, 0, 3);
@@ -616,8 +741,15 @@ void PointCloudViewer::paintGL() {
       layer.statuses.release();
       layer.positions.release();
     }
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    shader_->setUniformValue("u_layer_alpha", 1.0F);
     if (show_axis_ && axis_buffer_.isCreated()) {
+      // The coordinate axes are a navigation aid and must remain visible when
+      // the point-cloud height clip is active.
+      shader_->setUniformValue("u_clip_z_enabled", 0);
       draw_axes(mvp);
+      shader_->setUniformValue("u_clip_z_enabled", z_window_enabled_ ? 1 : 0);
     }
     shader_->release();
   }
@@ -636,6 +768,67 @@ void PointCloudViewer::paintGL() {
   QPainter painter(this);
   painter.setPen(dark_background_ ? Qt::white : Qt::black);
   painter.drawText(12, 22, cached_stats_text_.isEmpty() ? stats_text() : cached_stats_text_);
+  if (z_window_enabled_) {
+    const QString clip_label = chinese_ui_
+        ? QStringLiteral("当前显示高度：Z [%1, %2] 米")
+              .arg(z_window_min_, 0, 'f', 2).arg(z_window_max_, 0, 'f', 2)
+        : QStringLiteral("Visible height: Z [%1, %2] m")
+              .arg(z_window_min_, 0, 'f', 2).arg(z_window_max_, 0, 'f', 2);
+    painter.drawText(12, 44, clip_label);
+  }
+  const QMatrix4x4 overlay_mvp = camera_.projection_matrix() * camera_.view_matrix();
+  for (const auto &overlay : annotation_overlays_) {
+    QPolygonF screen_polygon;
+    for (const auto &point : overlay.vertices_xy_m) {
+      const auto screen = project_xy(point, overlay_mvp);
+      if (screen) screen_polygon << QPointF(*screen);
+    }
+    if (screen_polygon.isEmpty()) continue;
+    QColor fill = overlay.color;
+    fill.setAlpha(overlay.selected ? 55 : 28);
+    painter.setPen(QPen(overlay.color, overlay.selected ? 3.0 : 2.0));
+    if (overlay.geometry_kind == QStringLiteral("polygon_xy") && screen_polygon.size() >= 3) {
+      painter.setBrush(fill);
+      painter.drawPolygon(screen_polygon);
+    } else if (overlay.geometry_kind == QStringLiteral("polyline_xy") && screen_polygon.size() >= 2) {
+      painter.setBrush(Qt::NoBrush);
+      painter.drawPolyline(screen_polygon);
+    }
+    painter.setBrush(Qt::white);
+    for (const auto &point : screen_polygon) {
+      const qreal radius = overlay.geometry_kind == QStringLiteral("point_xyz") ? 6.0
+                           : overlay.selected ? 5.0 : 3.0;
+      painter.drawEllipse(point, radius, radius);
+    }
+    if (overlay.selected) {
+      painter.setPen(overlay.color.darker(150));
+      painter.drawText(screen_polygon.first() + QPointF(7.0, -7.0), overlay.annotation_type);
+    }
+  }
+  if (annotation_drawing_ && !pending_annotation_xy_.isEmpty()) {
+    QPolygonF pending;
+    for (const auto &point : pending_annotation_xy_) {
+      const auto screen = project_xy(point, overlay_mvp);
+      if (screen) pending << QPointF(*screen);
+    }
+    const auto cursor_world = unproject_to_ground(last_mouse_position_, 0.0F);
+    if (cursor_world) {
+      const auto cursor = project_xy(QPointF(cursor_world->x(), cursor_world->y()), overlay_mvp);
+      if (cursor) pending << QPointF(*cursor);
+    }
+    painter.setPen(QPen(QColor(255, 150, 20), 2.0, Qt::DashLine));
+    painter.setBrush(QColor(255, 150, 20, 35));
+    painter.drawPolyline(pending);
+    if (annotation_geometry_kind_ == QStringLiteral("polygon_xy") && pending.size() >= 3)
+      painter.drawLine(pending.last(), pending.first());
+    painter.setPen(dark_background_ ? Qt::white : Qt::black);
+    painter.drawText(12, z_window_enabled_ ? 66 : 46,
+        chinese_ui_
+            ? QStringLiteral("标注几何：%1 个顶点 | Enter 完成 | Backspace 撤销 | Esc 取消")
+                  .arg(pending_annotation_xy_.size())
+            : QStringLiteral("Annotation geometry: %1 vertices | Enter finish | Backspace undo | Esc cancel")
+                  .arg(pending_annotation_xy_.size()));
+  }
   if (selecting_ && tool_ == SelectionTool::ScreenRect && selection_box_.is_valid()) {
     QPen pen(QColor(30, 120, 255), 2, Qt::DashLine);
     painter.setPen(pen);
@@ -690,7 +883,7 @@ void PointCloudViewer::paintGL() {
     painter.fillRect(legend_x, legend_y, legend_width, legend_height, gradient);
     painter.drawRect(legend_x, legend_y, legend_width, legend_height);
     if (confidence) {
-      painter.drawText(legend_x, legend_y + 30,
+    painter.drawText(legend_x, legend_y + 30,
           axes_legend ? QStringLiteral("R                 G                 B")
                       : QStringLiteral("0.0 low"));
       if (!axes_legend) painter.drawText(legend_x + 120, legend_y + 30, QStringLiteral("1.0 high"));
@@ -709,9 +902,13 @@ void PointCloudViewer::paintGL() {
       }
     } else {
       painter.drawText(legend_x, legend_y + 30,
-                       QStringLiteral("Z low: %1").arg(cloud_.min_bound.z(), 0, 'f', 2));
+                       chinese_ui_
+                           ? QStringLiteral("全图 Z 低：%1").arg(cloud_.min_bound.z(), 0, 'f', 2)
+                           : QStringLiteral("Map Z low: %1").arg(cloud_.min_bound.z(), 0, 'f', 2));
       painter.drawText(legend_x + 105, legend_y + 30,
-                       QStringLiteral("high: %1").arg(cloud_.max_bound.z(), 0, 'f', 2));
+                       chinese_ui_
+                           ? QStringLiteral("全图高：%1").arg(cloud_.max_bound.z(), 0, 'f', 2)
+                           : QStringLiteral("Map high: %1").arg(cloud_.max_bound.z(), 0, 'f', 2));
     }
   }
   painter.end();
@@ -890,7 +1087,31 @@ void PointCloudViewer::tick() {
 void PointCloudViewer::keyPressEvent(QKeyEvent *event) {
   // Mode switching is owned by MainWindow (toolbar + F1/F2/F3), so the WASD
   // camera keys are never shadowed here.
-  if (event->key() == Qt::Key_Escape) {
+  if (annotation_mode_ && event->key() == Qt::Key_Escape) {
+    cancel_annotation_polygon();
+    event->accept();
+    return;
+  }
+  if (annotation_mode_ && event->key() == Qt::Key_Backspace && annotation_drawing_) {
+    if (!pending_annotation_xy_.isEmpty()) pending_annotation_xy_.removeLast();
+    update();
+    event->accept();
+    return;
+  }
+  if (annotation_mode_ && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && annotation_drawing_) {
+    finish_annotation_polygon();
+    event->accept();
+    return;
+  }
+  if (annotation_mode_ && event->key() == Qt::Key_Delete) {
+    if (selected_annotation_vertex_index_ >= 0)
+      emit annotation_vertex_delete_requested(selected_annotation_id_, selected_annotation_vertex_index_);
+    else
+      emit annotation_delete_requested(selected_annotation_id_);
+    event->accept();
+    return;
+  }
+  if (!annotation_mode_ && event->key() == Qt::Key_Escape) {
     cancel_pending_polygon();
     if (auto *manager = active_selection_manager()) {
       manager->clear_selection();
@@ -899,7 +1120,7 @@ void PointCloudViewer::keyPressEvent(QKeyEvent *event) {
     event->accept();
     return;
   }
-  if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
+  if (!annotation_mode_ && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
       tool_ == SelectionTool::PolygonPrism && pending_polygon_.size() >= 3) {
     finish_polygon_selection();
     event->accept();
@@ -962,6 +1183,44 @@ void PointCloudViewer::keyReleaseEvent(QKeyEvent *event) {
 void PointCloudViewer::mousePressEvent(QMouseEvent *event) {
   setFocus();
   last_mouse_position_ = event->pos();
+  if (annotation_mode_ && event->button() == Qt::LeftButton) {
+    if (annotation_drawing_) {
+      const auto world = unproject_to_ground(event->pos(), 0.0F);
+      if (world) {
+        pending_annotation_xy_.push_back(QPointF(world->x(), world->y()));
+        if (annotation_geometry_kind_ == QStringLiteral("point_xyz")) {
+          emit annotation_geometry_created(annotation_geometry_kind_, pending_annotation_xy_);
+          pending_annotation_xy_.clear();
+          annotation_drawing_ = false;
+        }
+      }
+    } else {
+      int vertex = -1;
+      if (pick_annotation_vertex(event->pos(), &vertex)) {
+        selected_annotation_vertex_index_ = vertex;
+        annotation_vertex_dragging_ = true;
+        dragged_vertex_index_ = vertex;
+        dragged_annotation_index_ = -1;
+        for (int i = 0; i < annotation_overlays_.size(); ++i) {
+          if (annotation_overlays_[i].annotation_id == selected_annotation_id_) {
+            dragged_annotation_index_ = i;
+            drag_original_vertices_ = annotation_overlays_[i].vertices_xy_m;
+            break;
+          }
+        }
+      } else {
+        selected_annotation_vertex_index_ = -1;
+      }
+    }
+    update();
+    event->accept();
+    return;
+  }
+  if (annotation_mode_ && event->button() == Qt::RightButton && annotation_drawing_) {
+    finish_annotation_polygon();
+    event->accept();
+    return;
+  }
   if (query_pick_mode_ && event->button() == Qt::LeftButton && has_cloud()) {
     query_pick_mode_ = false;
     left_drag_ = false;
@@ -995,6 +1254,12 @@ void PointCloudViewer::mousePressEvent(QMouseEvent *event) {
 }
 
 void PointCloudViewer::mouseDoubleClickEvent(QMouseEvent *event) {
+  if (annotation_mode_ && event->button() == Qt::LeftButton && annotation_drawing_) {
+    if (!pending_annotation_xy_.isEmpty()) pending_annotation_xy_.removeLast();
+    finish_annotation_polygon();
+    event->accept();
+    return;
+  }
   if (event->button() == Qt::LeftButton && mode_ != InteractionMode::Navigate &&
       tool_ == SelectionTool::PolygonPrism) {
     // The first click of the double-click already appended a vertex; drop it.
@@ -1009,6 +1274,19 @@ void PointCloudViewer::mouseDoubleClickEvent(QMouseEvent *event) {
 void PointCloudViewer::mouseMoveEvent(QMouseEvent *event) {
   const QPoint delta = event->pos() - last_mouse_position_;
   last_mouse_position_ = event->pos();
+  if (annotation_mode_) {
+    const auto world = unproject_to_ground(event->pos(), 0.0F);
+    if (world) emit annotation_coordinate_changed(world->x(), world->y(), world->z());
+    if (annotation_vertex_dragging_ && dragged_annotation_index_ >= 0 && dragged_vertex_index_ >= 0) {
+      const auto point = unproject_to_ground(event->pos(), 0.0F);
+      if (point && dragged_vertex_index_ < annotation_overlays_[dragged_annotation_index_].vertices_xy_m.size()) {
+        annotation_overlays_[dragged_annotation_index_].vertices_xy_m[dragged_vertex_index_] = QPointF(point->x(), point->y());
+      }
+    }
+    update();
+    event->accept();
+    return;
+  }
   if (selecting_ && tool_ == SelectionTool::ScreenRect) {
     selection_box_.set_end(event->pos());
   } else if (left_drag_) {
@@ -1020,6 +1298,11 @@ void PointCloudViewer::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void PointCloudViewer::mouseReleaseEvent(QMouseEvent *event) {
+  if (annotation_mode_ && event->button() == Qt::LeftButton && annotation_vertex_dragging_) {
+    finish_annotation_vertex_drag();
+    event->accept();
+    return;
+  }
   if (event->button() == Qt::LeftButton && selecting_ && tool_ == SelectionTool::ScreenRect) {
     selecting_ = false;
     if (selection_box_.is_valid()) select_screen_rect(selection_box_);
@@ -1066,6 +1349,53 @@ std::optional<QPoint> PointCloudViewer::project(std::size_t i, const QMatrix4x4 
       ndc.y() < -2.0F || ndc.y() > 2.0F) return std::nullopt;
   return QPoint(qRound((ndc.x() + 1.0F) * 0.5F * width()),
                 qRound((1.0F - ndc.y()) * 0.5F * height()));
+}
+
+std::optional<QPoint> PointCloudViewer::project_xy(const QPointF &point, const QMatrix4x4 &mvp) const {
+  const QVector4D clip = mvp * QVector4D(static_cast<float>(point.x()), static_cast<float>(point.y()), 0.0F, 1.0F);
+  if (clip.w() <= 0.0F) return std::nullopt;
+  const QVector3D ndc = clip.toVector3DAffine();
+  if (!std::isfinite(ndc.x()) || !std::isfinite(ndc.y()) || ndc.x() < -2.0F || ndc.x() > 2.0F ||
+      ndc.y() < -2.0F || ndc.y() > 2.0F) return std::nullopt;
+  return QPoint(qRound((ndc.x() + 1.0F) * 0.5F * width()),
+                qRound((1.0F - ndc.y()) * 0.5F * height()));
+}
+
+bool PointCloudViewer::pick_annotation_vertex(const QPoint &screen, int *vertex_index) const {
+  if (!vertex_index || selected_annotation_id_.isEmpty()) return false;
+  const auto mvp = camera_.projection_matrix() * camera_.view_matrix();
+  for (const auto &overlay : annotation_overlays_) {
+    if (overlay.annotation_id != selected_annotation_id_) continue;
+    qint64 best = 12 * 12;
+    int index = -1;
+    for (int i = 0; i < overlay.vertices_xy_m.size(); ++i) {
+      const auto projected = project_xy(overlay.vertices_xy_m[i], mvp);
+      if (!projected) continue;
+      const qint64 dx = static_cast<qint64>(projected->x()) - screen.x();
+      const qint64 dy = static_cast<qint64>(projected->y()) - screen.y();
+      const qint64 distance = dx * dx + dy * dy;
+      if (distance < best) { best = distance; index = i; }
+    }
+    if (index >= 0) { *vertex_index = index; return true; }
+  }
+  return false;
+}
+
+void PointCloudViewer::finish_annotation_vertex_drag() {
+  if (dragged_annotation_index_ >= 0 && dragged_vertex_index_ >= 0 &&
+      dragged_annotation_index_ < annotation_overlays_.size()) {
+    const auto &overlay = annotation_overlays_[dragged_annotation_index_];
+    if (overlay.vertices_xy_m != drag_original_vertices_) {
+      emit annotation_geometry_edited(overlay.annotation_id, overlay.geometry_kind,
+                                      overlay.vertices_xy_m);
+      if (overlay.geometry_kind == QStringLiteral("polygon_xy"))
+        emit annotation_polygon_edited(overlay.annotation_id, overlay.vertices_xy_m);
+    }
+  }
+  annotation_vertex_dragging_ = false;
+  dragged_annotation_index_ = -1;
+  dragged_vertex_index_ = -1;
+  drag_original_vertices_.clear();
 }
 
 std::optional<Eigen::Vector3f> PointCloudViewer::unproject_to_ground(const QPoint &screen,
@@ -1279,7 +1609,26 @@ void PointCloudViewer::select_sphere_at(const QPoint &screen, double radius_m) {
 }
 
 void PointCloudViewer::wheelEvent(QWheelEvent *event) {
-  camera_.zoom(static_cast<float>(event->angleDelta().y()));
+  // High-resolution wheels and touchpads often report pixelDelta without an
+  // angleDelta. Normalize pixels to wheel-like units so both devices zoom.
+  float wheel_delta = static_cast<float>(event->angleDelta().y());
+  if (qFuzzyIsNull(wheel_delta)) {
+    wheel_delta = static_cast<float>(event->pixelDelta().y()) * 8.0F;
+  }
+  if (qFuzzyIsNull(wheel_delta)) {
+    event->ignore();
+    return;
+  }
+
+  // Keep the camera target on the visible height band. The source cloud may
+  // extend far above a clipped greenhouse view, so its full-cloud center is
+  // not a useful zoom target.
+  const float anchor_z = zoom_anchor_height();
+  camera_.focus_height(anchor_z);
+  // Zoom around the fixed viewport center. Cursor-anchored zoom pans the
+  // whole greenhouse as the pointer moves during a wheel gesture, making ROI
+  // outlines appear to jump around.
+  camera_.zoom(wheel_delta);
   update();
   event->accept();
 }

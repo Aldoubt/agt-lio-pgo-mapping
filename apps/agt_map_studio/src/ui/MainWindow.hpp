@@ -1,6 +1,7 @@
 #pragma once
 
 #include "geometry/GeometryEvidenceModel.hpp"
+#include "annotation/ResearchAnnotationModel.hpp"
 #include "occupancy/GridMap.hpp"
 #include "occupancy/OccupancyViewer.hpp"
 #include "occupancy/RefinementModel.hpp"
@@ -24,11 +25,15 @@ class QDockWidget;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
+class QListWidget;
 class QMenu;
 class QPushButton;
+class QSlider;
 class QSpinBox;
 class QTableWidget;
 class QToolBar;
+class QTabBar;
+class QTreeWidget;
 
 namespace agt_map_studio {
 
@@ -57,6 +62,7 @@ public:
   // only the generated 2D map into the UI.
   bool open_mapping_review(const QString &package_dir, const QString &map_yaml,
                            const QString &review_output, QString *error = nullptr);
+  bool open_research_project(const QString &project_path, QString *error = nullptr);
 
 protected:
   void closeEvent(QCloseEvent *event) override;
@@ -75,6 +81,22 @@ private slots:
   void rebuild_confidence_review_dialog();
   void open_occupancy_map_dialog();
   void open_session_dialog();
+  void open_research_project_dialog();
+  void import_run008_candidate_dialog();
+  void propose_aisles_from_cloud();
+  void start_research_polygon();
+  void finish_research_polygon();
+  void toggle_research_edit(bool enabled);
+  void start_research_draw();
+  void set_research_navigate();
+  void delete_research_annotation();
+  void delete_research_vertex();
+  void capture_research_3d_selection();
+  void undo_research_annotation();
+  void redo_research_annotation();
+  void save_research_annotation();
+  void review_research_annotation();
+  void freeze_research_annotation();
   void save_view_dialog();
   void export_clean_map_dialog();
   void generate_occupancy_preview_dialog();
@@ -112,6 +134,13 @@ private slots:
   void load_structure_annotation();
   void pick_relocalization_point();
   void select_candidate_overlay(int row, int column);
+  void refresh_research_annotation_ui();
+  void update_research_view_summary();
+  void set_workspace(int index);
+  void set_ui_language(bool chinese);
+  void apply_ui_language();
+  bool import_run008_candidate(const QString &path, QString *error = nullptr);
+  QString research_reference_frame() const;
 
   // Workflow steps (each is asynchronous; completion continues the queue).
   void run_refine();
@@ -129,6 +158,7 @@ private:
   void create_workflow_dock();
   void create_confidence_dock();
   void create_relocalization_dock();
+  void create_research_annotation_dock();
   void display_block_preview(const QString &directory);
   void start_relocalization_tool(const ToolInvocation &invocation,
                                  std::function<void(const ToolResult &)> on_done);
@@ -163,11 +193,15 @@ private:
   PointCloudViewer *viewer_ = nullptr;
   OccupancyViewer *occupancy_viewer_ = nullptr;
   QStackedWidget *view_stack_ = nullptr;
+  QToolBar *workspace_toolbar_ = nullptr;
+  QTabBar *workspace_tabs_ = nullptr;
   QToolBar *toolbar_3d_ = nullptr;
+  QToolBar *annotation_toolbar_ = nullptr;
   QToolBar *occupancy_toolbar_ = nullptr;
   QDockWidget *workflow_dock_ = nullptr;
   QDockWidget *confidence_dock_ = nullptr;
   QDockWidget *relocalization_dock_ = nullptr;
+  QDockWidget *research_annotation_dock_ = nullptr;
   QLabel *confidence_details_label_ = nullptr;
   QLabel *geometry_summary_label_ = nullptr;
   QLabel *confidence_status_label_ = nullptr;
@@ -189,6 +223,30 @@ private:
   QSpinBox *query_keyframe_spin_ = nullptr;
   QSpinBox *candidate_top_k_spin_ = nullptr;
   QTableWidget *candidate_table_ = nullptr;
+  QTreeWidget *research_annotation_list_ = nullptr;
+  QComboBox *research_annotation_type_ = nullptr;
+  QLabel *annotation_instruction_label_ = nullptr;
+  QComboBox *research_display_mode_ = nullptr;
+  QSlider *research_comparison_opacity_ = nullptr;
+  QLabel *research_annotation_status_label_ = nullptr;
+  QLabel *research_coordinate_label_ = nullptr;
+  QCheckBox *annotation_z_filter_check_ = nullptr;
+  QDoubleSpinBox *annotation_z_min_spin_ = nullptr;
+  QDoubleSpinBox *annotation_z_max_spin_ = nullptr;
+  QLabel *annotation_project_name_label_ = nullptr;
+  QLabel *annotation_reference_session_label_ = nullptr;
+  QLabel *annotation_comparison_session_label_ = nullptr;
+  QLabel *annotation_view_summary_label_ = nullptr;
+  QLabel *annotation_details_label_ = nullptr;
+  QWidget *annotation_object_actions_ = nullptr;
+  QPushButton *annotation_edit_button_ = nullptr;
+  QPushButton *aisle_proposal_button_ = nullptr;
+  QPushButton *annotation_delete_button_ = nullptr;
+  QPushButton *annotation_lifecycle_button_ = nullptr;
+  QPushButton *annotation_save_button_ = nullptr;
+  QAction *annotation_navigate_action_ = nullptr;
+  QAction *annotation_draw_action_ = nullptr;
+  QAction *annotation_edit_action_ = nullptr;
   QCheckBox *show_structure_layer_ = nullptr;
   QCheckBox *show_blocks_layer_ = nullptr;
   QCheckBox *show_query_layer_ = nullptr;
@@ -230,15 +288,21 @@ private:
   QAction *mode_select_action_ = nullptr;
   QAction *mode_delete_action_ = nullptr;
   QAction *delete_points_action_ = nullptr;
+  QVector<QAction *> map_edit_menu_actions_;
   QLabel *edit_state_label_ = nullptr;
   QMenu *view_menu_ = nullptr;
   QMenu *tools_menu_ = nullptr;
+  QMenu *file_menu_ = nullptr;
+  QAction *english_language_action_ = nullptr;
+  QAction *chinese_language_action_ = nullptr;
+  bool chinese_ui_ = false;
   QAction *confirm_review_action_ = nullptr;
 
   RefinementModel refinement_model_;
   SelectionManager selection_manager_;
   SpatialConfidenceModel confidence_model_;
   GeometryEvidenceModel geometry_model_;
+  ResearchAnnotationModel research_annotation_model_;
   SpatialConfidenceEditor confidence_editor_;
   SelectionManager confidence_selection_manager_;
   QString confidence_derivative_dir_;
@@ -259,6 +323,16 @@ private:
   QString review_base_map_;
   QString review_output_;
   bool review_mode_ = false;
+  QString research_project_path_;
+  QString research_annotation_path_;
+  QString research_candidate_roi_path_;
+  QString research_selected_annotation_id_;
+  QString research_primary_session_id_;
+  QString research_comparison_session_id_;
+  QString research_dataset_id_;
+  bool research_annotation_mode_ = false;
+  bool research_annotation_drawing_3d_ = false;
+  int active_workspace_ = 0;
 };
 
 }  // namespace agt_map_studio
