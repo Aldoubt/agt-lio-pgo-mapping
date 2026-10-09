@@ -26,6 +26,8 @@ def parser():
     result.add_argument('bag', nargs='?', help='rosbag2 directory containing metadata.yaml (omit with --live)')
     result.add_argument('output', nargs='?', help='New/empty run directory (default: timestamped output)')
     result.add_argument('--rate', default=1.0, type=float, help='Playback speed, default 1.0')
+    result.add_argument('--product-config', help='Product YAML: sensor input, LIO frontend, optional manual processors')
+    result.add_argument('--capabilities', action='store_true', help='Print supported adapters/processors as JSON; no ROS required')
     result.add_argument('--backend', default=None,
                         help='mapping backend profile (default: fast_livo2_lio; FAST-LIO2 is disabled)')
     result.add_argument('--lidar-topic', default='auto', help='CustomMsg topic, default: auto-detect unique stream')
@@ -144,7 +146,22 @@ def main(argv=None):
     repository = Path(os.environ.get('AGT_MAPPING_REPOSITORY', Path(__file__).resolve().parents[3]))
     workspace = repository.parent.parent
     try:
-        from .backend_registry import BackendSelectionError, resolve_backend
+        from .backend_registry import BackendSelectionError, PROFILE_DIR, resolve_backend
+        from .product_pipeline import (
+            ProductPipelineError, apply_to_cli, capability_report, load_product_pipeline,
+        )
+        if args.capabilities:
+            print(json.dumps(capability_report(), ensure_ascii=False, indent=2))
+            return 0
+        product = None
+        product_path = Path(args.product_config).expanduser() if args.product_config else (
+            PROFILE_DIR.parent / 'product_pipeline.yaml')
+        if args.product_config or product_path.is_file():
+            try:
+                product = load_product_pipeline(product_path)
+                apply_to_cli(args, product)
+            except ProductPipelineError as exc:
+                raise PreflightError(str(exc)) from exc
 
         try:
             selected_profile = resolve_backend(args.backend, check_sources=False)
@@ -187,6 +204,8 @@ def main(argv=None):
             source, output, command, plan = _live_plan(
                 args, workspace, setup, ros_setup, start_rviz, selected_backend)
             plan['environment'] = environment
+            if product is not None:
+                plan['product_pipeline'] = product.as_dict()
             plan['backend_overlay'] = str(backend_setup)
             if args.dry_run:
                 print(json.dumps(plan, ensure_ascii=False, indent=2))
@@ -227,6 +246,8 @@ def main(argv=None):
             'environment': environment, 'command': command,
             'runtime_checked': False,
         }
+        if product is not None:
+            plan['product_pipeline'] = product.as_dict()
         if args.dry_run:
             print(json.dumps(plan, ensure_ascii=False, indent=2))
             return 0
