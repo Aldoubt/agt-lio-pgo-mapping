@@ -15,6 +15,5 @@ processors:
   dynamic_cleanup_3d: disabled
   route_authoring: disabled
   formal_publish: disabled
-# Path reference only. Mapping never writes the navigation runtime's active map.
-map_store:
-  root: ../../../maps
+# Optional: set an absolute map_store.root for the common /maps directory.
+# This product config never changes navigation runtime active_map.yaml.
