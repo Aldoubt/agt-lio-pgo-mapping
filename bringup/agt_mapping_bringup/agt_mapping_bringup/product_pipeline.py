@@ -155,7 +155,7 @@ def load_product_pipeline(path: str | Path) -> ProductPipeline:
     sensor = _mapping(document.get('sensor'), 'sensor')
     _keys(sensor, {'id', 'lidar_topic', 'imu_topic'}, 'sensor')
     sensor_id = sensor.get('id')
-    if sensor_id not in SENSOR_INPUTS:
+    if not isinstance(sensor_id, str) or sensor_id not in SENSOR_INPUTS:
         raise ProductPipelineError(
             f'sensor {sensor_id!r} has no verified input adapter; '
             'add a tested driver/topic/format adapter first')
@@ -167,7 +167,7 @@ def load_product_pipeline(path: str | Path) -> ProductPipeline:
     frontend = _mapping(document.get('frontend'), 'frontend')
     _keys(frontend, {'backend_id'}, 'frontend')
     frontend_id = frontend.get('backend_id')
-    if frontend_id not in BACKEND_IDS:
+    if not isinstance(frontend_id, str) or frontend_id not in BACKEND_IDS:
         raise ProductPipelineError(f'unknown frontend backend_id: {frontend_id!r}')
     if frontend_id not in VERIFIED_SESSION_FRONTENDS:
         raise ProductPipelineError(
