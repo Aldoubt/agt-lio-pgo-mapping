@@ -11,7 +11,7 @@ setup(
         ('share/' + package_name, ['package.xml', 'README.md', 'GREENHOUSE.md']),
         ('share/' + package_name + '/config', ['config/greenhouse_scenes.example.yaml']),
     ],
-    install_requires=['setuptools', 'numpy', 'scipy', 'PyYAML'],
+    install_requires=['setuptools', 'numpy', 'scipy', 'PyYAML', 'shapely'],
     tests_require=['pytest'],
     zip_safe=True,
     maintainer='AGT Mapping',
