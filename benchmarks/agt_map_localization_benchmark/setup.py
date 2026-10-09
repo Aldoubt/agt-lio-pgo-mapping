@@ -11,7 +11,7 @@ setup(
         ('share/' + package_name, ['package.xml', 'README.md', 'GREENHOUSE.md']),
         ('share/' + package_name + '/config', ['config/greenhouse_scenes.example.yaml']),
     ],
-    install_requires=['setuptools', 'numpy', 'scipy', 'PyYAML'],
+    install_requires=['setuptools', 'numpy', 'scipy', 'PyYAML', 'shapely'],
     tests_require=['pytest'],
     zip_safe=True,
     maintainer='AGT Mapping',
@@ -28,6 +28,7 @@ setup(
             'agt_run_relocalization_query = agt_map_localization_benchmark.relocalization_mvp:main',
             'agt_verify_relocalization_evidence = agt_map_localization_benchmark.relocalization_mvp:verify_main',
             'agt_export_relocalization_candidate = agt_map_localization_benchmark.relocalization_mvp:candidate_overlay_main',
+            'agt_mapstudio_workflow = agt_map_localization_benchmark.study_workflow:main',
         ],
     },
 )

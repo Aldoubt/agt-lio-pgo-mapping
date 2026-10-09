@@ -1,5 +1,16 @@
 # AGT LIO–PGO Mapping
 
+## Product integration V1 — staged for cloud review
+
+当前独立分支提供可选传感器输入、FAST-LIVO2 默认建图前端以及独立手动地图处理的显式配置；未验收的 Point-LIO、LIO-SAM、动态清理/地形/路线后端不会自动启动。详细见 [产品边界与命令](docs/product_mapping_architecture_v1.md) 和 [集成审计](docs/audits/mapping_product_integration_20261009.md)。
+
+```bash
+bash scripts/run_mapping.sh --capabilities
+bash scripts/run_mapping.sh /path/to/bag --dry-run --product-config bringup/agt_mapping_bringup/config/product_pipeline.yaml
+```
+
+这次仅迁入 Operator Workflow 的离线 Study CLI 与独立渲染抽样助手，原生 MapStudio GUI 尚未完成分支融合和真实界面验收。`main` 与原分支均未改变。
+
 ## MapStudio Relocalization MVP — SOFTWARE PARTIAL
 
 Implemented: immutable keyframe blocks and index, evidence contracts, sparse offline GLOBAL/Top-K/GICP queries, candidate inspection and query/candidate overlays. The KF590 green-house run recorded a same-session `FALSE_ACCEPT` diagnostic. Reviewed row/headland freeze, row-middle/end/headland query coverage, a representative 20–50 query set, interactive close/reopen acceptance, independent localization ground truth, and the scientific conclusion remain incomplete. This is not production-ready.
