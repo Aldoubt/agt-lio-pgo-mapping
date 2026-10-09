@@ -103,3 +103,19 @@ def test_schema_and_unknown_fields_fail_explicitly(tmp_path):
         load_product_pipeline(_write(tmp_path, schema_version=2))
     with pytest.raises(ProductPipelineError, match='unknown keys'):
         load_product_pipeline(_write(tmp_path, unwanted='value'))
+
+
+def test_shipped_product_config_is_valid():
+    shipped = Path(__file__).resolve().parents[1] / 'config' / 'product_pipeline.yaml'
+    plan = load_product_pipeline(shipped)
+    assert plan.frontend_id == 'fast_livo2_lio'
+    assert plan.sensor_id == 'mid360_custom'
+    assert plan.map_store is None  # do not guess a path from an install overlay
+
+
+def test_capability_cli_requires_neither_bag_nor_ros(capsys):
+    from agt_mapping_bringup.cli import main
+    assert main(['--capabilities']) == 0
+    data = __import__('json').loads(capsys.readouterr().out)
+    assert data['frontends']
+    assert data['no_automatic_fallback']
