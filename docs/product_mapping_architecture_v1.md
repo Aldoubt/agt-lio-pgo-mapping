@@ -25,8 +25,8 @@ a composition layer over existing modules, NOT another map/schema validator.
 
 ## Usage (offline)
 
-    ./scripts/run_mid360_mapping.sh --capabilities
-    ./scripts/run_mid360_mapping.sh /path/to/bag --dry-run \
+    bash scripts/run_mapping.sh --capabilities
+    bash scripts/run_mapping.sh /path/to/bag --dry-run \
       --product-config bringup/agt_mapping_bringup/config/product_pipeline.yaml
 
 The original invocation works unchanged. Without an explicit --product-config,
