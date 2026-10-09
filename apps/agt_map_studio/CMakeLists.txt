@@ -176,6 +176,11 @@ if(BUILD_TESTING)
   target_compile_definitions(test_research_annotation_model PRIVATE ${PCL_DEFINITIONS})
   target_link_libraries(test_research_annotation_model ${QT_WIDGETS_TARGET} Eigen3::Eigen)
 
+  # Ported independent render-cap policy; does not modify the current viewer.
+  ament_add_gtest(test_point_cloud_render_sampler
+    test/test_point_cloud_render_sampler.cpp)
+  target_include_directories(test_point_cloud_render_sampler PRIVATE src)
+
   ament_add_gtest(test_aisle_proposal_generator
     test/test_aisle_proposal_generator.cpp
     src/annotation/AisleProposalGenerator.cpp)
