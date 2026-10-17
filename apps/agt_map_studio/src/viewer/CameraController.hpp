@@ -20,6 +20,8 @@ public:
   void set_key(int key, bool pressed);
   void orbit(float dx, float dy);
   void pan(float dx, float dy);
+  void pan_world(const QVector3D &delta);
+  void focus_height(float z);
   void zoom(float wheel_delta);
   void reset(const QVector3D &min_bound, const QVector3D &max_bound);
   void set_isometric();

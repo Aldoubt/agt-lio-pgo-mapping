@@ -121,3 +121,25 @@ does not generate PGM/Nav2 maps, run ROS nodes, filter dynamically, or modify
 FAST-LIO2/PGO and the mapping pipeline.
 
 Round 2B can add a PCD-to-PGM baseline exporter and a 2D occupancy-map editor.
+
+## Phase 3A: geometry sidecar inspection (read-only)
+
+Open the original optimized PGO package first, then its matching V1 spatial
+confidence derivative. Next choose **File → Open Geometry Evidence Sidecar
+(read-only)**, or start with `--package <parent> --spatial-confidence <v1>
+--spatial-geometry <geometry_sidecar>`. Core validates the sidecar's three
+files, parent checksum provenance, the full V1 derivative, exact VoxelKeys
+and center/voxel-size correspondence. A failed load retains the previous
+Studio model and unsaved V1 edit intent.
+
+**View** adds five read-only geometry coloring modes: PCA normal shape (RGB =
+linearity, planarity, scattering), Ht directional Q, Hr rotational Q, Ht
+weak-axis, Hr weak-axis (RGB = absolute map x/y/z of the weak eigenvector).
+Neutral gray means invalid/insufficient evidence, **not Q=0**. The existing
+voxel selection and inspector show local PCA support, covariance eigenvalues,
+shape, Ht/Hr separate eigenvalues, weak directions, Q, condition and support
+counts. Raw `map.pcd` point indices remain separate from voxel indices.
+This view never changes V1 geometry_score/auto_confidence, saved override
+intent, stable selection, or any source file; no geometry-edit or map-publish
+path is added. Ht and Hr have different units and are not combined into a
+probability or location-performance claim.

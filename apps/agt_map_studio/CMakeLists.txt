@@ -10,6 +10,7 @@ set(CMAKE_AUTORCC ON)
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(agt_pcd2grid_exporter REQUIRED)
+find_package(agt_spatial_map_core REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io)
@@ -28,7 +29,17 @@ endif()
 
 add_executable(map_viewer
   src/main.cpp
+  src/annotation/AisleProposalGenerator.cpp
+  src/annotation/ResearchAnnotationModel.cpp
   src/io/PCDLoader.cpp
+  src/confidence/SpatialConfidenceModel.cpp
+  src/confidence/SpatialConfidenceLoader.cpp
+  src/confidence/ConfidenceColor.cpp
+  src/confidence/SpatialConfidenceEditor.cpp
+  src/confidence/SpatialConfidenceIntentIO.cpp
+  src/geometry/GeometryEvidenceModel.cpp
+  src/geometry/GeometryEvidenceLoader.cpp
+  src/geometry/GeometryColor.cpp
   src/viewer/CameraController.cpp
   src/viewer/PointCloudViewer.cpp
   src/selection/SelectionBox.cpp
@@ -64,6 +75,7 @@ target_link_libraries(map_viewer
   ${QT_OPENGL_TARGET}
   yaml-cpp
   agt_pcd2grid_exporter::agt_pcd2grid_exporter
+  agt_spatial_map_core::agt_spatial_map_core
   OpenGL::GL
 )
 
@@ -76,7 +88,85 @@ install(DIRECTORY config
 )
 
 if(BUILD_TESTING)
+  # Separate real Qt GUI acceptance binary (run explicitly on an authorized X11
+  # display with S1-only disposable fixture directories, not on CI/headless).
+  if(Qt6_FOUND)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    set(QT_TEST_TARGET Qt6::Test)
+  else()
+    find_package(Qt5 REQUIRED COMPONENTS Test)
+    set(QT_TEST_TARGET Qt5::Test)
+  endif()
+  get_target_property(_s1_gui_sources map_viewer SOURCES)
+  list(REMOVE_ITEM _s1_gui_sources src/main.cpp)
+  add_executable(s1_gui_draft_acceptance
+    test/test_s1_gui_draft_acceptance.cpp ${_s1_gui_sources})
+  target_include_directories(s1_gui_draft_acceptance PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_compile_definitions(s1_gui_draft_acceptance PRIVATE ${PCL_DEFINITIONS})
+  ament_target_dependencies(s1_gui_draft_acceptance ament_index_cpp)
+  target_link_libraries(s1_gui_draft_acceptance
+    ${PCL_LIBRARIES} ${QT_WIDGETS_TARGET} ${QT_OPENGL_TARGET} ${QT_TEST_TARGET}
+    yaml-cpp agt_pcd2grid_exporter::agt_pcd2grid_exporter
+    agt_spatial_map_core::agt_spatial_map_core OpenGL::GL)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_confidence_color
+    test/test_confidence_color.cpp src/confidence/ConfidenceColor.cpp)
+  target_include_directories(test_confidence_color PRIVATE src)
+
+  ament_add_gtest(test_camera_controller
+    test/test_camera_controller.cpp src/viewer/CameraController.cpp)
+  target_include_directories(test_camera_controller PRIVATE src)
+  target_link_libraries(test_camera_controller ${QT_WIDGETS_TARGET})
+
+  ament_add_gtest(test_confidence_editor
+    test/test_confidence_editor.cpp
+    src/confidence/SpatialConfidenceModel.cpp
+    src/confidence/SpatialConfidenceEditor.cpp)
+  target_include_directories(test_confidence_editor PRIVATE src)
+  target_link_libraries(test_confidence_editor agt_spatial_map_core::agt_spatial_map_core)
+
+  ament_add_gtest(test_confidence_roundtrip
+    test/test_confidence_roundtrip.cpp
+    src/confidence/SpatialConfidenceModel.cpp
+    src/confidence/SpatialConfidenceLoader.cpp
+    src/confidence/SpatialConfidenceEditor.cpp
+    src/confidence/SpatialConfidenceIntentIO.cpp
+    src/io/PCDLoader.cpp
+    src/selection/SelectionManager.cpp)
+  target_include_directories(test_confidence_roundtrip PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_compile_definitions(test_confidence_roundtrip PRIVATE ${PCL_DEFINITIONS})
+  ament_target_dependencies(test_confidence_roundtrip ament_index_cpp)
+  target_link_libraries(test_confidence_roundtrip
+    agt_spatial_map_core::agt_spatial_map_core ${PCL_LIBRARIES}
+    ${QT_WIDGETS_TARGET} yaml-cpp)
+
+  ament_add_gtest(test_spatial_confidence_loader
+    test/test_spatial_confidence_loader.cpp
+    src/confidence/SpatialConfidenceModel.cpp
+    src/confidence/SpatialConfidenceLoader.cpp
+  )
+  target_include_directories(test_spatial_confidence_loader PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_compile_definitions(test_spatial_confidence_loader PRIVATE ${PCL_DEFINITIONS})
+  target_link_libraries(test_spatial_confidence_loader
+    agt_spatial_map_core::agt_spatial_map_core ${PCL_LIBRARIES} yaml-cpp)
+
+  ament_add_gtest(test_geometry_color
+    test/test_geometry_color.cpp
+    src/geometry/GeometryColor.cpp src/confidence/ConfidenceColor.cpp)
+  target_include_directories(test_geometry_color PRIVATE src)
+  target_link_libraries(test_geometry_color agt_spatial_map_core::agt_spatial_map_core)
+
+  ament_add_gtest(test_geometry_loader
+    test/test_geometry_loader.cpp
+    src/geometry/GeometryEvidenceModel.cpp
+    src/geometry/GeometryEvidenceLoader.cpp
+    src/confidence/SpatialConfidenceModel.cpp
+    src/confidence/SpatialConfidenceLoader.cpp)
+  target_include_directories(test_geometry_loader PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_compile_definitions(test_geometry_loader PRIVATE ${PCL_DEFINITIONS})
+  target_link_libraries(test_geometry_loader
+    agt_spatial_map_core::agt_spatial_map_core ${PCL_LIBRARIES} yaml-cpp)
+
   ament_add_gtest(test_pcd_loader
     test/test_pcd_loader.cpp
     src/io/PCDLoader.cpp
@@ -98,6 +188,19 @@ if(BUILD_TESTING)
     ${QT_WIDGETS_TARGET}
     yaml-cpp
   )
+
+  ament_add_gtest(test_research_annotation_model
+    test/test_research_annotation_model.cpp
+    src/annotation/ResearchAnnotationModel.cpp)
+  target_include_directories(test_research_annotation_model PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_compile_definitions(test_research_annotation_model PRIVATE ${PCL_DEFINITIONS})
+  target_link_libraries(test_research_annotation_model ${QT_WIDGETS_TARGET} Eigen3::Eigen)
+
+  ament_add_gtest(test_aisle_proposal_generator
+    test/test_aisle_proposal_generator.cpp
+    src/annotation/AisleProposalGenerator.cpp)
+  target_include_directories(test_aisle_proposal_generator PRIVATE src)
+  target_link_libraries(test_aisle_proposal_generator ${QT_WIDGETS_TARGET})
 
   ament_add_gtest(test_occupancy_viewer
     test/test_occupancy_viewer.cpp

@@ -1,0 +1,15 @@
+# Phase 3A, schema_version 1. Independent directional evidence only.
+# Uses the V1 confidence derivative's voxel size and verified PGO patches.
+# Radii are in meters. A normal is invalid if lambda_mid <= epsilon.normal_covariance_m2.
+# Ht is dimensionless; Hr is m^2: they NEVER form an unscaled 6x6 score.
+schema_version: 1
+normal:
+  radius: 0.4
+  min_points: 8
+observability:
+  radius: 0.8
+  min_valid_normals: 6
+epsilon:
+  normal_covariance_m2: 0.000001
+  translation: 0.000001
+  rotation_m2: 0.000001

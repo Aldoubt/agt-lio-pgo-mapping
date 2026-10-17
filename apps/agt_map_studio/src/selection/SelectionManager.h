@@ -61,6 +61,7 @@ public:
   bool redo();
 
   const std::vector<PointStatus> &statuses() const { return statuses_; }
+  const std::vector<std::size_t> &selected_indices() const { return selected_indices_; }
   const std::vector<EditOperation> &history() const { return history_; }
   const AxisAlignedBoundingBox &selection_box() const { return selection_geometry_.box; }
   const SelectionGeometry &selection_geometry() const { return selection_geometry_; }

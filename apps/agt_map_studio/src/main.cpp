@@ -7,6 +7,8 @@
 #include <QCommandLineParser>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QDir>
+#include <QTimer>
 
 #include <exception>
 
@@ -33,10 +35,32 @@ int main(int argc, char **argv) {
       QStringLiteral("Open a mapping package or a maps/<id>/<version> map package directory."),
       QStringLiteral("dir"));
   parser.addOption(package_option);
+  const QCommandLineOption confidence_option(
+      QStringLiteral("spatial-confidence"),
+      QStringLiteral("Open a verified Phase 1 confidence derivative after --package "
+                     "(single-session evidence; no production publication)."),
+      QStringLiteral("dir"));
+  parser.addOption(confidence_option);
+  const QCommandLineOption geometry_option(
+      QStringLiteral("spatial-geometry"),
+      QStringLiteral("Open a Phase 3A read-only geometry sidecar after --package "
+                     "and --spatial-confidence."),
+      QStringLiteral("dir"));
+  parser.addOption(geometry_option);
   const QCommandLineOption session_option(
       {QStringLiteral("s"), QStringLiteral("session")},
       QStringLiteral("Restore a studio_session.yaml."), QStringLiteral("path"));
   parser.addOption(session_option);
+  const QCommandLineOption research_project_option(
+      QStringLiteral("research-project"),
+      QStringLiteral("Open a hash-verified MapStudio Research Asset V1 project.json."),
+      QStringLiteral("path"));
+  parser.addOption(research_project_option);
+  const QCommandLineOption capture_window_option(
+      QStringLiteral("capture-window-and-exit"),
+      QStringLiteral("Save a PNG of the startup MapStudio window after it is shown, then exit."),
+      QStringLiteral("path"));
+  parser.addOption(capture_window_option);
   const QCommandLineOption review_package_option(
       QStringLiteral("review-package"),
       QStringLiteral("Open a mapping package in lightweight 2D review mode (PCD is not rendered)."),
@@ -69,7 +93,14 @@ int main(int argc, char **argv) {
   const QString review_output = parser.value(review_output_option);
   const bool review_requested =
       !review_package.isEmpty() || !review_map.isEmpty() || !review_output.isEmpty();
-  if (review_requested) {
+  const QString research_project = parser.value(research_project_option);
+  const bool research_requested = !research_project.isEmpty();
+  if (review_requested && research_requested) {
+    window.show();
+    QMessageBox::critical(&window, QStringLiteral("Conflicting startup modes"),
+                          QStringLiteral("--research-project cannot be combined with --review-* options."));
+  }
+  if (review_requested && !research_requested) {
     if (review_package.isEmpty() || review_map.isEmpty() || review_output.isEmpty()) {
       window.show();
       QMessageBox::critical(
@@ -85,11 +116,18 @@ int main(int argc, char **argv) {
       }
     }
   }
+  if (research_requested && !review_requested) {
+    QString error;
+    if (!window.open_research_project(QFileInfo(research_project).absoluteFilePath(), &error)) {
+      window.show();
+      QMessageBox::critical(&window, QStringLiteral("Open research project failed"), error);
+    }
+  }
   QString pcd_path = parser.value(pcd_option);
   if (pcd_path.isEmpty() && !parser.positionalArguments().isEmpty()) {
     pcd_path = parser.positionalArguments().first();
   }
-  if (!review_requested && !pcd_path.isEmpty()) {
+  if (!review_requested && !research_requested && !pcd_path.isEmpty()) {
     QString error;
     if (!window.open_pcd(QFileInfo(pcd_path).absoluteFilePath(), &error)) {
       window.show();
@@ -97,7 +135,7 @@ int main(int argc, char **argv) {
     }
   }
   const QString package_path = parser.value(package_option);
-  if (!review_requested && !package_path.isEmpty()) {
+  if (!review_requested && !research_requested && !package_path.isEmpty()) {
     QString error;
     if (!window.open_mapping_package(QFileInfo(package_path).absoluteFilePath(), &error)) {
       window.show();
@@ -105,15 +143,31 @@ int main(int argc, char **argv) {
     }
   }
   const QString session_path = parser.value(session_option);
-  if (!review_requested && !session_path.isEmpty()) {
+  if (!review_requested && !research_requested && !session_path.isEmpty()) {
     QString error;
     if (!window.open_session(QFileInfo(session_path).absoluteFilePath(), &error)) {
       window.show();
       QMessageBox::critical(&window, QStringLiteral("Open session failed"), error);
     }
   }
+  const QString confidence_path = parser.value(confidence_option);
+  if (!review_requested && !research_requested && !confidence_path.isEmpty()) {
+    QString error;
+    if (!window.open_spatial_confidence(QFileInfo(confidence_path).absoluteFilePath(), &error)) {
+      window.show();
+      QMessageBox::critical(&window, QStringLiteral("Open spatial confidence failed"), error);
+    }
+  }
+  const QString geometry_path = parser.value(geometry_option);
+  if (!review_requested && !research_requested && !geometry_path.isEmpty()) {
+    QString error;
+    if (!window.open_geometry_evidence(QFileInfo(geometry_path).absoluteFilePath(), &error)) {
+      window.show();
+      QMessageBox::critical(&window, QStringLiteral("Open spatial geometry failed"), error);
+    }
+  }
   const QString map_path = parser.value(map_option);
-  if (!review_requested && !map_path.isEmpty()) {
+  if (!review_requested && !research_requested && !map_path.isEmpty()) {
     QString error;
     if (!window.open_occupancy_map(QFileInfo(map_path).absoluteFilePath(), &error)) {
       window.show();
@@ -121,5 +175,19 @@ int main(int argc, char **argv) {
     }
   }
   window.show();
+  const QString capture_path = parser.value(capture_window_option);
+  if (!capture_path.isEmpty()) {
+    QTimer::singleShot(3000, &application, [&window, &application, capture_path]() {
+      QFileInfo output(capture_path);
+      output.dir().mkpath(QStringLiteral("."));
+      QApplication::processEvents();
+      if (!window.grab().save(output.absoluteFilePath(), "PNG")) {
+        qWarning("Could not save MapStudio screenshot to %s", qPrintable(output.absoluteFilePath()));
+        application.exit(2);
+        return;
+      }
+      application.exit(0);
+    });
+  }
   return application.exec();
 }
