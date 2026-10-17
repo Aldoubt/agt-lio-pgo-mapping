@@ -11,10 +11,8 @@
   <depend>ament_index_cpp</depend>
   <depend>agt_pcd2grid_exporter</depend>
   <depend>agt_spatial_map_core</depend>
+  <!-- Mandatory for reviewed spatial/map-package operations; optional research tools are checked on demand. -->
   <exec_depend>agt_mapping_artifacts</exec_depend>
-  <exec_depend>agt_greenhouse_annotation</exec_depend>
-  <exec_depend>agt_map_localization_benchmark</exec_depend>
-  <exec_depend>agt_global_relocalization_native</exec_depend>
   <depend>eigen3_cmake_module</depend>
 
   <build_depend>qtbase5-dev</build_depend>

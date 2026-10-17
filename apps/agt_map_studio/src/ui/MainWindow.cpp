@@ -2215,8 +2215,13 @@ void MainWindow::start_structure_editor() {
     QMessageBox::warning(this, QStringLiteral("Unsafe annotation draft output"), output_error);
     return;
   }
-  if (!ExternalToolRunner::program_available(QStringLiteral("ros2"))) {
-    QMessageBox::critical(this, QStringLiteral("ROS 2 unavailable"), QStringLiteral("Source ROS 2 Humble and the workspace overlay first."));
+  QString missing_annotation_tool;
+  if (!tools_available({QStringLiteral("agt_greenhouse_annotation/greenhouse_annotator")},
+                       &missing_annotation_tool)) {
+    QMessageBox::critical(this, QStringLiteral("Optional annotator unavailable"),
+                          QStringLiteral("Optional research tool is not installed: %1. "
+                                         "The local MapStudio DRAFT remains editable.")
+                              .arg(missing_annotation_tool));
     return;
   }
   const QString revision = QStringLiteral("%1_%2").arg(stamp())

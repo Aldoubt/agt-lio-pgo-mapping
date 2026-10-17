@@ -143,3 +143,17 @@ This view never changes V1 geometry_score/auto_confidence, saved override
 intent, stable selection, or any source file; no geometry-edit or map-publish
 path is added. Ht and Hr have different units and are not combined into a
 probability or location-performance claim.
+
+## Minimal Offline-DRAFT installation profile (S5.2)
+
+The `agt_map_studio` and `agt_spatial_map_core` binaries require
+`agt_pcd2grid_exporter` and `agt_mapping_artifacts` (the immutable PGO parent
+validator used by reviewed spatial export). Install these exact-version AGT
+packages in a clean Humble prefix. `agt_greenhouse_annotation`,
+`agt_map_localization_benchmark`, and `agt_global_relocalization_native` are
+**optional research tools**, not required to open/edit/save a local Studio DRAFT.
+They are resolved per operation; unavailable producers are rejected before
+execution. Missing `agt_map_converter`, `agt_map_manager` or
+`agt_map_refinement_core` similarly blocks the corresponding publish or
+conversion command and must never be replaced by source from an unidentified
+overlay. Editing a local DRAFT is **not** a READY Site or Route publication.
