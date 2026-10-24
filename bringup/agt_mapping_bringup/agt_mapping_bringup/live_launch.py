@@ -11,6 +11,7 @@ Differences from the offline replay (session_launch.py):
     finalizer (mapping_export_verified) produces map_package.
 """
 import atexit
+import os
 from pathlib import Path
 import signal
 
@@ -59,13 +60,15 @@ def launch_live_session(context, *, sensor_only=False):
         'drain_seconds': validate_number(value('drain_seconds'), 'drain_seconds', allow_zero=True),
         'publish_freq': source.publish_freq,
         'frame_id': value('frame_id'),
-        'mapping_sensor_owner': 'yhs_sensor_only' if sensor_only else 'bunker_legacy_hardware',
+        'mapping_sensor_owner': os.environ.get('AGT_FIELD_TEST_ROBOT', 'yhs_sensor_only') if sensor_only else 'bunker_legacy_hardware',
         **{key: parse_bool(value(key)) for key in ('start_rviz', 'keep_open')},
     }
     if options['export_timeout'] <= options['drain_seconds']:
         raise ValueError('export_timeout must exceed drain_seconds')
     share = Path(get_package_share_directory('agt_mapping_bringup'))
-    lio_config = share / 'config' / 'fastlio2_mid360.yaml'
+    lio_config = Path(os.environ.get('AGT_FIELD_TEST_FASTLIO_CONFIG', str(share / 'config' / 'fastlio2_mid360.yaml'))).resolve()
+    if not lio_config.is_file():
+        raise RuntimeError(f'FAST-LIO2 calibration not found: {lio_config}')
     remappings = frontend_remappings(lio_config, source.imu_topic)
     text = lambda v: ParameterValue(str(v), value_type=str)
     if sensor_only:

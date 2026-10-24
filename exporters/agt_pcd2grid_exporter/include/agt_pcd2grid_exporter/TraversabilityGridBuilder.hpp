@@ -27,6 +27,11 @@ public:
                     const ProjectionParameters &parameters, OccupancyGrid *grid,
                     ProjectionStats *stats, TraversabilityStats *traversability,
                     std::string *error, const std::string &debug_dir = "");
+  static bool build(const std::string &package_dir,
+                    const ProjectionParameters &parameters, OccupancyGrid *grid,
+                    ProjectionStats *stats, TraversabilityStats *traversability,
+                    std::string *error, const std::string &debug_dir,
+                    const std::string &cloud_output_dir);
 };
 
 }  // namespace agt_pcd2grid_exporter

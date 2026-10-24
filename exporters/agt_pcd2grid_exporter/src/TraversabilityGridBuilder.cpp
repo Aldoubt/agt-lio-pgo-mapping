@@ -351,6 +351,15 @@ bool TraversabilityGridBuilder::build(const std::string &package_dir,
                                       OccupancyGrid *grid, ProjectionStats *stats,
                                       TraversabilityStats *traversability, std::string *error,
                                       const std::string &debug_dir) {
+  return build(package_dir, parameters, grid, stats, traversability, error, debug_dir, "");
+}
+
+bool TraversabilityGridBuilder::build(const std::string &package_dir,
+                                      const ProjectionParameters &parameters,
+                                      OccupancyGrid *grid, ProjectionStats *stats,
+                                      TraversabilityStats *traversability, std::string *error,
+                                      const std::string &debug_dir,
+                                      const std::string &cloud_output_dir) {
   if (!grid || !stats || !traversability) {
     if (error) *error = "grid, stats and traversability stats must not be null";
     return false;
@@ -727,6 +736,43 @@ bool TraversabilityGridBuilder::build(const std::string &package_dir,
     stats->accepted_y_max = std::max(stats->accepted_y_max, point.y);
   }
   stats->accepted_points = stats->ground_points + stats->obstacle_points;
+  // Use the SAME world-voxel observations as the grid. Ground remains useful
+  // even when observed only nearby; unconfirmed elevated returns are retained
+  // separately as candidates, not labelled as semantically detected people.
+  if (!cloud_output_dir.empty()) {
+    pcl::PointCloud<pcl::PointXYZ> retained, removed;
+    std::size_t retained_ground = 0U;
+    for (const auto &point : points) {
+      const bool keep = point.persistent || point.kind == kGround;
+      auto &cloud = keep ? retained : removed;
+      cloud.push_back(pcl::PointXYZ(point.x, point.y, point.z));
+      if (keep && !point.persistent) ++retained_ground;
+    }
+    std::filesystem::create_directories(cloud_output_dir);
+    const auto root = std::filesystem::path(cloud_output_dir);
+    const auto save = [](const std::filesystem::path &path,
+                         const pcl::PointCloud<pcl::PointXYZ> &cloud) {
+      if (!cloud.empty()) return pcl::io::savePCDFileBinary(path.string(), cloud);
+      // PCL throws for an empty cloud. No rejected candidates is a valid result.
+      std::ofstream empty(path, std::ios::binary);
+      empty << "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
+               "WIDTH 0\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS 0\nDATA binary\n";
+      return empty.good() ? 0 : -1;
+    };
+    if (save(root / "static_map.pcd", retained) != 0 ||
+        save(root / "removed_candidates.pcd", removed) != 0) {
+      if (error) *error = "cannot write temporal cloud outputs";
+      return false;
+    }
+    std::ofstream report(root / "cloud_cleanup.yaml");
+    report << "input_points: " << stats->input_points << '\n'
+           << "self_filtered_points: " << traversability->self_filtered_points << '\n'
+           << "retained_points: " << retained.size() << '\n'
+           << "removed_candidate_points: " << removed.size() << '\n'
+           << "retained_near_or_single_observation_ground: " << retained_ground << '\n'
+           << "near_field_only_points: " << traversability->near_field_only_points << '\n';
+    if (!report.good()) { if (error) *error = "cannot write cleanup report"; return false; }
+  }
   if (!have_bounds) {
     if (error) *error = "no points remain after traversability classification";
     return false;

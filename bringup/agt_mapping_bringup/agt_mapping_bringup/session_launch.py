@@ -1,5 +1,6 @@
 """Launch composition and explicit lifecycle for one offline mapping session."""
 import atexit
+import os
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
@@ -38,7 +39,9 @@ def launch_session(context):
     if options['export_timeout'] <= options['drain_seconds']:
         raise ValueError('export_timeout must exceed drain_seconds')
     share = Path(get_package_share_directory('agt_mapping_bringup'))
-    lio_config = share / 'config' / 'fastlio2_mid360.yaml'
+    lio_config = Path(os.environ.get('AGT_FIELD_TEST_FASTLIO_CONFIG', str(share / 'config' / 'fastlio2_mid360.yaml'))).resolve()
+    if not lio_config.is_file():
+        raise RuntimeError(f'FAST-LIO2 calibration not found: {lio_config}')
     remappings = frontend_remappings(lio_config, bag.imu_topic)
     text = lambda value: ParameterValue(str(value), value_type=str)
     nodes = [
