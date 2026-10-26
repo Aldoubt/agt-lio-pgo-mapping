@@ -17,6 +17,9 @@ struct ToolInvocation {
   QStringList arguments;
   QString working_directory;
   QString log_path;  // optional: append combined output here
+  // Offline planner owners need time to cancel their goals and stop child
+  // process groups. Other existing commands retain the 3-second default.
+  int cancellation_grace_ms = 3000;
 };
 
 struct ToolResult {

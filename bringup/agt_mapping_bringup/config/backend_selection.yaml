@@ -1,0 +1,5 @@
+schema_version: 1
+# Product default selected by the user. This records policy, not comparative
+# algorithm superiority or a claim of independent ground-truth accuracy.
+default_backend: fast_livo2_lio
+selection_basis: user_designated_default

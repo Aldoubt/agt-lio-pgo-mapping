@@ -1,0 +1,53 @@
+backend:
+  id: lio_sam_loop_experimental
+  implementation: lio_sam
+  project: LIO-SAM
+  mode: loop_experimental
+  status: experimental
+  experimental: true
+  source_repository: https://github.com/TixiaoShan/LIO-SAM.git
+  source_branch: ros2
+  source_commit: 08af3f32f01725372d4269838dc44c19c6d9e76b
+  source_path: /home/yangxuan/lio_benchmark_algorithms/lio_sam_ws/src/LIO-SAM
+  source_patch: /home/yangxuan/lio_benchmark_tools/patches/lio_sam/allow_6axis_imu.patch
+  source_patch_sha256: 2ec38628e0818cff44b22365fa561182811501154251a39d42d1f900f9642e46
+  source_files_sha256:
+    /home/yangxuan/lio_benchmark_algorithms/lio_sam_ws/src/LIO-SAM/include/lio_sam/utility.hpp: 1882b6d6d2e7bea6265aa7983c6a951886cec3b68cbc3f53b5d91a053cadec38
+  config_path: /home/yangxuan/lio_benchmark_tools/configs/algorithms/lio_sam_loop/params.yaml
+  config_sha256: b2f65fba467a4627e24e23760cf5be013545ebda9c87773fdd678a31a4050215
+  required_executables:
+    - /home/yangxuan/lio_benchmark_algorithms/lio_sam_ws/install/lio_sam/lib/lio_sam/lio_sam_mapOptimization
+  input_format:
+    lidar: sensor_msgs/msg/PointCloud2
+    lidar_time_field: time
+    lidar_time_unit: seconds_relative_to_header
+    lidar_ring_field: ring
+    imu: sensor_msgs/msg/Imu
+    imu_acceleration_unit: m/s^2
+    deskew: per_point_time
+  loop_closure: true
+  gps_factor: false
+  external_global_correction: false
+  output_odom_topic: /lio_sam/mapping/odometry
+  output_cloud_topic: /lio_sam/mapping/cloud_registered_raw
+  output_path_topic: /lio_sam/mapping/path
+  output_cloud_frame_mode: frontend
+  output_status_topic: /mapping/frontend/status
+sensor:
+  lidar_topic: /agt/sensors/lidar/custom
+  imu_topic: /agt/sensors/imu/data
+  normalized_lidar_topic: /mapping/sensor/deskew_cloud
+  normalized_imu_topic: /mapping/sensor/imu_si
+  backend_imu_topic: /mapping/sensor/imu_si
+  imu_acceleration_unit: g
+  imu_acceleration_scale: 9.80665
+  lidar_frame: livox_frame
+  imu_frame: livox_imu
+  body_frame: livox_imu
+  T_body_lidar_translation_m: [0.011, 0.02329, -0.04412]
+  T_body_lidar_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+mapping:
+  map_frame: odom
+  keyframe_distance_m: 0.5
+  keyframe_rotation_deg: 10.0
+  absolute_ground_truth: false

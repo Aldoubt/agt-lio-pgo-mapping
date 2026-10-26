@@ -1,0 +1,6 @@
+hashes:
+  map/navigation.yaml: a137959630b040f2f9ce6203004dcf075da0b455b8ebf576eebbc2074206d10e
+  map/navigation.pgm: ec85c5f801d54fee6a18fc66c5af096ea26f959e3ace0c7a515e49877266826a
+  map/localization_map.pcd: 86203b2845fa2b8615cbf6ae287867a6090bd29f551ee93d33cb7408e93dc532
+  semantic/semantic_map.yaml: f171fe95672e2ccdb1ac0a298445e72fab22fea9440d278c4502410f3bc3eab5
+  routes/route_graph.yaml: 76e877ff36ad11f21624b9e3b2802c74569386e4558c74e5bfb4ca48512044ed

@@ -1,0 +1,19 @@
+# Operator configuration, not an authoritative map/robot/calibration manifest.
+# The selected source profile remains pinned by backend_registry.py.
+schema_version: 1
+sensor:
+  id: mid360_custom
+  lidar_topic: auto
+  imu_topic: auto
+frontend:
+  backend_id: fast_livo2_lio
+processors:
+  occupancy_review: manual
+  relocalization_study: manual
+  spatial_confidence: disabled
+  terrain_traversability: disabled
+  dynamic_cleanup_3d: disabled
+  route_authoring: disabled
+  formal_publish: disabled
+# Optional: set an absolute map_store.root for the common /maps directory.
+# This product config never changes navigation runtime active_map.yaml.

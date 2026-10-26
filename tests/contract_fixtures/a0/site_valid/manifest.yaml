@@ -1,0 +1,16 @@
+site_schema_version: "1.0"
+site:
+  id: greenhouse_test
+  revision: r01
+frames:
+  global: map
+assets:
+  navigation_map: map/navigation.yaml
+  localization_map: map/localization_map.pcd
+  semantic_map: semantic/semantic_map.yaml
+  route_graph: routes/route_graph.yaml
+compatibility:
+  vehicle_profiles:
+    - mk_mini
+integrity:
+  hashes_file: hashes.yaml

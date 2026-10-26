@@ -35,6 +35,9 @@ class MappingArtifactExporter(Node):
     def __init__(self):
         super().__init__('mapping_artifact_exporter')
         self.declare_parameter('output_dir', 'output')
+        legacy_calibration = self.declare_parameter('calibration_file', '').value
+        if legacy_calibration:
+            raise ValueError('legacy calibration_file is retired; use FAST-LIVO2 backend_profile and frontend_map_exporter')
         self.declare_parameter('keyframes_topic', '/mapping/backend/keyframes')
         self.declare_parameter('map_pose_topic', '/mapping/backend/map_pose')
         self.declare_parameter('status_topic', '/mapping/backend/status')

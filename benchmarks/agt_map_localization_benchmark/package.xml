@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agt_map_localization_benchmark</name>
+  <version>0.2.0</version>
+  <description>Isolated non-publishing offline map localization and greenhouse relocalization benchmark.</description>
+  <maintainer email="dev@agt.local">AGT Mapping</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-shapely</exec_depend>
+  <exec_depend>agt_mapping_artifacts</exec_depend>
+  <exec_depend>agt_global_relocalization_native</exec_depend>
+  <exec_depend>agt_greenhouse_annotation</exec_depend>
+  <exec_depend>python3-matplotlib</exec_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

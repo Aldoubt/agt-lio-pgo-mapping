@@ -1,0 +1,29 @@
+{
+  "case_id": "headland_global_failure_02_fast_livo2_lio_HEADLAND_04_f1",
+  "selection": "headland_global_failure",
+  "backend": "fast_livo2_lio",
+  "scene_id": "HEADLAND_04",
+  "scene_type": "headland",
+  "frames": 1,
+  "keyframe": 906,
+  "reference_kind": "same-session frontend mapping reference; not absolute ground truth",
+  "candidate_patch": {
+    "file": "/home/yangxuan/ros2_ws/experiments/multi_lio_backend_20261003/runs/fast_livo2_lio/map_package/patches/579.pcd",
+    "keyframe": 579
+  },
+  "coarse_available": true,
+  "global_final_pose_available": true,
+  "final_nominal_success": false,
+  "coarse_xy_error_m": 19.99950015350458,
+  "coarse_yaw_error_deg": 74.83700428523714,
+  "final_xy_error_m": 19.60167617086795,
+  "final_yaw_error_deg": 72.99284924237082,
+  "bbs_score": 0.999079,
+  "score_margin_normalized": null,
+  "candidate_attempted_count": "",
+  "candidate_valid_count": "",
+  "physical_row_id": "UNKNOWN",
+  "trajectory_row_group": "headland_turn_03",
+  "trajectory_group_candidate_proxy": "trajectory_pass_08",
+  "topk_full_scores_available": "False"
+}

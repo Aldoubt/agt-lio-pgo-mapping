@@ -18,7 +18,7 @@ DEFAULT_LIVOX_CONFIG = 'share/livox_ros_driver2/config/MID360_config.json'
 def parser():
     result = argparse.ArgumentParser(
         prog='run_mid360_mapping.sh',
-        description='MID360 rosbag (or --live sensor) -> FAST-LIO2 -> PGO -> verified map package',
+        description='MID360 rosbag (or --live sensor) -> FAST-LIVO2 LIO-only -> verified source map package',
         epilog='Input bag is read-only. Existing nonempty outputs are never overwritten. '
                'Ctrl+C cancels without automatic partial-map export. '
                '--live records a raw bag under <output>/raw_bag and finishes on '
@@ -26,6 +26,11 @@ def parser():
     result.add_argument('bag', nargs='?', help='rosbag2 directory containing metadata.yaml (omit with --live)')
     result.add_argument('output', nargs='?', help='New/empty run directory (default: timestamped output)')
     result.add_argument('--rate', default=1.0, type=float, help='Playback speed, default 1.0')
+    result.add_argument('--product-config', help='Product YAML: sensor input, LIO frontend, optional manual processors')
+    result.add_argument('--capabilities', action='store_true', help='Print supported adapters/processors as JSON; no ROS required')
+    result.add_argument('--backend', default=None,
+                        help='mapping backend profile (default: fast_livo2_lio; FAST-LIO2 is disabled)')
+    result.add_argument('--backend-profile', help='Mounted complete FAST-LIVO2 profile: native config path/hash, source revision and frame extrinsics')
     result.add_argument('--lidar-topic', default='auto', help='CustomMsg topic, default: auto-detect unique stream')
     result.add_argument('--imu-topic', default='auto', help='Imu topic, default: auto-detect unique stream')
     rviz = result.add_mutually_exclusive_group()
@@ -47,6 +52,7 @@ def parser():
                       help='Map from the connected MID360 instead of a bag; always records a raw bag')
     live.add_argument('--robot', choices=('bunker_v1', 'yhs_v1'), default='bunker_v1',
                       help='live sensor owner; YHS requires an explicit YHS IP config and never starts a chassis')
+    live.add_argument('--fastlio-config', help=argparse.SUPPRESS)
     live.add_argument('--livox-config', help='livox_ros_driver2 MID360 JSON (YHS: REQUIRED; no Bunker default)')
     live.add_argument('--publish-freq', type=float, default=10.0, help='Livox publish frequency Hz (5/10/20/50)')
     live.add_argument('--frame-id', default='livox_frame', help='Livox driver frame_id')
@@ -67,7 +73,7 @@ def _default_livox_config(workspace, setup):
     raise PreflightError('No livox_ros_driver2 MID360_config.json found; pass --livox-config')
 
 
-def _live_plan(args, workspace, setup, ros_setup, start_rviz):
+def _live_plan(args, workspace, setup, ros_setup, start_rviz, backend_id):
     for name in ('duration', 'sensor_stall_seconds'):
         setattr(args, name, validate_number(getattr(args, name), name, allow_zero=True))
     if args.robot == 'yhs_v1' and not args.livox_config:
@@ -87,7 +93,11 @@ def _live_plan(args, workspace, setup, ros_setup, start_rviz):
         'start_rviz': start_rviz, 'keep_open': args.keep_open,
         'startup_timeout': args.startup_timeout, 'export_timeout': args.export_timeout,
         'drain_seconds': args.drain_seconds,
+        'mapping_backend': backend_id,
+        'backend_profile_source_sha256': getattr(args, 'backend_profile_source_sha256', ''),
     }
+    if args.backend_profile:
+        parameters['backend_profile'] = str(Path(args.backend_profile).expanduser().resolve())
     launch_file = ('mapping_live_yhs_mid360.launch.py' if args.robot == 'yhs_v1'
                    else 'mapping_live_mid360.launch.py')
     command = ['ros2', 'launch', 'agt_mapping_bringup', launch_file]
@@ -95,6 +105,7 @@ def _live_plan(args, workspace, setup, ros_setup, start_rviz):
                 for key, value in parameters.items()]
     plan = {
         'mode': 'dry-run' if args.dry_run else 'live', 'robot': args.robot,
+        'mapping_backend': backend_id,
         'sensor_only_no_base': args.robot == 'yhs_v1', 'livox_config': str(source.path),
         'host_ip': source.host_ip, 'lidar_ip': source.lidar_ip,
         'lidar_topic': source.lidar_topic, 'imu_topic': source.imu_topic,
@@ -105,20 +116,43 @@ def _live_plan(args, workspace, setup, ros_setup, start_rviz):
     return source, output, command, plan
 
 
-def _require_environment(ros_setup, setup):
+def _require_environment(ros_setup, backend_setup, setup):
     if not ros_setup.is_file():
         raise PreflightError(f'ROS setup not found: {ros_setup}. Use a ROS 2 Humble environment '
                              'or specify --ros-setup. --dry-run works without ROS.')
     if not setup.is_file():
         raise PreflightError(f'Workspace setup not found: {setup}. Build the mapping workspace '
                              'or choose --setup explicitly.')
+    if not backend_setup.is_file():
+        raise PreflightError(f'FAST-LIVO2 backend setup not found: {backend_setup}. Build/source the '
+                             'backend workspace recorded by the selected profile.')
 
 
-def _launch(repository, ros_setup, setup, command, environment):
+def _launch(repository, ros_setup, backend_setup, setup, command, environment):
     env = dict(os.environ, **environment)
     launcher = repository / 'scripts' / 'mapping_launch_env.sh'
     # A script file with argv forwarding, never eval or a re-parsed command string.
-    os.execvpe('/bin/bash', ['bash', str(launcher), str(ros_setup), str(setup), *command], env)
+    os.execvpe('/bin/bash', ['bash', str(launcher), str(ros_setup), str(backend_setup),
+                             str(setup), *command], env)
+
+
+def _backend_setup(profile):
+    if profile['backend'].get('setup_path'):
+        return Path(profile['backend']['setup_path']).expanduser().resolve()
+    source = Path(profile['backend']['source_path']).expanduser().resolve()
+    repository = source
+    while repository != repository.parent and not (repository / '.git').exists():
+        repository = repository.parent
+    if not (repository / '.git').exists():
+        # A read-only dry-run can describe the recorded installed layout on a
+        # machine without the backend checkout. Execution still checks the setup
+        # file and launch still verifies every source/config dependency.
+        for executable in profile['backend'].get('required_executables', []):
+            for parent in Path(executable).expanduser().parents:
+                if parent.name == 'install':
+                    return parent / 'setup.bash'
+        raise PreflightError(f"Cannot locate FAST-LIVO2 workspace root from {source}")
+    return repository / 'install' / 'setup.bash'
 
 
 def main(argv=None):
@@ -126,6 +160,36 @@ def main(argv=None):
     repository = Path(os.environ.get('AGT_MAPPING_REPOSITORY', Path(__file__).resolve().parents[3]))
     workspace = repository.parent.parent
     try:
+        from .backend_registry import BackendSelectionError, PROFILE_DIR, resolve_backend
+        if args.fastlio_config:
+            raise PreflightError('--fastlio-config is retired; use --backend-profile with a complete FAST-LIVO2 profile')
+        from .product_pipeline import (
+            ProductPipelineError, apply_to_cli, capability_report, load_product_pipeline,
+        )
+        if args.capabilities:
+            print(json.dumps(capability_report(), ensure_ascii=False, indent=2))
+            return 0
+        product = None
+        product_path = Path(args.product_config).expanduser() if args.product_config else (
+            PROFILE_DIR.parent / 'product_pipeline.yaml')
+        if args.product_config or product_path.is_file():
+            try:
+                product = load_product_pipeline(product_path)
+                apply_to_cli(args, product)
+            except ProductPipelineError as exc:
+                raise PreflightError(str(exc)) from exc
+
+        try:
+            selected_profile = resolve_backend(args.backend, profile_path=args.backend_profile,
+                                               check_sources=bool(args.backend_profile))
+            selected_backend = selected_profile['backend']['id']
+            args.backend_profile_source_sha256 = selected_profile['backend']['profile_origin_sha256']
+        except BackendSelectionError as exc:
+            raise PreflightError(str(exc)) from exc
+        if selected_backend != 'fast_livo2_lio':
+            raise PreflightError(
+                f'this verified mapping session currently supports fast_livo2_lio only, got {selected_backend}')
+        backend_setup = _backend_setup(selected_profile)
         for name in ('rate', 'startup_timeout', 'export_timeout', 'drain_seconds'):
             setattr(args, name, validate_number(getattr(args, name), name, allow_zero=name == 'drain_seconds'))
         if args.export_timeout <= args.drain_seconds:
@@ -155,12 +219,16 @@ def main(argv=None):
             os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
         environment = {'ROS_DOMAIN_ID': str(args.domain_id), 'ROS_LOCALHOST_ONLY': '1'}
         if args.live:
-            source, output, command, plan = _live_plan(args, workspace, setup, ros_setup, start_rviz)
+            source, output, command, plan = _live_plan(
+                args, workspace, setup, ros_setup, start_rviz, selected_backend)
             plan['environment'] = environment
+            if product is not None:
+                plan['product_pipeline'] = product.as_dict()
+            plan['backend_overlay'] = str(backend_setup)
             if args.dry_run:
                 print(json.dumps(plan, ensure_ascii=False, indent=2))
                 return 0
-            _require_environment(ros_setup, setup)
+            _require_environment(ros_setup, backend_setup, setup)
             print(f'Live MID360: host {source.host_ip} <- lidar {source.lidar_ip} ({source.path})')
             print(f'Topics: {source.lidar_topic}, {source.imu_topic}\nOutput: {output}\nRaw bag: {output / "raw_bag"}')
             print(f'Overlay: {setup}\nIsolated local ROS domain: {args.domain_id}')
@@ -168,7 +236,7 @@ def main(argv=None):
             print(f'ROS_DOMAIN_ID={args.domain_id} ROS_LOCALHOST_ONLY=1 ros2 service call '
                   '/mapping/session/finish std_srvs/srv/Trigger "{}"')
             print('Launch: ' + shlex.join(command), flush=True)
-            _launch(repository, ros_setup, setup, command, environment)
+            _launch(repository, ros_setup, backend_setup, setup, command, environment)
             return 0
         bag = inspect_bag(args.bag, args.lidar_topic, args.imu_topic)
         default = workspace / 'experiments' / 'artifacts' / 'output' / (
@@ -177,26 +245,34 @@ def main(argv=None):
         parameters = {
             'bag_path': str(bag.path), 'output_dir': str(output),
             'lidar_topic': bag.lidar_topic, 'imu_topic': bag.imu_topic,
+            'reference_mode': 'frontend', 'mapping_backend': selected_backend,
+            'backend_profile_source_sha256': args.backend_profile_source_sha256,
             'playback_rate': args.rate, 'start_rviz': start_rviz,
             'start_paused': args.start_paused, 'auto_export': not args.manual_export,
             'keep_open': args.keep_open, 'startup_timeout': args.startup_timeout,
             'export_timeout': args.export_timeout, 'drain_seconds': args.drain_seconds,
         }
+        if args.backend_profile:
+            parameters['backend_profile'] = str(Path(args.backend_profile).expanduser().resolve())
         command = ['ros2', 'launch', 'agt_mapping_bringup', 'mapping_v0.launch.py']
         command += [f'{key}:={str(value).lower() if isinstance(value, bool) else value}'
                     for key, value in parameters.items()]
         plan = {
             'mode': 'dry-run' if args.dry_run else 'mapping', 'bag': str(bag.path),
+            'backend': selected_backend,
             'duration_seconds': bag.duration_seconds, 'message_count': bag.message_count,
             'lidar_topic': bag.lidar_topic, 'imu_topic': bag.imu_topic,
             'output': str(output), 'overlay': str(setup), 'ros_setup': str(ros_setup),
+            'backend_overlay': str(backend_setup),
             'environment': environment, 'command': command,
             'runtime_checked': False,
         }
+        if product is not None:
+            plan['product_pipeline'] = product.as_dict()
         if args.dry_run:
             print(json.dumps(plan, ensure_ascii=False, indent=2))
             return 0
-        _require_environment(ros_setup, setup)
+        _require_environment(ros_setup, backend_setup, setup)
         print(f'Input: {bag.path}\nTopics: {bag.lidar_topic}, {bag.imu_topic}\nOutput: {output}')
         print(f'Overlay: {setup}\nIsolated local ROS domain: {args.domain_id}')
         print('Run controls in the SAME domain (do not use the robot runtime domain):')
@@ -204,7 +280,7 @@ def main(argv=None):
         print(prefix + ' /rosbag2_player/pause rosbag2_interfaces/srv/Pause "{}"')
         print(prefix + ' /rosbag2_player/resume rosbag2_interfaces/srv/Resume "{}"')
         print('Launch: ' + shlex.join(command), flush=True)
-        _launch(repository, ros_setup, setup, command, environment)
+        _launch(repository, ros_setup, backend_setup, setup, command, environment)
     except (PreflightError, OSError) as exc:
         print(f'Mapping preflight failed: {exc}', file=sys.stderr)
         return 2

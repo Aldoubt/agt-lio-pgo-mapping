@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(agt_pcd2grid_exporter)
+project(agt_pcd2grid_exporter VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +21,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   ${PCL_INCLUDE_DIRS}
 )
 target_compile_definitions(${PROJECT_NAME} PUBLIC ${PCL_DEFINITIONS})
+target_compile_definitions(${PROJECT_NAME} PRIVATE AGT_PCD2GRID_VERSION="${PROJECT_VERSION}")
 target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES} yaml-cpp)
 
 add_executable(pcd2grid_exporter src/main.cpp)
@@ -40,12 +41,15 @@ ament_export_include_directories(include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   ament_add_gtest(test_pcd2grid
     test/test_pcd2grid.cpp
     test/test_traversability.cpp
   )
   target_include_directories(test_pcd2grid PRIVATE include ${PCL_INCLUDE_DIRS})
   target_link_libraries(test_pcd2grid ${PROJECT_NAME} ${PCL_LIBRARIES} yaml-cpp)
+  ament_add_pytest_test(test_cleanup_cli test/test_cleanup_cli.py
+    APPEND_ENV "AGT_PCD2GRID_EXECUTABLE=$<TARGET_FILE:pcd2grid_exporter>")
 endif()
 
 ament_package()

@@ -1,0 +1,87 @@
+name: mapping-product-contract
+on:
+  pull_request:
+    paths:
+      - 'apps/agt_map_studio/**'
+      - 'artifacts/agt_mapping_artifacts/**'
+      - 'bringup/agt_mapping_bringup/**'
+      - 'benchmarks/agt_map_localization_benchmark/**'
+      - 'core/agt_mapping_core/**'
+      - 'exporters/**'
+      - 'planning/agt_coverage_authoring/**'
+      - 'refinement/agt_map_refinement_core/**'
+      - 'tools/agt_greenhouse_annotation/**'
+      - 'tools/research_asset_contract/**'
+      - 'tools/cross_stage_analysis/**'
+      - 'config/**'
+      - 'scripts/**'
+      - 'tests/contract_fixtures/**'
+      - '.github/workflows/mapping-product-contract.yml'
+  push:
+    branches: [main, integration/mapstudio-mapping-product-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ros-free-contract:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+      MPLBACKEND: Agg
+      PYTHONDONTWRITEBYTECODE: '1'
+      # Test helpers are explicit because importlib mode avoids collisions between
+      # packages that each have test_cli.py or test_validation.py.
+      PYTHONPATH: artifacts/agt_mapping_artifacts:benchmarks/agt_map_localization_benchmark:bringup/agt_mapping_bringup:bringup/agt_mapping_bringup/test:core/agt_mapping_core:exporters/agt_mapping_exporter:planning/agt_coverage_authoring:refinement/agt_map_refinement_core:tools/agt_greenhouse_annotation:tools/agt_greenhouse_annotation/test:tools/research_asset_contract:tools/cross_stage_analysis
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install offline reference and annotation test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1 libgl1 libxkbcommon-x11-0
+          python -m pip install 'numpy>=1.24,<2' 'scipy>=1.10,<1.16' 'matplotlib>=3.7,<3.11' 'PyQt5>=5.15,<6' 'jsonschema>=4,<5' './planning/agt_coverage_authoring[reference,test]'
+      - name: Compile Python modules without importing ROS
+        run: |
+          python -m compileall -q artifacts/agt_mapping_artifacts benchmarks/agt_map_localization_benchmark bringup/agt_mapping_bringup core/agt_mapping_core exporters/agt_mapping_exporter planning/agt_coverage_authoring refinement/agt_map_refinement_core tools/agt_greenhouse_annotation
+      - name: Run offline contracts, Study, refinement, coverage and Qt annotation fixtures
+        run: |
+          mkdir -p test-results
+          suites=(
+            artifacts/agt_mapping_artifacts/test
+            benchmarks/agt_map_localization_benchmark/test
+            bringup/agt_mapping_bringup/test
+            refinement/agt_map_refinement_core/test
+            planning/agt_coverage_authoring/test
+            tools/agt_greenhouse_annotation/test
+          )
+          # Separate processes prevent launch test doubles leaking into another suite.
+          for suite in "${suites[@]}"; do
+            report="${suite//\//_}"
+            python -m pytest -q -ra --import-mode=importlib -p no:cacheprovider "$suite" --junitxml="test-results/${report}.xml"
+          done
+      - name: Check portable research geometry and SE3 contracts
+        run: |
+          python -m pytest -q -ra --import-mode=importlib -p no:cacheprovider tools/research_asset_contract/test/test_contract.py::test_3d_selection_schema_requires_geometry_for_selected_shape --junitxml=test-results/research_geometry.xml
+          python -m pytest -q -ra --import-mode=importlib -p no:cacheprovider tools/cross_stage_analysis/test/test_core.py --junitxml=test-results/se3_core.xml
+      - name: Product and coverage CLI smoke checks
+        run: |
+          bash scripts/run_mapping.sh --capabilities
+          bash scripts/run_mapping.sh --help
+          agt_coverage_authoring --help
+      - name: Upload test results including explicit skips
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-contract-results
+          path: test-results/*.xml
+          if-no-files-found: warn
+      - name: Report external acceptance boundary
+        run: |
+          echo 'This job runs synthetic/offscreen Python fixtures, including the reviewed annotation-to-coverage bridge.'
+          echo 'ROS launch SDK, native Top-K, native PCL reprojection and V4-owner checks skip when their external dependencies are absent.'
+          echo 'ROS exporter lifecycle tests, native C++ MapStudio, Open3D cross-stage analysis, historical run008/A0 external-runtime fixtures, Humble replay and robot acceptance are outside this job.'

@@ -1,4 +1,5 @@
 #include "ui/WorkflowPanel.hpp"
+#include "ui/LocalizedUiText.hpp"
 
 #include <QCheckBox>
 #include <QDoubleSpinBox>
@@ -16,6 +17,12 @@
 #include <QVBoxLayout>
 
 namespace agt_map_studio {
+namespace {
+QString workflow_text(const QString &source, const QString &language) {
+  return localized_ui_text(source, language == QStringLiteral("zh_CN"));
+}
+}  // namespace
+
 
 WorkflowPanel::WorkflowPanel(QWidget *parent) : QWidget(parent) {
   auto *outer = new QVBoxLayout(this);
@@ -176,7 +183,8 @@ WorkflowPanel::StepRow WorkflowPanel::make_step(int number, const QString &title
   return row;
 }
 
-void WorkflowPanel::paint_badge(QLabel *badge, StageState state, bool applicable) {
+void WorkflowPanel::paint_badge(QLabel *badge, StageState state, bool applicable,
+                                const QString &language) {
   QString text;
   QString color;
   if (!applicable) {
@@ -189,20 +197,24 @@ void WorkflowPanel::paint_badge(QLabel *badge, StageState state, bool applicable
       default: text = QStringLiteral("missing"); color = QStringLiteral("#757575"); break;
     }
   }
-  badge->setText(text);
+  badge->setText(workflow_text(text, language));
   badge->setStyleSheet(QStringLiteral("QLabel { background: %1; color: white; border-radius: 6px; "
                                       "padding: 2px 6px; font-weight: bold; }").arg(color));
 }
 
 void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
+  last_session_ = session;
+  has_last_session_ = true;
+  last_tool_running_ = tool_running;
   if (session.empty()) {
-    source_label_->setText(QStringLiteral("No source loaded. Open a PCD or a mapping package."));
+    source_label_->setText(workflow_text(
+        QStringLiteral("No source loaded. Open a PCD or a mapping package."), display_language_));
   } else {
-    source_label_->setText(QStringLiteral("Source: %1%2\nWork dir: %3")
+    source_label_->setText(workflow_text(QStringLiteral("Source: %1%2\nWork dir: %3"), display_language_)
                                .arg(session.source_pcd(),
-                                    session.source_is_mapping_package()
+                                    workflow_text(session.source_is_mapping_package()
                                         ? QStringLiteral(" (mapping package)")
-                                        : QStringLiteral(" (bare PCD)"),
+                                        : QStringLiteral(" (bare PCD)"), display_language_),
                                     session.work_dir()));
   }
   const bool applicable[5] = {session.has_3d_edits(), true, true, session.has_2d_edits(), true};
@@ -212,7 +224,7 @@ void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
   for (int i = 0; i < 5; ++i) {
     const auto &record = session.record(stages[i]);
     const StageState state = session.state(stages[i]);
-    paint_badge(steps_[i].badge, state, applicable[i]);
+    paint_badge(steps_[i].badge, state, applicable[i], display_language_);
     steps_[i].run->setEnabled(!tool_running && !session.empty() && applicable[i]);
     steps_[i].open->setEnabled(!record.path.isEmpty());
     steps_[i].open->disconnect();
@@ -224,19 +236,24 @@ void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
     }
   }
   if (!session.has_3d_edits()) {
-    steps_[0].detail->setText(QStringLiteral("No 3D deletions yet: downstream steps use the source PCD."));
+    steps_[0].detail->setText(workflow_text(
+        QStringLiteral("No 3D deletions yet: downstream steps use the source PCD."), display_language_));
   } else {
-    steps_[0].detail->setText(QStringLiteral("Refinement rules -> %1").arg(session.refinement_rules_path()));
+    steps_[0].detail->setText(workflow_text(QStringLiteral("Refinement rules -> %1"), display_language_)
+                                  .arg(session.refinement_rules_path()));
   }
   if (!session.has_2d_edits()) {
-    steps_[3].detail->setText(QStringLiteral("No 2D edits yet: publish uses the generated navigation layers."));
+    steps_[3].detail->setText(workflow_text(
+        QStringLiteral("No 2D edits yet: publish uses the generated navigation layers."), display_language_));
   } else {
-    steps_[3].detail->setText(QStringLiteral("Patch YAML -> %1").arg(session.navigation_patch_path()));
+    steps_[3].detail->setText(workflow_text(QStringLiteral("Patch YAML -> %1"), display_language_)
+                                  .arg(session.navigation_patch_path()));
   }
   const QStringList reasons = session.blocking_reasons_for_publish();
   steps_[4].detail->setText(reasons.isEmpty()
-                                ? QStringLiteral("Ready to publish.")
-                                : QStringLiteral("Blocked: %1").arg(reasons.join(QStringLiteral("; "))));
+      ? workflow_text(QStringLiteral("Ready to publish."), display_language_)
+      : workflow_text(QStringLiteral("Blocked: %1"), display_language_)
+            .arg(reasons.join(QStringLiteral("; "))));
   steps_[4].run->setEnabled(!tool_running && reasons.isEmpty());
   run_all_->setEnabled(!tool_running && !session.empty());
   cancel_->setEnabled(tool_running);
@@ -251,9 +268,15 @@ void WorkflowPanel::append_log(const QString &text) {
 void WorkflowPanel::clear_log() { log_->clear(); }
 
 void WorkflowPanel::set_progress(const QString &label, bool busy) {
-  progress_label_->setText(label);
+  progress_label_->setText(workflow_text(label, display_language_));
   progress_->setRange(0, busy ? 0 : 1);
   progress_->setValue(busy ? 0 : 1);
+}
+
+void WorkflowPanel::set_display_language(const QString &language) {
+  display_language_ = language == QStringLiteral("zh_CN")
+      ? QStringLiteral("zh_CN") : QStringLiteral("en");
+  if (has_last_session_) refresh(last_session_, last_tool_running_);
 }
 
 void WorkflowPanel::read_converter(ConverterParameters *parameters) const {

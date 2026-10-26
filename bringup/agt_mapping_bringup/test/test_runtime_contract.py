@@ -7,7 +7,8 @@ import types
 import unittest
 from unittest.mock import patch
 
-from agt_mapping_artifacts import ArtifactWriter
+import numpy as np
+from agt_mapping_artifacts.frontend_package import write_frontend_map_package
 from agt_mapping_bringup.preflight import BagInfo
 from agt_mapping_bringup import session_runtime as runtime
 from agt_mapping_bringup.session_state import create_session
@@ -34,12 +35,13 @@ class FakeNode:
         self.client = FakeClient()
         self.subscriptions = {}
         self.messages = []
-        self.services = [('/pgo/save_maps', ['interface/srv/SaveMaps'])]
+        self.services = [('/mapping/frontend/export_artifact', ['std_srvs/srv/Trigger'])]
         self.graph = {
-            '/livox/lidar': ['mid360_adapter_node'], '/livox/imu': ['lio_node'],
-            '/mapping/sensor/livox': ['lio_node'], '/mapping/frontend/cloud': ['pgo_node'],
-            '/mapping/frontend/odometry': ['pgo_node', 'pgo_backend_node'],
-            '/mapping/backend/status': ['mapping_artifact_exporter'],
+            '/livox/lidar': ['fastlivo_mapping'], '/livox/imu': ['fastlivo_mapping'],
+            '/aft_mapped_to_init': ['mapping_frontend_adapter'],
+            '/cloud_registered_lidar': ['mapping_frontend_adapter'],
+            '/mapping/frontend/cloud': ['frontend_map_exporter'],
+            '/mapping/frontend/odometry': ['frontend_map_exporter'],
         }
 
     def declare_parameter(self, name, default):
@@ -77,6 +79,8 @@ class RuntimeContractTests(unittest.TestCase):
         message_modules = {
             'nav_msgs': types.ModuleType('nav_msgs'),
             'nav_msgs.msg': types.SimpleNamespace(Odometry=object),
+            'diagnostic_msgs': types.ModuleType('diagnostic_msgs'),
+            'diagnostic_msgs.msg': types.SimpleNamespace(DiagnosticArray=object),
             'std_msgs': types.ModuleType('std_msgs'),
             'std_msgs.msg': types.SimpleNamespace(String=object),
             'std_srvs': types.ModuleType('std_srvs'),
@@ -102,16 +106,27 @@ class RuntimeContractTests(unittest.TestCase):
         return json.loads((self.output / 'session.json').read_text())
 
     def write_artifact(self):
-        source = self.root / 'pgo'
-        if source.exists():
+        package = self.output / 'map_package'
+        if package.exists():
             return
-        (source / 'patches').mkdir(parents=True)
-        pcd = 'VERSION 0.7\nFIELDS x y z\nWIDTH 1\nHEIGHT 1\nPOINTS 1\nDATA ascii\n0 0 0\n'
-        (source / 'map.pcd').write_text(pcd)
-        (source / 'patches/0.pcd').write_text(pcd)
-        (source / 'poses.txt').write_text('0.pcd 0 0 0 1 0 0 0\n')
-        (source / 'poses_timed.txt').write_text('0.pcd 1.0 0 0 0 1 0 0 0\n')
-        ArtifactWriter(self.output).write_optimized_pgo(source)
+        records = [{
+            'stamp_sec': index + 1, 'stamp_nanosec': 0,
+            'position': np.asarray([index * 0.6, 0.0, 0.0]),
+            'quaternion_xyzw': np.asarray([0.0, 0.0, 0.0, 1.0]),
+            'points_xyzi': np.asarray([[0.0, 0.0, 0.0, float(index)]], dtype='f4'),
+        } for index in range(7)]
+        backend = {
+            'id': 'fast_livo2_lio', 'project': 'FAST-LIVO2', 'mode': 'lio_only',
+            'source_commit': 'fixture', 'config_sha256': 'a' * 64,
+            'loop_closure': False, 'gps_factor': False, 'external_global_correction': False,
+        }
+        write_frontend_map_package(package, records, {
+            'mapping_backend': backend,
+            'source': {'rosbag': 'fixture-bag', 'lidar_topic': '/livox/lidar', 'imu_topic': '/livox/imu'},
+            'frames': {'map': 'camera_init', 'body': 'livox_imu'},
+            'reference': {'same_session': True, 'absolute_ground_truth': False,
+                          'source': 'mapping_frontend_odometry', 'pgo_applied': False, 'optimized': False},
+        })
 
     def test_acknowledgement_without_artifact_is_not_success(self):
         with self.assertRaises(TimeoutError):
@@ -127,9 +142,11 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertNotEqual(self.record()['status'], 'completed')
 
     def test_async_backend_failure_is_reported(self):
-        self.on_spin = lambda: self.node.subscriptions['/mapping/backend/status'](
-            types.SimpleNamespace(data='pgo_export_failed'))
-        with self.assertRaisesRegex(RuntimeError, 'pgo_export_failed'):
+        failed = types.SimpleNamespace(name='mapping/frontend/exporter', message='no paired frames',
+                                       values=[types.SimpleNamespace(key='artifact_state', value='failed')])
+        self.on_spin = lambda: self.node.subscriptions['/mapping/frontend/status'](
+            types.SimpleNamespace(status=[failed]))
+        with self.assertRaisesRegex(RuntimeError, 'no paired frames'):
             runtime._export(self.rclpy, self.node, self.output)
         self.assertNotEqual(self.record()['status'], 'completed')
 
@@ -158,9 +175,9 @@ class RuntimeContractTests(unittest.TestCase):
             runtime._wait_ready(self.rclpy, self.node, self.output)
         self.assertNotEqual(self.record()['status'], 'ready')
 
-    def test_wrong_pgo_service_type_never_opens_gate(self):
-        self.node.services = [('/pgo/save_maps', ['std_srvs/srv/Trigger'])]
-        with self.assertRaisesRegex(TimeoutError, '/pgo/save_maps'):
+    def test_legacy_pgo_mode_is_explicitly_rejected(self):
+        self.node.params['reference_mode'] = 'pgo'
+        with self.assertRaisesRegex(ValueError, 'PGO and FAST-LIO2 paths are disabled'):
             runtime._wait_ready(self.rclpy, self.node, self.output)
 
     def test_continuous_frontend_backlog_has_bounded_drain(self):

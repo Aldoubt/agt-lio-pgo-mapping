@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agt://schemas/keyframe-block-set/v1",
+  "title": "AGT keyframe block set",
+  "type": "object",
+  "required": ["schema_version", "asset_type", "block_set_id", "revision", "parent_source_id", "parent_source_digest", "pose_revision", "map_frame", "builder_config", "builder_config_digest", "index_path", "index_sha256", "block_count", "blocks", "hash_semantics"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "asset_type": {"const": "agt.keyframe_block_set/v1"},
+    "block_set_id": {"type": "string", "pattern": "^blockset-[0-9a-f]{24}$"},
+    "revision": {"type": "integer", "minimum": 1},
+    "parent_source_id": {"type": "string", "minLength": 1},
+    "parent_source_digest": {"$ref": "#/$defs/sha256"},
+    "parent_source_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "pose_revision": {"$ref": "#/$defs/sha256"},
+    "row_annotation_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "map_frame": {"type": "string", "minLength": 1},
+    "builder_config": {
+      "type": "object",
+      "required": ["algorithm", "block_keyframe_count", "stride", "max_timestamp_gap_s", "endpoint_policy", "timestamp_policy", "output_frame", "voxel_leaf_m"],
+      "properties": {
+        "algorithm": {"const": "paired_body_patch_pose_transform_concat"},
+        "block_keyframe_count": {"type": "integer", "minimum": 1},
+        "stride": {"type": "integer", "minimum": 1},
+        "max_timestamp_gap_s": {"type": "number", "exclusiveMinimum": 0},
+        "endpoint_policy": {"const": "truncate_at_segment_boundary"},
+        "timestamp_policy": {"const": "strictly_increasing_and_split_on_gap_or_missing_keyframe_id"},
+        "output_frame": {"type": "string", "minLength": 1},
+        "voxel_leaf_m": {"oneOf": [{"type": "number", "exclusiveMinimum": 0}, {"type": "null"}]}
+      },
+      "additionalProperties": false
+    },
+    "builder_config_digest": {"$ref": "#/$defs/sha256"},
+    "index_path": {"const": "block_index.json"},
+    "index_sha256": {"$ref": "#/$defs/sha256"},
+    "block_count": {"type": "integer", "minimum": 1},
+    "blocks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/block"}},
+    "hash_semantics": {
+      "type": "object",
+      "required": ["block_content", "parent_source_digest", "pose_revision", "manifest"],
+      "properties": {
+        "block_content": {"const": "sha256 of exact output PCD bytes"},
+        "parent_source_digest": {"const": "sha256 of exact parent manifest.yaml bytes"},
+        "pose_revision": {"const": "sha256 of exact parent poses_timed.txt bytes"},
+        "manifest": {"const": "excluded from self; included by external checksums.sha256"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "block": {
+      "type": "object",
+      "required": ["block_id", "revision", "parent_source_id", "parent_source_digest", "pose_revision", "center_keyframe_id", "ordered_patch_ids", "ordered_patch_hashes", "first_timestamp", "last_timestamp", "output_frame", "requested_block_keyframe_count", "actual_keyframe_count", "half_range", "stride", "endpoint_policy", "max_timestamp_gap_s", "bbox", "actual_trajectory_length_m", "actual_spatial_extent_m", "builder_config_digest", "output_path", "output_point_count", "output_content_sha256", "row_id", "along_row_s_m", "scene_type", "review_state"],
+      "properties": {
+        "block_id": {"type": "string", "pattern": "^block_[0-9]{4,}$"}, "revision": {"type": "integer", "minimum": 1},
+        "parent_source_id": {"type": "string", "minLength": 1}, "parent_source_digest": {"$ref": "#/$defs/sha256"},
+        "pose_revision": {"$ref": "#/$defs/sha256"}, "row_annotation_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "center_keyframe_id": {"type": "integer", "minimum": 0},
+        "ordered_patch_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[0-9]+\\.pcd$"}},
+        "ordered_patch_hashes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/sha256"}},
+        "first_timestamp": {"type": "number"}, "last_timestamp": {"type": "number"},
+        "output_frame": {"type": "string", "minLength": 1}, "requested_block_keyframe_count": {"type": "integer", "minimum": 1},
+        "actual_keyframe_count": {"type": "integer", "minimum": 1}, "half_range": {"type": "integer", "minimum": 0},
+        "stride": {"type": "integer", "minimum": 1}, "endpoint_policy": {"const": "truncate_at_segment_boundary"},
+        "max_timestamp_gap_s": {"type": "number", "exclusiveMinimum": 0},
+        "voxel_leaf_m": {"oneOf": [{"type": "number", "exclusiveMinimum": 0}, {"type": "null"}]},
+        "bbox": {"type": "object", "required": ["min_xyz_m", "max_xyz_m"], "properties": {
+          "min_xyz_m": {"$ref": "#/$defs/xyz"}, "max_xyz_m": {"$ref": "#/$defs/xyz"}
+        }, "additionalProperties": false},
+        "actual_trajectory_length_m": {"type": "number", "minimum": 0},
+        "actual_spatial_extent_m": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}], "minItems": 3, "maxItems": 3},
+        "builder_config_digest": {"$ref": "#/$defs/sha256"}, "output_path": {"type": "string", "pattern": "^blocks/[A-Za-z0-9_.-]+\\.pcd$"},
+        "output_point_count": {"type": "integer", "minimum": 1}, "output_content_sha256": {"$ref": "#/$defs/sha256"},
+        "row_id": {"type": "string", "minLength": 1}, "along_row_s_m": {"oneOf": [{"type": "number", "minimum": 0}, {"type": "null"}]},
+        "scene_type": {"type": "string"}, "review_state": {"enum": ["UNKNOWN", "CONFIRMED"]}
+      }
+    },
+    "xyz": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}], "minItems": 3, "maxItems": 3}
+  }
+}

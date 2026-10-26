@@ -1,0 +1,29 @@
+{
+  "case_id": "row_middle_global_failure_01_point_lio_MIDDLE_01_f1",
+  "selection": "row_middle_global_failure",
+  "backend": "point_lio",
+  "scene_id": "MIDDLE_01",
+  "scene_type": "row_middle",
+  "frames": 1,
+  "keyframe": 23,
+  "reference_kind": "same-session frontend mapping reference; not absolute ground truth",
+  "candidate_patch": {
+    "file": "/home/yangxuan/ros2_ws/experiments/multi_lio_backend_20261003/runs/point_lio/map_package/patches/17.pcd",
+    "keyframe": 17
+  },
+  "coarse_available": true,
+  "global_final_pose_available": true,
+  "final_nominal_success": false,
+  "coarse_xy_error_m": 16.265378466784416,
+  "coarse_yaw_error_deg": 5.273267700221591,
+  "final_xy_error_m": 15.936680248002466,
+  "final_yaw_error_deg": 1.225988597163695,
+  "bbs_score": 0.969772,
+  "score_margin_normalized": null,
+  "candidate_attempted_count": "",
+  "candidate_valid_count": "",
+  "physical_row_id": "UNKNOWN",
+  "trajectory_row_group": "trajectory_pass_00",
+  "trajectory_group_candidate_proxy": "trajectory_pass_00",
+  "topk_full_scores_available": "False"
+}

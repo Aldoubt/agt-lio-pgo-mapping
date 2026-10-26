@@ -8,6 +8,8 @@ import time
 
 import yaml
 
+from .artifact_writer import sha256
+
 
 class ArtifactValidationError(ValueError):
     """The package is incomplete, inconsistent, unsafe, or not optimized PGO."""
@@ -64,8 +66,57 @@ def _check_deadline(deadline):
         raise TimeoutError('Artifact verification deadline exceeded')
 
 
+def verify_source_integrity(path):
+    """Verify the existing source manifest/checksum layouts, without asserting geometry.
+
+    This intentionally does not replace ``verify_artifact`` or the frontend's
+    map/patch/pose validator. Offline derivatives also consume the older
+    ``mapping_source`` and ``refined_mapping_source`` manifest layouts.
+    """
+    supplied = Path(path).expanduser()
+    if supplied.is_symlink():
+        raise ArtifactValidationError('Source root must not be a symbolic link')
+    root = supplied.resolve(strict=True)
+    for name in REQUIRED | {'checksums.sha256'}:
+        if not (root / name).is_file():
+            raise ArtifactValidationError(f'Missing source file: {name}')
+    actual = set()
+    for item in root.rglob('*'):
+        if item.is_symlink():
+            raise ArtifactValidationError(f'Source contains a symbolic link: {item}')
+        if item.is_file() and item.relative_to(root).as_posix() != 'checksums.sha256':
+            actual.add(item.relative_to(root).as_posix())
+    if not any(name.startswith('patches/') and name.endswith('.pcd') for name in actual):
+        raise ArtifactValidationError('Source contains no paired patches')
+    manifest = yaml.safe_load((root / 'manifest.yaml').read_text(encoding='utf-8'))
+    if not isinstance(manifest, dict):
+        raise ArtifactValidationError('Source manifest must be a mapping')
+    payload = actual - {'manifest.yaml'}
+    if manifest.get('schema_version') == 1 and manifest.get('package_kind') in {
+            'mapping_source', 'refined_mapping_source'}:
+        declared = manifest.get('files', manifest.get('checksums'))
+    elif manifest.get('format_version') == 1:
+        declared = manifest.get('checksums')
+    else:
+        raise ArtifactValidationError('Unsupported source manifest layout')
+    if not isinstance(declared, dict) or set(declared) != payload:
+        raise ArtifactValidationError('Source manifest does not cover its payload exactly')
+    checksums = _checksum_index(root / 'checksums.sha256')
+    # Legacy source exporters exclude the manifest itself; artifact/frontend
+    # writers include it. Both conventions already exist in this package.
+    if set(checksums) not in (actual, payload):
+        raise ArtifactValidationError('Source checksum coverage is incomplete')
+    measured = {name: sha256(root / name) for name in sorted(actual)}
+    if any(measured.get(name) != digest for name, digest in declared.items()):
+        raise ArtifactValidationError('Source manifest payload checksum mismatch')
+    if any(measured.get(name) != digest for name, digest in checksums.items()):
+        raise ArtifactValidationError('Source checksum mismatch')
+    measured['checksums.sha256'] = sha256(root / 'checksums.sha256')
+    return measured
+
+
 def verify_artifact(path, *, deadline=None):
-    """Return the package path only after full coverage and SHA-256 verification."""
+    """Verify an optimized PGO artifact or a same-session frontend map package."""
     root = Path(path).expanduser().resolve()
     if (root / 'map_package').is_dir():
         root = root / 'map_package'
@@ -89,6 +140,13 @@ def verify_artifact(path, *, deadline=None):
         metadata = yaml.safe_load((root / 'metadata.yaml').read_text(encoding='utf-8'))
         if not isinstance(metadata, dict):
             raise ArtifactValidationError('Invalid metadata document')
+        if metadata.get('artifact_kind') == 'frontend_mapping_map_package':
+            from .frontend_package import verify_frontend_map_package
+            try:
+                verify_frontend_map_package(root)
+            except (OSError, ValueError, yaml.YAMLError) as exc:
+                raise ArtifactValidationError(f'Frontend map package is invalid: {exc}') from exc
+            return root
         status = metadata.get('backend_status')
         if (metadata.get('backend') != 'PGO' or not isinstance(status, dict)
                 or status.get('optimized') is not True):

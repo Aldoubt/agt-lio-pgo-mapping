@@ -15,6 +15,8 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace agt_pcd2grid_exporter {
 namespace {
@@ -37,6 +39,8 @@ std::filesystem::path write_package(const std::string &name, const std::vector<P
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root / "patches");
   std::ofstream poses_file(root / "poses_timed.txt");
+  std::ofstream plain_poses(root / "poses.txt");
+  pcl::PointCloud<pcl::PointXYZI> map;
   for (std::size_t k = 0; k < poses.size(); ++k) {
     Eigen::Isometry3f map_from_body = Eigen::Isometry3f::Identity();
     map_from_body.linear() =
@@ -44,13 +48,16 @@ std::filesystem::path write_package(const std::string &name, const std::vector<P
     map_from_body.translation() = Eigen::Vector3f(poses[k].x, poses[k].y, poses[k].z);
     const Eigen::Isometry3f body_from_map = map_from_body.inverse();
     pcl::PointCloud<pcl::PointXYZI> patch;
-    const auto add = [&patch](const Eigen::Vector3f &body) {
+    const auto add = [&patch, &map, &map_from_body](const Eigen::Vector3f &body) {
       pcl::PointXYZI point;
       point.x = body.x();
       point.y = body.y();
       point.z = body.z();
       point.intensity = 1.0F;
       patch.push_back(point);
+      const auto world = map_from_body * body;
+      point.x = world.x(); point.y = world.y(); point.z = world.z();
+      map.push_back(point);
     };
     for (const auto &world : world_points) add(body_from_map * world);
     if (k < per_keyframe_world.size()) {
@@ -64,8 +71,31 @@ std::filesystem::path write_package(const std::string &name, const std::vector<P
     poses_file << k << ".pcd " << 100.0 + static_cast<double>(k) << ' ' << poses[k].x << ' '
                << poses[k].y << ' ' << poses[k].z << ' ' << q.w() << ' ' << q.x() << ' ' << q.y()
                << ' ' << q.z() << '\n';
+    plain_poses << k << ".pcd " << poses[k].x << ' ' << poses[k].y << ' ' << poses[k].z
+                << ' ' << q.w() << ' ' << q.x() << ' ' << q.y() << ' ' << q.z() << '\n';
   }
+  if (!map.empty()) EXPECT_EQ(pcl::io::savePCDFileBinary((root / "map.pcd").string(), map), 0);
+  std::ofstream(root / "calibration.yaml") << "status: synthetic_test_fixture\n";
+  std::ofstream(root / "metadata.yaml") << "fixture: true\n";
   return root;
+}
+
+// Test data uses the actual existing source integrity writer; it is not a
+// replacement production validator and does not claim a measured robot profile.
+void complete_source_integrity(const std::filesystem::path &root) {
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    execlp("python3", "python3", "-c",
+           "from pathlib import Path; import sys; "
+           "from agt_mapping_artifacts.map_package_exporter import _write_integrity_files; "
+           "_write_integrity_files(Path(sys.argv[1]))", root.c_str(), nullptr);
+    _exit(127);
+  }
+  int status;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  ASSERT_EQ(WEXITSTATUS(status), 0);
 }
 
 ProjectionParameters test_parameters() {
@@ -300,24 +330,68 @@ TEST(TraversabilityGridBuilderTest, FollowerSeenOnlyUpCloseIsNotAnObstacle) {
     follower[k] = {{poses[k].x - 0.95F, 0.35F, 1.2F}, {poses[k].x - 0.95F, 0.35F, 1.3F}};
   }
   const auto root = write_package("agt_trav_follower", poses, world, {}, follower);
+  complete_source_integrity(root);
   ProjectionParameters parameters = test_parameters();
   parameters.traversability.obstacle_min_observation_range = 2.0F;
   OccupancyGrid grid;
   ProjectionStats stats;
   TraversabilityStats traversability;
   std::string error;
+  const auto clouds = root.parent_path() / "agt_trav_follower_cleaned";
+  std::filesystem::remove_all(clouds);
+  OccupancyGrid baseline;
+  ASSERT_TRUE(TraversabilityGridBuilder::build(root.string(), parameters, &baseline, &stats,
+                                               &traversability, &error)) << error;
   ASSERT_TRUE(TraversabilityGridBuilder::build(root.string(), parameters, &grid, &stats,
-                                               &traversability, &error))
+                                               &traversability, &error, "", clouds.string()))
       << error;
+  EXPECT_EQ(grid.occupancy, baseline.occupancy);
+  EXPECT_EQ(grid.hit_count, baseline.hit_count);
+  EXPECT_EQ(grid.width, baseline.width);
+  EXPECT_EQ(grid.height, baseline.height);
+  EXPECT_EQ(grid.origin_x, baseline.origin_x);
+  EXPECT_EQ(grid.origin_y, baseline.origin_y);
+  EXPECT_TRUE(std::filesystem::exists(clouds / "manifest.yaml"));
+  EXPECT_TRUE(std::filesystem::exists(clouds / "map.yaml"));
   EXPECT_EQ(value_at(grid, 2.05F, 1.05F), 100) << "static post must stay";
   EXPECT_NE(value_at(grid, -0.95F, 0.35F), 100) << "follower trail must not become an obstacle";
   EXPECT_GT(traversability.near_field_only_points, 0U);
+  pcl::PointCloud<pcl::PointXYZ> kept, removed;
+  ASSERT_EQ(pcl::io::loadPCDFile((clouds / "static_map.pcd").string(), kept), 0);
+  ASSERT_EQ(pcl::io::loadPCDFile((clouds / "removed_candidates.pcd").string(), removed), 0);
+  EXPECT_EQ(removed.size(), 2U * poses.size());
+  EXPECT_EQ(kept.size() + removed.size(), stats.input_points - traversability.self_filtered_points);
+  bool have_post = false, have_ground = false;
+  for (const auto &p : kept) {
+    have_post |= std::abs(p.x - 2.05F) < 0.01F && p.z > 0.4F;
+    have_ground |= std::abs(p.z) < 0.01F;
+    EXPECT_FALSE(std::abs(p.y - 0.35F) < 0.01F && p.z > 1.1F);
+  }
+  EXPECT_TRUE(have_post);
+  EXPECT_TRUE(have_ground);
   parameters.traversability.obstacle_min_observation_range = 0.0F;
+  const auto all_kept = root.parent_path() / "agt_trav_follower_all_kept";
+  std::filesystem::remove_all(all_kept);
   ASSERT_TRUE(TraversabilityGridBuilder::build(root.string(), parameters, &grid, &stats,
-                                               &traversability, &error))
+                                               &traversability, &error, "", all_kept.string()))
       << error;
   EXPECT_EQ(value_at(grid, -0.95F, 0.35F), 100) << "without the rule the trail is baked in";
+  std::ifstream cleanup_report(all_kept / "cloud_cleanup.yaml");
+  const std::string report((std::istreambuf_iterator<char>(cleanup_report)),
+                          std::istreambuf_iterator<char>());
+  EXPECT_NE(report.find("removed_candidate_points: 0\n"), std::string::npos);
+  pcl::PCLPointCloud2 empty_candidates;
+  EXPECT_EQ(pcl::io::loadPCDFile((all_kept / "removed_candidates.pcd").string(), empty_candidates), 0);
+  EXPECT_EQ(empty_candidates.width * empty_candidates.height, 0U);
+  EXPECT_FALSE(TraversabilityGridBuilder::build(root.string(), parameters, &grid, &stats,
+                                                &traversability, &error, "", clouds.string()));
+  EXPECT_NE(error.find("already exists"), std::string::npos);
+  EXPECT_FALSE(TraversabilityGridBuilder::build(root.string(), parameters, &grid, &stats,
+                                                &traversability, &error, "", (root / "bad").string()));
+  EXPECT_FALSE(std::filesystem::exists(root / "bad"));
   std::filesystem::remove_all(root);
+  std::filesystem::remove_all(clouds);
+  std::filesystem::remove_all(all_kept);
 }
 
 TEST(TraversabilityGridBuilderTest, RejectsDivergedPoses) {
@@ -339,6 +413,32 @@ TEST(TraversabilityGridBuilderTest, RejectsDivergedPoses) {
   EXPECT_FALSE(TraversabilityGridBuilder::build(root.string(), test_parameters(), &grid, &stats,
                                                 &traversability, &error));
   EXPECT_NE(error.find("diverged"), std::string::npos) << error;
+  std::filesystem::remove_all(root);
+}
+
+TEST(TraversabilityGridBuilderTest, FailedCleanupTransactionLeavesNoPublishedOrStagingDirectory) {
+  const Points world = {{2.05F, 0.05F, 0.0F}, {2.45F, 0.05F, 0.0F}};
+  const auto root = write_package("agt_trav_cleanup_failure", kThreePoses, world);
+  complete_source_integrity(root);
+  const auto output = root.parent_path() / "agt_trav_cleanup_failure_output";
+  std::filesystem::remove_all(output);
+  OccupancyGrid grid;
+  ProjectionStats stats;
+  TraversabilityStats traversability;
+  std::string error;
+  // Deterministic I/O failure after the map has been fully computed/staged:
+  // map.pgm is a file, so it cannot contain a cloud output child.
+  EXPECT_FALSE(TraversabilityGridBuilder::build(root.string(), test_parameters(), &grid, &stats,
+      &traversability, &error, "", output.string(), "map.pgm/clouds"));
+  EXPECT_FALSE(std::filesystem::exists(output));
+  for (const auto &entry : std::filesystem::directory_iterator(output.parent_path())) {
+    EXPECT_NE(entry.path().filename().string().find(".agt_trav_cleanup_failure_output.staging-"), 0U);
+  }
+  // A valid geometric source without its authority manifest must also fail closed.
+  std::filesystem::remove(root / "manifest.yaml");
+  EXPECT_FALSE(TraversabilityGridBuilder::build(root.string(), test_parameters(), &grid, &stats,
+      &traversability, &error, "", output.string()));
+  EXPECT_FALSE(std::filesystem::exists(output));
   std::filesystem::remove_all(root);
 }
 

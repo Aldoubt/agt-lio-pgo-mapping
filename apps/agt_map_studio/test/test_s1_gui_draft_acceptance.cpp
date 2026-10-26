@@ -1,6 +1,7 @@
 // Standalone, real Qt Widgets/X11 software-acceptance harness.
 // Only temporary fixtures in S1/runs; no ROS publishers or production assets.
 #include "ui/MainWindow.hpp"
+#include "viewer/PointCloudViewer.hpp"
 #include "occupancy/OccupancyViewer.hpp"
 #include "selection/SelectionManager.h"
 #include "workflow/WorkflowSession.hpp"
@@ -19,8 +20,10 @@
 #include <QTimer>
 #include <QUuid>
 #include <QtTest/QTest>
+#include <QtTest/QSignalSpy>
 #include <yaml-cpp/yaml.h>
 #include <fstream>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 
@@ -73,7 +76,14 @@ void close_with_discard_prompt(MainWindow &w) {
 }
 void send_2d_edits(OccupancyViewer *v) {
   check(v && v->has_map(), QStringLiteral("Actual Qt OccupancyViewer has loaded PGM"));
+  check(v->map().at(7, 7) == GridMap::kOccupied, QStringLiteral("Erase fixture contains occupied cell (7,7)"));
+  QApplication::processEvents();
+  // Dock/toolbar layout can resize the viewport after set_map(). The viewer
+  // preserves pan on resize; explicitly exercise the operator's Fit command
+  // before deriving centered screen coordinates, rather than assuming pan=0.
+  v->fit_map();
   v->set_mode(OccupancyInteractionMode::Erase);
+  QSignalSpy erase_requests(v, &OccupancyViewer::erase_rectangle_requested);
   // Actual Qt mouse press/release on the displayed 20x20 occupancy canvas.
   // Source fixture obstacle occupies grid [7..10]x[7..10].
   const double z = v->zoom();
@@ -84,6 +94,12 @@ void send_2d_edits(OccupancyViewer *v) {
   };
   QTest::mousePress(v, Qt::LeftButton, Qt::NoModifier, pixel(7,7));
   QTest::mouseRelease(v, Qt::LeftButton, Qt::NoModifier, pixel(10,10));
+  check(erase_requests.count() == 1, QStringLiteral("Real mouse drag emits exactly one erase rectangle"));
+  const auto first_world = v->map().pixel_to_world(7, 7);
+  const auto erased = erase_requests.takeFirst();
+  check(std::abs(erased[0].toDouble() - first_world.x) < 1e-6 &&
+        std::abs(erased[1].toDouble() - first_world.y) < 1e-6,
+        QStringLiteral("Erase drag resolves to the occupied fixture in map coordinates"));
   v->set_mode(OccupancyInteractionMode::Obstacle);
   v->obstacle_line_requested(0.5, 0.5, 1.5, 0.5, 0.2);
   v->set_mode(OccupancyInteractionMode::Forbidden);
@@ -111,7 +127,7 @@ void alter_temporarily(const QString &file, MainWindow &w, const QString &sessio
 int main(int argc,char **argv) {
   QApplication app(argc, argv);
   app.setApplicationName("AGT S1 Qt GUI acceptance");
-  if (argc!=4) { std::cerr << "usage: <create|reopen|corrupt|interrupt|three_d> <fixture_dir> <screenshot_dir>\n"; return 2; }
+  if (argc!=4) { std::cerr << "usage: <create|reopen|corrupt|interrupt|three_d|standalone> <fixture_dir> <screenshot_dir>\n"; return 2; }
   const QString mode=QString::fromLocal8Bit(argv[1]);
   const QString D=QString::fromLocal8Bit(argv[2]);
   const QString shots=QString::fromLocal8Bit(argv[3]);
@@ -231,6 +247,19 @@ int main(int argc,char **argv) {
         if (l->text().contains("manual reapplication needed")) visible_marker=true;
       check(visible_marker,QStringLiteral("3D explicitly marked manual reapplication needed"));
       snap(window,shots,"08_3d_draft_unapplied.png");
+      close_with_discard_prompt(window);
+    } else if (mode=="standalone") {
+      check(window.open_pcd(QDir(D).filePath("map.pcd"), &error), QStringLiteral("Open prior 3D source before standalone restore"));
+      WorkflowSession standalone;
+      standalone.set_work_dir(QDir(D).filePath("standalone_case"));
+      standalone.set_occupancy_base(QDir(D).filePath("map.yaml"), QDir(D).filePath("map.pgm"));
+      check(standalone.save(&error), QStringLiteral("Save independent 2D-only draft"));
+      check(window.open_session(standalone.session_file(), &error), QStringLiteral("Restore 2D-only draft over previous 3D session"));
+      check(!window.findChild<PointCloudViewer *>()->has_cloud(), QStringLiteral("Standalone restore does not inherit previous 3D cloud"));
+      save_with_ctrl_s(window, standalone.session_file());
+      WorkflowSession reopened;
+      check(reopened.load(standalone.session_file(), &error) && reopened.source_pcd().isEmpty() && !reopened.has_3d_edits(),
+            QStringLiteral("Standalone save preserves empty 3D provenance and edit state"));
       close_with_discard_prompt(window);
     } else throw std::runtime_error("Unknown mode");
   } catch(const std::exception &e) {std::cerr << "FAIL " << e.what() << std::endl;return 1;}

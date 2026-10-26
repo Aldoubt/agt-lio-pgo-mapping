@@ -1,0 +1,311 @@
+{
+  "schema_version": 1,
+  "status": "COMPLETE",
+  "query_count": 12,
+  "candidate_count": 480,
+  "analysis_source_provenance": {
+    "analysis_source_path": "/home/yangxuan/ros2_ws/src/agt_mapping_framework/benchmarks/agt_map_localization_benchmark/agt_map_localization_benchmark/topk_ambiguity_analysis.py",
+    "analysis_source_sha256": "65c8fe8dd634391a747ec92fa9fcc8a80c76aa7be2fbee8ca26935ff7880efba",
+    "mapping_git_commit": "dac9a6142ec58a3dab5e8a5485f3d35ad348e326",
+    "mapping_tracked_source_diff_sha256": "71e8eff58e496007130052b0c4a31423d28abc8bc89c71fd7edf58389283eed8",
+    "mapping_source_tree_sha256": "d8e7ab06ffc2d03067bd410560e24b5e799609883cdf6c03f0f4319c2b0a718c",
+    "mapping_source_tree_scope": [
+      "benchmarks/agt_map_localization_benchmark",
+      "tools/agt_greenhouse_annotation"
+    ],
+    "mapping_source_tree_semantics": "SHA256 of sorted relative path, NUL, and file-content SHA256; includes tracked and untracked source files"
+  },
+  "topology": {
+    "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/annotation/greenhouse_topology.yaml",
+    "sha256": "239d8c9c4f747b57e7e183af4428332281b29a8e0bdfa2b62b521b607ffd493d",
+    "read_only": true,
+    "status": "draft",
+    "manual_review_confirmed": false
+  },
+  "instrumentation_smoke_allow_draft": true,
+  "topology_validation": {
+    "schema_version": 1,
+    "valid": true,
+    "errors": [],
+    "warnings": [
+      "UNKNOWN coverage 100.0%: manual topology does not cover most poses"
+    ],
+    "corridor_overlaps": [],
+    "other_backend_map_files_checksum_verified": {
+      "fast_livo2_lio": 1167
+    },
+    "coverage": {
+      "keyframes": 1180,
+      "labeled": 0,
+      "unknown": 1180,
+      "unknown_percentage": 100.0
+    },
+    "map_files_checksum_verified": 1185
+  },
+  "keyframe_labels": [
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/annotation/keyframe_topology_labels.csv",
+      "sha256": "9845f206aaa0218c462fa582cbc9e01499a11fefc681610862e4e432182cb1eb"
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/annotation/other_backend_keyframe_topology_labels.csv",
+      "sha256": "8bc8097388c52e53da64ee1c7618468f622e00b1730ce6aa137ff9255a1c3ca2"
+    }
+  ],
+  "canonical_backend_id": "point_lio",
+  "backend_transforms": {
+    "fast_livo2_lio": {
+      "matrix": [
+        [
+          0.9999959288239184,
+          0.0028534778057609247,
+          0.0,
+          0.0329088069872121
+        ],
+        [
+          -0.0028534778057608544,
+          0.9999959288239185,
+          0.0,
+          -0.03100567787272368
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "source_frame": "camera_init",
+      "target_frame": "camera_init",
+      "source_backend": "fast_livo2_lio",
+      "target_backend": "point_lio",
+      "method": "same_bag_timestamp_se2_least_squares",
+      "correspondences": 1178,
+      "max_timestamp_difference_s": 0.5,
+      "residual_xy_m": {
+        "median": 0.09136509101850859,
+        "p95": 0.2841928823232197,
+        "max": 0.48486311219149847
+      },
+      "provenance": {
+        "source_manifest_sha256": "39a2ed20637b28b44afab30c86d5228cc563feb85e272a14f06cd73824be1d94",
+        "target_manifest_sha256": "d561d9a7227b55aa27c4ee5483a93901d0b2c64866c39d77297e2282eb5e9faf",
+        "source_map_package": "/home/yangxuan/ros2_ws/experiments/multi_lio_backend_20261003/runs/fast_livo2_lio/map_package"
+      }
+    }
+  },
+  "traces": [
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/fast_livo2_lio/traces/HEADLAND_01_f1.json",
+      "sha256": "2058905ff7ee41bf9154cda3913dfc4299a1c8801b8630c6a23886275b399fbc",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/fast_livo2_lio/traces/HEADLAND_01_f3.json",
+      "sha256": "08647cacdd803d7d3bbb5f5eb4cb0583437186167ef3ed3f58a30b9701f445d0",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/fast_livo2_lio/traces/HEADLAND_01_f5.json",
+      "sha256": "5df2f2aeacdae2c7a9809e9b954dd2072cbbad9419e007af798c68549d530160",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/fast_livo2_lio/traces/MIDDLE_01_f1.json",
+      "sha256": "1525aa5370fed78bcd8be2befaf98c2c2f31fe9f7fdc2650817c4ec462ae882d",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/fast_livo2_lio/traces/MIDDLE_01_f3.json",
+      "sha256": "c89300bf5170b5c9513011227fc14f4da8ca808e5fe13d9048e14356162fd52d",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/fast_livo2_lio/traces/MIDDLE_01_f5.json",
+      "sha256": "3fd0ee40b33c1d2c2e2477be7ac6803d2b2f383afc5463afced4f87be1c71390",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/point_lio/traces/HEADLAND_01_f1.json",
+      "sha256": "9e1b8d9c9675213a3dfcfdbedd4fc47bcf1bbb8a74540dfe0ace13bb6d6505ff",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/point_lio/traces/HEADLAND_01_f3.json",
+      "sha256": "4d33d06e518efacc521dad013365a2eb93e7ba2cffe0cd56219041ef26b3f243",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/point_lio/traces/HEADLAND_01_f5.json",
+      "sha256": "15df34d8381d27908c4dbd4a0a837d21c82bca00d0302539fedff3e97524a46f",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/point_lio/traces/MIDDLE_01_f1.json",
+      "sha256": "9f34900812a8031875ffe3f0b3b98bdcfd6edc7477c59faa32dedd3f6d936b38",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/point_lio/traces/MIDDLE_01_f3.json",
+      "sha256": "acbe87462a0de847a4bcfada24c221f2581ac74a1bff7a0a1920a5b9524d6332",
+      "query_count": 1
+    },
+    {
+      "path": "/home/yangxuan/ros2_ws/experiments/greenhouse_topology_topk_20261003/smoke_replay/point_lio/traces/MIDDLE_01_f5.json",
+      "sha256": "93cf3179d0abf4bb794cbec661e699dc9d03061cac0c5d0784dfe120dd19c03e",
+      "query_count": 1
+    }
+  ],
+  "entropy_mode": "rank_frequency",
+  "softmax_tau": null,
+  "score_semantics": {
+    "sector_similarity": "higher_is_better",
+    "ring_distance": "lower_is_better",
+    "margin_uses": "sector_similarity only"
+  },
+  "bootstrap": {
+    "unit": "scene/query; never candidate",
+    "samples": 2000,
+    "seed": 20261003,
+    "ci": "percentile 95%; unavailable for one scene; equal scene weighting"
+  },
+  "reference_status": "MANUAL_TOPOLOGY + SAME_SESSION_FRONTEND_REFERENCE; not absolute ground truth",
+  "thresholds": {
+    "pose_region_delta_s_m": [
+      1.0,
+      2.0,
+      5.0
+    ],
+    "xy_region_m": [
+      1.0,
+      2.0,
+      5.0
+    ],
+    "bbs_basin_proxy": {
+      "xy_m": 1.0,
+      "yaw_deg": 10.0
+    },
+    "gicp_nominal": {
+      "xy_m": 0.5,
+      "yaw_deg": 5.0
+    }
+  },
+  "limitations": [
+    "Physical-row and along-row recall are N/A for queries without a confirmed row; headlands normally have no row.",
+    "Headland-region and XY-region recall are supplemental region metrics, not physical-row recall.",
+    "UNKNOWN candidates are reported separately; they are not wrong rows or failed retrievals.",
+    "WrongRowFraction uses the full prefix and is unavailable if labels are missing; known-row conditional fraction and bounds are supplemental.",
+    "Row entropy normalizes over known physical rows only; known weight coverage is reported.",
+    "Unattempted, timed-out invalid, or incompletely observed stage outcomes are censored, not failed.",
+    "Native success is not runtime policy acceptance; FinalAcceptedSuccess remains N/A without runtime_policy evidence.",
+    "K refers to descriptor prefix; stage@K uses only actual observed candidates in that prefix.",
+    "A known hit makes Recall@K true; a miss is false only for a complete and fully observed prefix.",
+    "Longitudinal summary rows average per-query candidate statistics, not independent candidate samples.",
+    "Cross-backend effects pair scene IDs; explicit backend-to-canonical transforms are required for physical labels.",
+    "A rigid same-timestamp alignment has residual error and does not establish physical ground truth; transformed labels require manual review against row spacing/corridors.",
+    "Shared BBS time budgets mean stage outcomes in a prefix are not a counterfactual new run with a smaller candidate_top_k."
+  ],
+  "output_artifacts": [
+    {
+      "path": "tables/candidate_row_coordinates.csv",
+      "sha256": "d7df6e55442ad47836142bd2525fbeaab5ec80cb370a99e4337e793fa85930bc",
+      "bytes": 180671
+    },
+    {
+      "path": "tables/query_metrics.csv",
+      "sha256": "fd5588ec3e3789b71bdad15b1c1b8c2c0232598685b4707de7bcee47103235ec",
+      "bytes": 22764
+    },
+    {
+      "path": "tables/table_bbs_gicp_stage_success.csv",
+      "sha256": "b88b2a6796222940f441894222a759b05b69577fcb9f4ecbca47fe757810b4c2",
+      "bytes": 66029
+    },
+    {
+      "path": "tables/table_candidate_entropy.csv",
+      "sha256": "ae95ca16b9b1640a7d941d86db250be7ced03ba74fee7a3b32c2eee78078921d",
+      "bytes": 13094
+    },
+    {
+      "path": "tables/table_cross_backend_topk.csv",
+      "sha256": "c9929952d7ae7c98844b44a660c0e4e06f7c3efc18824ae25a40cbaa971b8f25",
+      "bytes": 35935
+    },
+    {
+      "path": "tables/table_longitudinal_ambiguity.csv",
+      "sha256": "f6fc9d82ab186f2fd8ce391afafa67094db2382e9abb6693a543349e26629055",
+      "bytes": 19694
+    },
+    {
+      "path": "tables/table_multiframe_topk.csv",
+      "sha256": "4f7d3051da7e6477f5298a41300882ca79cc602a3f043a6ef4e193cf67b3225d",
+      "bytes": 64146
+    },
+    {
+      "path": "tables/table_scene_effect_bootstrap.csv",
+      "sha256": "c250cbae5b17fc0b02e67e4b1470e2df101591c78d8c580ea0b3fc1e0deb56e1",
+      "bytes": 32160
+    },
+    {
+      "path": "tables/table_score_margin.csv",
+      "sha256": "7f327fb4bbbb374524d7fb5641f200b1b3d57b2a33ca789e03475b86d0373e3f",
+      "bytes": 25814
+    },
+    {
+      "path": "tables/table_topk_recall_by_scene.csv",
+      "sha256": "a3730b530acf52d39196465bce0c1ab24c8291ace0595fd0dc40e5942aee19cc",
+      "bytes": 25238
+    },
+    {
+      "path": "tables/table_wrong_row_by_scene.csv",
+      "sha256": "d6e94ed53ded5e6ff91c85e35d9382270fdd28c3743d5282f00f739a33ae9123",
+      "bytes": 23030
+    },
+    {
+      "path": "figures/fig_longitudinal_ambiguity.png",
+      "sha256": "9a1316ba55f87ea9496cdb27ba7732192ac1dceddd4dfc9a30d5db976f243d42",
+      "bytes": 45505
+    },
+    {
+      "path": "figures/fig_pipeline_failure_breakdown.png",
+      "sha256": "4f9c1c0bbd1cc878ef8a46e1e4dc2f9368800ea394a132ad9a0e9be1bd00df1f",
+      "bytes": 102875
+    },
+    {
+      "path": "figures/fig_recall_at_k.png",
+      "sha256": "bedc3192eddc9cf8739fc81587ff04861bc4d7f753b3de1930d8438358152099",
+      "bytes": 88397
+    },
+    {
+      "path": "figures/fig_row_entropy.png",
+      "sha256": "cd05ec48ecb918f256c83f16418c814d4b6304defd912a76ca351884f90dbfd7",
+      "bytes": 47122
+    },
+    {
+      "path": "figures/fig_topk_candidates_headland.png",
+      "sha256": "ac2c744a32fd0b09234ef90f0ed4640273de06983c54b41519043be8f0de4fcc",
+      "bytes": 56770
+    },
+    {
+      "path": "figures/fig_topk_candidates_row_middle.png",
+      "sha256": "2c2fd7820a2e3e6fe6fb1d7f448342c89ff4f55c7fdaf53beea202be00f2b24a",
+      "bytes": 59644
+    },
+    {
+      "path": "figures/fig_topology_annotation.png",
+      "sha256": "2aa97cefd72891e4e5a1d16cfbc2f960a4cc0f34a5e99f3911631208928b8be7",
+      "bytes": 167759
+    },
+    {
+      "path": "METRIC_DEFINITIONS.md",
+      "sha256": "733b118cbbf0b0f23a357338a97771934bab6335e876e79cc6353d984fbade70",
+      "bytes": 2469
+    }
+  ]
+}

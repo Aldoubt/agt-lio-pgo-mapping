@@ -11,4 +11,8 @@ setup(name=package_name, version='0.1.0', packages=[package_name], data_files=[
     tests_require=['pytest'],
     entry_points={'console_scripts': [
         'export_map_package = agt_mapping_artifacts.export_map_package:main',
+        'agt_build_keyframe_blocks = agt_mapping_artifacts.block_cli:build_main',
+        'agt_verify_keyframe_blocks = agt_mapping_artifacts.block_cli:verify_main',
+        'agt_export_keyframe_block_preview = agt_mapping_artifacts.block_cli:preview_main',
+        'agt_export_structure_overlay = agt_mapping_artifacts.block_cli:structure_main',
     ]})

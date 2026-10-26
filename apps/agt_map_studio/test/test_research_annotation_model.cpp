@@ -167,6 +167,14 @@ TEST(ResearchAnnotationModelTest, AddsProvisionalAisleAndEndpointsAsOneUndoableV
   EXPECT_EQ(end.value("geometry").toObject().value("kind").toString(), "point_xyz");
   EXPECT_EQ(start.value("candidate_status").toString(), "PROVISIONAL");
   EXPECT_EQ(end.value("candidate_status").toString(), "PROVISIONAL");
+  const auto coverage = aisle.value("coverage").toObject();
+  EXPECT_EQ(coverage.value("role").toString(), "aisle");
+  EXPECT_EQ(coverage.value("id").toString(), "AUTO-A001");
+  EXPECT_EQ(coverage.value("endpoint_ids").toArray()[0].toString(), created_ids[1]);
+  EXPECT_EQ(coverage.value("endpoint_ids").toArray()[1].toString(), created_ids[2]);
+  EXPECT_DOUBLE_EQ(coverage.value("nominal_width_m").toDouble(), 1.0);
+  EXPECT_EQ(start.value("coverage").toObject().value("aisle_id").toString(), "AUTO-A001");
+  EXPECT_EQ(end.value("coverage").toObject().value("endpoint").toString(), "end");
   EXPECT_FALSE(model.add_aisle_proposals({proposal}, "session-a", QStringLiteral("duplicate"), nullptr, &error));
   EXPECT_NE(error.indexOf(QStringLiteral("duplicate aisle proposal ID")), -1);
   EXPECT_EQ(model.annotations().size(), 3);

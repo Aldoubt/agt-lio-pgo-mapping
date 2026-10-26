@@ -3,6 +3,7 @@
 #include "agt_pcd2grid_exporter/ParameterLoader.hpp"
 #include "agt_pcd2grid_exporter/TemporalPersistenceFilter.hpp"
 #include "agt_pcd2grid_exporter/TraversabilityGridBuilder.hpp"
+#include "CloudPublication.hpp"
 
 #include <pcl/io/pcd_io.h>
 
@@ -15,7 +16,9 @@ namespace {
 void usage(const char *program) {
   std::cerr << "Usage: " << program
             << " (--pcd input.pcd | --package mapping_package)"
-               " --output navigation_map [--config projection.yaml]\n";
+               " --output navigation_map [--config projection.yaml]"
+               " [--cloud-output child_directory (traversability; requires --config)]\n"
+               "Cleanup and navigation output are one immutable transaction; cloud-output must be inside output.\n";
 }
 
 }  // namespace
@@ -25,15 +28,17 @@ int main(int argc, char **argv) {
   std::string package_path;
   std::string output_dir;
   std::string config_path;
+  std::string cloud_output;
   for (int i = 1; i < argc; ++i) {
     const std::string argument(argv[i]);
     if ((argument == "--pcd" || argument == "--package" || argument == "--output" ||
-         argument == "--config") &&
+         argument == "--config" || argument == "--cloud-output") &&
         i + 1 < argc) {
       const std::string value(argv[++i]);
       if (argument == "--pcd") pcd_path = value;
       else if (argument == "--package") package_path = value;
       else if (argument == "--output") output_dir = value;
+      else if (argument == "--cloud-output") cloud_output = value;
       else config_path = value;
     } else if (argument == "--help" || argument == "-h") {
       usage(argv[0]);
@@ -47,6 +52,20 @@ int main(int argc, char **argv) {
     usage(argv[0]);
     return 2;
   }
+  if (!package_path.empty()) {
+    try {
+      const auto source = std::filesystem::canonical(package_path);
+      const auto output = std::filesystem::weakly_canonical(std::filesystem::absolute(output_dir));
+      if (agt_pcd2grid_exporter::detail::within(output, source) ||
+          agt_pcd2grid_exporter::detail::within(source, output)) {
+        std::cerr << "--output must be disjoint from the immutable mapping source package\n";
+        return 2;
+      }
+    } catch (const std::exception &exception) {
+      std::cerr << "Source/output error: " << exception.what() << '\n';
+      return 2;
+    }
+  }
 
   agt_pcd2grid_exporter::ProjectionParameters parameters;
   std::string error;
@@ -54,6 +73,25 @@ int main(int argc, char **argv) {
       !agt_pcd2grid_exporter::ParameterLoader::load(config_path, &parameters, &error)) {
     std::cerr << "Parameter error: " << error << '\n';
     return 1;
+  }
+  std::string cloud_subdirectory;
+  if (!cloud_output.empty()) {
+    try {
+      namespace fs = std::filesystem;
+      const auto root = fs::weakly_canonical(fs::absolute(output_dir));
+      const fs::path requested(cloud_output);
+      const auto clouds = fs::weakly_canonical(requested.is_absolute() ? requested : root / requested);
+      if (parameters.projection_mode != agt_pcd2grid_exporter::ProjectionMode::Traversability ||
+          config_path.empty() || clouds == root || !agt_pcd2grid_exporter::detail::within(clouds, root)) {
+        std::cerr << "--cloud-output requires explicit --config, traversability mode, and a strict "
+                     "child of --output; external output directories cannot be published atomically\n";
+        return 2;
+      }
+      cloud_subdirectory = clouds.lexically_relative(root).string();
+    } catch (const std::exception &exception) {
+      std::cerr << "Cleanup output error: " << exception.what() << '\n';
+      return 2;
+    }
   }
   if (parameters.projection_mode == agt_pcd2grid_exporter::ProjectionMode::Traversability) {
     if (package_path.empty()) {
@@ -65,11 +103,12 @@ int main(int argc, char **argv) {
     agt_pcd2grid_exporter::TraversabilityStats traversability;
     const std::string debug_dir = (std::filesystem::path(output_dir) / "debug").string();
     if (!agt_pcd2grid_exporter::TraversabilityGridBuilder::build(
-            package_path, parameters, &grid, &stats, &traversability, &error, debug_dir)) {
+            package_path, parameters, &grid, &stats, &traversability, &error, debug_dir,
+            cloud_output.empty() ? "" : output_dir, cloud_subdirectory, config_path)) {
       std::cerr << "Traversability error: " << error << '\n';
       return 1;
     }
-    if (!agt_pcd2grid_exporter::OccupancyGridWriter::write_navigation_map(
+    if (cloud_output.empty() && !agt_pcd2grid_exporter::OccupancyGridWriter::write_navigation_map(
             grid, parameters, stats, output_dir, package_path, &error, &traversability)) {
       std::cerr << "Write error: " << error << '\n';
       return 1;

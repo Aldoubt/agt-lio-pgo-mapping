@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from agt_mapping_artifacts.map_package_exporter import _write_integrity_files
+
 from agt_map_refinement_core.pcd import read_pcd, write_pcd
 from agt_map_refinement_core.pipeline import refine_map_package
 from agt_map_refinement_core.rules import load_rules, point_is_removed
@@ -35,11 +37,10 @@ def make_source(tmp_path: Path) -> Path:
     write_binary(source / 'map.pcd')
     (source / 'poses.txt').write_text('0.pcd 0 0 0 1 0 0 0\n')
     (source / 'poses_timed.txt').write_text('0.pcd 1.0 0 0 0 1 0 0 0\n')
-    (source / 'patches' / '0.pcd').write_text(HEADER.format(n=0, fmt='ascii'))
+    write_binary(source / 'patches' / '0.pcd')
     (source / 'calibration.yaml').write_text('lidar_to_imu: identity\n')
     (source / 'metadata.yaml').write_text('backend: PGO\n')
-    (source / 'manifest.yaml').write_text('schema_version: 1\n')
-    (source / 'checksums.sha256').write_text('')
+    _write_integrity_files(source)
     return source
 
 

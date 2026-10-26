@@ -18,11 +18,18 @@ public:
   {
     const auto input_topic = declare_parameter<std::string>("input_topic", "/livox/lidar");
     const auto output_topic = declare_parameter<std::string>("output_topic", "/mapping/sensor/cloud");
+    const auto timed_output_topic = declare_parameter<std::string>(
+      "timed_output_topic", "/mapping/sensor/deskew_cloud");
+    publish_timed_cloud_ = declare_parameter<bool>("publish_timed_cloud", true);
     const auto sanitized_topic = declare_parameter<std::string>("sanitized_topic", "/mapping/sensor/livox");
     min_points_ = declare_parameter<int>("min_points", 1000);
     max_scan_duration_s_ = declare_parameter<double>("max_scan_duration_s", 0.2);
     frame_id_override_ = declare_parameter<std::string>("frame_id", "");
     publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(output_topic, rclcpp::SensorDataQoS());
+    if (publish_timed_cloud_) {
+      timed_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+        timed_output_topic, rclcpp::QoS(10).reliable());
+    }
     // FAST-LIO2's external node uses the default reliable subscription QoS.
     // This internal processing stream must therefore be reliable; the public
     // PointCloud2 sensor stream above intentionally remains SensorDataQoS.
@@ -52,6 +59,9 @@ public:
         }
         sanitized_publisher_->publish(*message);
         publisher_->publish(customMsgToPointCloud2(*message, frame_id_override_));
+        if (timed_publisher_) {
+          timed_publisher_->publish(customMsgToTimedPointCloud2(*message, frame_id_override_));
+        }
       });
     RCLCPP_INFO(
       get_logger(), "MID360 adapter: %s -> %s; frame override: %s",
@@ -64,7 +74,9 @@ private:
   int min_points_{};
   double max_scan_duration_s_{};
   size_t dropped_scans_{};
+  bool publish_timed_cloud_{};
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr timed_publisher_;
   rclcpp::Publisher<livox_ros_driver2::msg::CustomMsg>::SharedPtr sanitized_publisher_;
   rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr subscription_;
 };

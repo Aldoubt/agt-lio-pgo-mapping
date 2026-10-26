@@ -1,0 +1,48 @@
+backend:
+  id: fast_lio2_legacy
+  implementation: fast_lio2
+  project: FAST-LIO2
+  mode: legacy_frontend_only
+  status: experimental_legacy
+  experimental: true
+  source_repository: https://github.com/Aldoubt/fast-lio2.git
+  source_commit: a12f8db1718ef23075b24817bca927cab9cca021
+  source_path: /home/yangxuan/ros2_ws/src/external/fast_lio2_mapping
+  config_path: /home/yangxuan/ros2_ws/src/agt_mapping_framework/bringup/agt_mapping_bringup/config/fastlio2_mid360.yaml
+  config_sha256: 93d9d03c0f61093097b2f08042a0e87990e7836edafbba6042db9d1ebc519cac
+  source_files_sha256:
+    /home/yangxuan/ros2_ws/src/external/fast_lio2_mapping/fastlio2/src/map_builder/lidar_processor.cpp: 8524ae12db4e0a9eae05ad1de0dbd67fcdc490ad568b9f4cf49448fc2a143d20
+  required_executables:
+    - /home/yangxuan/ros2_ws/install/fastlio2/lib/fastlio2/lio_node
+  input_format:
+    lidar: livox_ros_driver2/msg/CustomMsg
+    lidar_time_field: points.offset_time
+    lidar_time_unit: nanoseconds_relative_to_header
+    imu: sensor_msgs/msg/Imu
+    imu_acceleration_unit: g_native_fastlio_initialization
+    deskew: per_point_time
+  loop_closure: false
+  gps_factor: false
+  external_global_correction: false
+  output_odom_topic: /fastlio2/lio_odom
+  output_cloud_topic: /fastlio2/body_cloud
+  output_path_topic: /fastlio2/lio_path
+  output_cloud_frame_mode: body
+  output_status_topic: /mapping/frontend/status
+sensor:
+  lidar_topic: /agt/sensors/lidar/custom
+  imu_topic: /agt/sensors/imu/data
+  normalized_lidar_topic: /mapping/sensor/deskew_cloud
+  normalized_imu_topic: /mapping/sensor/imu_si
+  backend_imu_topic: /agt/sensors/imu/data
+  imu_acceleration_unit: g
+  lidar_frame: livox_frame
+  imu_frame: livox_imu
+  body_frame: body
+  T_body_lidar_translation_m: [0.011, 0.02329, -0.04412]
+  T_body_lidar_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+mapping:
+  map_frame: lidar
+  keyframe_distance_m: 0.5
+  keyframe_rotation_deg: 10.0
+  absolute_ground_truth: false

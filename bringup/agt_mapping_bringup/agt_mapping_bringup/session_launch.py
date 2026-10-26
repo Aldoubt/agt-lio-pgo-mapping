@@ -10,7 +10,9 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-from .preflight import frontend_remappings, inspect_bag, parse_bool, validate_number
+from .backend_registry import BackendSelectionError, resolve_backend
+from .backend_snapshot import prepare_backend_snapshot
+from .preflight import inspect_bag, parse_bool, validate_number
 from .session_state import create_session, mark_session, playback_action
 from .session_lock import acquire_domain_lease
 
@@ -28,6 +30,9 @@ def launch_session(context):
     bag = inspect_bag(value('bag_path'), value('lidar_topic'), value('imu_topic'))
     output = Path(value('output_dir')).expanduser().resolve()
     options = {
+        'reference_mode': value('reference_mode'),
+        'mapping_backend': value('mapping_backend').strip(),
+        'backend_profile': value('backend_profile').strip(),
         'playback_rate': validate_number(value('playback_rate'), 'playback_rate'),
         'startup_timeout': validate_number(value('startup_timeout'), 'startup_timeout'),
         'export_timeout': validate_number(value('export_timeout'), 'export_timeout'),
@@ -35,29 +40,68 @@ def launch_session(context):
         **{key: parse_bool(value(key)) for key in
            ('start_rviz', 'start_paused', 'auto_export', 'keep_open')},
     }
+    if value('fastlio_config').strip():
+        raise ValueError('fastlio_config is retired; use backend_profile with a validated FAST-LIVO2 profile')
     if options['export_timeout'] <= options['drain_seconds']:
         raise ValueError('export_timeout must exceed drain_seconds')
+    if options['reference_mode'] != 'frontend':
+        raise ValueError('only the verified frontend source-package mode is supported; PGO/FAST-LIO2 are disabled')
+    try:
+        profile = resolve_backend(options['mapping_backend'] or None,
+                                  profile_path=options['backend_profile'] or None)
+    except BackendSelectionError as exc:
+        raise ValueError(str(exc)) from exc
+    backend = profile['backend']
+    expected_profile_hash = value('backend_profile_source_sha256').strip()
+    if expected_profile_hash and backend['profile_origin_sha256'] != expected_profile_hash:
+        raise ValueError('backend profile changed after CLI preflight; rerun with the intended profile')
+    options['mapping_backend'] = backend['id']
+    sensor = profile['sensor']
+    mapping = profile['mapping']
+    if backend['id'] != 'fast_livo2_lio':
+        raise ValueError(f"offline session launch does not yet support backend {backend['id']!r}")
     share = Path(get_package_share_directory('agt_mapping_bringup'))
-    lio_config = share / 'config' / 'fastlio2_mid360.yaml'
-    remappings = frontend_remappings(lio_config, bag.imu_topic)
+    snapshot = prepare_backend_snapshot(profile, output, lidar_topic=bag.lidar_topic,
+                                        imu_topic=bag.imu_topic, use_sim_time=True)
+    profile = snapshot.profile
+    backend, sensor, mapping = profile['backend'], profile['sensor'], profile['mapping']
+    options['backend_profile_sha256'] = snapshot.profile_sha256
+    options['backend_config_sha256'] = backend['config_sha256']
     text = lambda value: ParameterValue(str(value), value_type=str)
     nodes = [
-        Node(package='agt_mid360_adapter', executable='mid360_adapter_node',
-             parameters=[{'input_topic': bag.lidar_topic}]),
-        Node(package='fastlio2', namespace='fastlio2', executable='lio_node',
-             parameters=[{'config_path': text(lio_config), 'use_sim_time': True}],
-             remappings=remappings),
-        Node(package='agt_fastlio_backend', executable='fastlio_backend_node',
-             parameters=[{'use_sim_time': True}]),
-        Node(package='pgo', executable='pgo_node',
-             parameters=[{'config_path': text(share / 'config' / 'pgo_frontend.yaml'),
-                          'use_sim_time': True}]),
-        Node(package='agt_pgo_backend', executable='pgo_backend_node',
-             parameters=[{'use_sim_time': True, 'pgo_output_dir': text(output / 'pgo_raw')}]),
-        Node(package='agt_mapping_exporter', executable='mapping_artifact_exporter',
-             parameters=[{'use_sim_time': True, 'output_dir': text(output)}]),
+        Node(package='fast_livo', executable='fastlivo_mapping', name='fastlivo_mapping', output='log',
+             parameters=[backend['config_path']]),
+        Node(package='agt_mapping_frontend_adapter', executable='mapping_frontend_adapter_node',
+             name='mapping_frontend_adapter', output='screen', parameters=[{
+                 'use_sim_time': True, 'backend_id': backend['id'],
+                 'source_commit': backend['source_commit'],
+                 'input_odom_topic': backend['output_odom_topic'],
+                 'input_cloud_topic': backend['output_cloud_topic'],
+                 'input_path_topic': backend['output_path_topic'],
+                 'input_lidar_topic': bag.lidar_topic, 'input_imu_topic': bag.imu_topic,
+                 'cloud_frame_mode': backend['output_cloud_frame_mode'],
+                 'body_frame': sensor['body_frame'], 'lidar_frame': sensor['lidar_frame'],
+                 'max_sync_slop_s': backend.get('max_cloud_odom_slop_s', 0.05),
+                 'T_body_lidar.x': sensor['T_body_lidar_translation_m'][0],
+                 'T_body_lidar.y': sensor['T_body_lidar_translation_m'][1],
+                 'T_body_lidar.z': sensor['T_body_lidar_translation_m'][2],
+                 'T_body_lidar.qx': sensor['T_body_lidar_quaternion_xyzw'][0],
+                 'T_body_lidar.qy': sensor['T_body_lidar_quaternion_xyzw'][1],
+                 'T_body_lidar.qz': sensor['T_body_lidar_quaternion_xyzw'][2],
+                 'T_body_lidar.qw': sensor['T_body_lidar_quaternion_xyzw'][3],
+             }]),
+        Node(package='agt_mapping_bringup', executable='frontend_map_exporter',
+             name='frontend_map_exporter', output='screen', parameters=[{
+                 'use_sim_time': True, 'output_dir': text(output), 'bag_path': str(bag.path),
+                 'profile_path': str(snapshot.profile_path),
+                 'profile_sha256': snapshot.profile_sha256,
+                 'input_lidar_topic': bag.lidar_topic, 'input_imu_topic': bag.imu_topic,
+                 'keyframe_distance_m': float(mapping['keyframe_distance_m']),
+                 'keyframe_rotation_deg': float(mapping['keyframe_rotation_deg']),
+                 'body_frame': sensor['body_frame'],
+             }]),
     ]
-    labels = ['sensor adapter', 'FAST-LIO2', 'frontend bridge', 'PGO', 'PGO bridge', 'artifact exporter']
+    labels = ['FAST-LIVO2 LIO-only', 'frontend normalization adapter', 'frontend map exporter']
     playback_cmd = ['ros2', 'bag', 'play', str(bag.path), '--clock', '--rate',
                     str(options['playback_rate']), '--topics', bag.lidar_topic, bag.imu_topic]
     if options['start_paused']:
@@ -65,10 +109,12 @@ def launch_session(context):
     player = ExecuteProcess(cmd=playback_cmd, output='screen')
     ready = Node(package='agt_mapping_bringup', executable='mapping_wait_ready', output='screen',
                  parameters=[{'output_dir': text(output), 'startup_timeout': options['startup_timeout'],
-                              'lidar_topic': bag.lidar_topic, 'imu_topic': bag.imu_topic}])
+                              'lidar_topic': bag.lidar_topic, 'imu_topic': bag.imu_topic,
+                              'reference_mode': options['reference_mode']}])
     finalizer = Node(package='agt_mapping_bringup', executable='mapping_export_verified', output='screen',
                      parameters=[{'output_dir': text(output), 'export_timeout': options['export_timeout'],
-                                  'drain_seconds': options['drain_seconds']}])
+                                  'drain_seconds': options['drain_seconds'],
+                                  'reference_mode': options['reference_mode']}])
 
     def fail(message):
         mark_session(output, 'failed', message)
@@ -94,8 +140,8 @@ def launch_session(context):
             return fail(f'Rosbag failed with exit code {event.returncode}; automatic export skipped')
         if action == 'manual':
             mark_session(output, 'waiting_manual_export', 'Playback finished; automatic export disabled')
-            return [LogInfo(msg='Manual mode: request /mapping/backend/export_artifact, then run '
-                                'scripts/verify_map_artifact.sh on the output. Ctrl+C closes nodes; '
+            return [LogInfo(msg='Manual mode: request /mapping/frontend/export_artifact, then run '
+                                'the frontend source-package validator on the output. Ctrl+C closes nodes; '
                                 'this mode does not declare automatic completion.')]
         return [finalizer]
 
@@ -105,9 +151,9 @@ def launch_session(context):
         if event.returncode != 0:
             return fail('Map export/verification failed; no verified completion (see session.json/logs)')
         if options['keep_open']:
-            return [LogInfo(msg=f'Verified map: {output / "map_package"}. --keep-open: Ctrl+C to close.')]
-        return [LogInfo(msg=f'Verified map: {output / "map_package"}; closing this launch.'),
-                EmitEvent(event=Shutdown(reason='Optimized map artifact verified'))]
+            return [LogInfo(msg=f'Verified FAST-LIVO2 source map: {output / "map_package"}. --keep-open: Ctrl+C to close.')]
+        return [LogInfo(msg=f'Verified FAST-LIVO2 source map: {output / "map_package"}; closing this launch.'),
+                EmitEvent(event=Shutdown(reason='FAST-LIVO2 LIO-only source artifact verified'))]
 
     def critical_exit(label):
         def handler(event, ctx):
@@ -142,6 +188,7 @@ def launch_session(context):
     lease = acquire_domain_lease()
     try:
         create_session(output, bag, options)
+        snapshot.write()
     except Exception:
         lease.close()
         raise

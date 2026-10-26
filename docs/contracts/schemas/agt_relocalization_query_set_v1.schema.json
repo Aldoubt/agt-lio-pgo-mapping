@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agt.local/contracts/agt_relocalization_query_set_v1.schema.json",
+  "title": "AGT Relocalization Query Set v1",
+  "type": "object",
+  "required": ["schema_version", "asset_type", "query_set_id", "revision", "status", "source_ref", "block_set_ref", "sampling_strategy", "query_count", "queries", "content_sha256"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "asset_type": {"const": "agt.relocalization_query_set/v1"},
+    "query_set_id": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["DRAFT", "FROZEN"]},
+    "source_ref": {"$ref": "#/$defs/sourceRef"},
+    "block_set_ref": {"$ref": "#/$defs/blockRef"},
+    "annotation_ref": {"anyOf": [{"$ref": "#/$defs/annotationRef"}, {"type": "null"}]},
+    "sampling_strategy": {"type": "object"},
+    "query_count": {"type": "integer", "minimum": 0},
+    "queries": {"type": "array", "items": {"$ref": "#/$defs/query"}},
+    "content_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "pathRef": {"type": "object", "required": ["kind", "path"], "properties": {"kind": {"const": "filesystem"}, "path": {"type": "string", "minLength": 1, "pattern": "^(?!/).+"}}},
+    "sourceRef": {"allOf": [{"$ref": "#/$defs/pathRef"}, {"type": "object", "required": ["identity", "manifest_sha256", "checksums_sha256", "pose_revision", "reference_level"], "properties": {"identity": {"type": "string", "minLength": 1}, "manifest_sha256": {"$ref": "#/$defs/digest"}, "checksums_sha256": {"$ref": "#/$defs/digest"}, "pose_revision": {"$ref": "#/$defs/digest"}, "reference_level": {"enum": ["SAME_SESSION_REFERENCE", "UNKNOWN"]}}}]},
+    "blockRef": {"allOf": [{"$ref": "#/$defs/pathRef"}, {"type": "object", "required": ["block_set_id", "revision", "manifest_sha256", "index_sha256", "checksums_sha256", "parent_source_digest"], "properties": {"block_set_id": {"type": "string"}, "revision": {"type": "integer", "minimum": 1}, "manifest_sha256": {"$ref": "#/$defs/digest"}, "index_sha256": {"$ref": "#/$defs/digest"}, "checksums_sha256": {"$ref": "#/$defs/digest"}, "parent_source_digest": {"$ref": "#/$defs/digest"}, "row_annotation_sha256": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}}}]},
+    "annotationRef": {"allOf": [{"$ref": "#/$defs/pathRef"}, {"type": "object", "required": ["revision", "sha256", "status", "manual_review_confirmed"], "properties": {"revision": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/digest"}, "status": {"enum": ["draft", "frozen"]}, "manual_review_confirmed": {"type": "boolean"}}}]},
+    "query": {"type": "object", "required": ["query_id", "enabled", "scene", "requested_location", "resolved_keyframe_id", "resolved_pose_index", "resolved_timestamp", "resolved_position_m", "snap_distance_m", "reference_level"], "properties": {"query_id": {"type": "string", "minLength": 1}, "enabled": {"type": "boolean"}, "scene": {"enum": ["ENTRY", "MIDDLE", "EXIT", "HEADLAND", "OTHER"]}, "row_id": {"type": "string"}, "along_row_s_m": {"type": ["number", "null"], "minimum": 0}, "sample_ratio": {"type": ["number", "null"], "minimum": 0, "maximum": 1}, "requested_location": {"type": "object", "required": ["frame", "x_m", "y_m"], "properties": {"frame": {"const": "map"}, "x_m": {"type": "number"}, "y_m": {"type": "number"}}}, "resolved_keyframe_id": {"type": "integer", "minimum": 0}, "resolved_pose_index": {"type": "integer", "minimum": 0}, "resolved_timestamp": {"type": "number"}, "resolved_position_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}}, "snap_distance_m": {"type": "number", "minimum": 0}, "reference_level": {"enum": ["SAME_SESSION_REFERENCE", "INDEPENDENT_GROUND_TRUTH", "UNKNOWN"]}, "source_patch_id": {"type": "string", "minLength": 1}}}
+  }
+}

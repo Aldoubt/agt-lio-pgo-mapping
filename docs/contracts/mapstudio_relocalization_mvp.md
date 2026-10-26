@@ -1,0 +1,46 @@
+# MapStudio Relocalization MVP contracts
+
+Status: implemented bounded slice for immutable keyframe blocks, offline query evidence, and a MapStudio inspection panel. Structure layers remain limited by the current annotation state; see the M0 audit and greenhouse result below. These contracts reuse the verified frontend mapping source package and `agt_greenhouse_annotation` schema v1. They do not create another Map Bundle, route, profile, SLAM, BBS, descriptor, or GICP format.
+
+## Identity and digest boundaries
+
+| Identity | Source of truth | Digest meaning |
+|---|---|---|
+| Mapping source | Existing `agt_mapping_artifacts.frontend_package.verify_frontend_map_package` | `manifest_sha256` is SHA-256 of exact `manifest.yaml` bytes; `checksums_sha256` covers the package's existing indexed files |
+| Pose revision | Existing `poses_timed.txt` in the source package | SHA-256 of exact timed-pose bytes |
+| Block set | `agt.keyframe_block_set/v1` manifest plus `block_index.json` | `output_content_sha256` is exact PCD bytes per block; index and manifest digests are separate |
+| Query window | Ordered source frame IDs, patch hashes, timestamps and poses | `window_sha256` commits to that ordered identity; `query_cloud_sha256` hashes the exact body-frame PCD passed to the existing localizer |
+| Analysis config | Explicit query-frame count, Top-K and existing native GLOBAL settings | Canonical JSON SHA-256; block size is recorded independently in the block set |
+| Evidence revision | `agt.relocalization_evidence/v1` manifest | Manifest does not contain its own digest; external `checksums.sha256` covers it and all published evidence files |
+
+The manifest/checksum relationship intentionally has no self-reference. A digest is never reused to stand for a different layer. Output directories are create-once revisions; a publisher refuses an existing destination. Evidence publication requires the current source package and block set as explicit protected inputs, so omitting an optional path from the evidence record cannot direct output into either immutable asset.
+
+## Keyframe block set
+
+`block_keyframe_count` is the requested number of consecutive source keyframes; `stride` controls block starts independently. The default stride is the block size (non-overlapping blocks). Blocks split at a missing numeric keyframe ID or a timestamp gap above `max_timestamp_gap_s`; spatial revisits never merge. The final short block at a segment endpoint is retained and records its actual size. Patches are transformed from the declared body frame into the source map frame using the paired source pose. Voxel centroids are optional and only affect the block product.
+
+The index supports keyframe-to-block, timestamp, block bounds/center and reviewed row-to-block lookups. `row_id`, `along_row_s_m` and `scene_type` remain `UNKNOWN` unless the existing annotation schema validates against this exact source and carries frozen manual review. Structure display exports also mask manual physical row/headland IDs unless the annotation is frozen and manually reviewed. Candidate localization still uses the existing per-keyframe descriptor/GLOBAL assets: block clouds are authoring/inspection assets and are used here to exclude all target keyframes from blocks containing query constituents, then associate candidates to blocks. They are not silently substituted as a new descriptor target format.
+
+## Relocalization evidence
+
+The evidence record contains four separate categories: `geometry_observability`, `candidate_ambiguity`, `local_convergence_basin`, and `empirical_global_result`. The first MVP query operation reuses native GLOBAL/Top-K/GICP and currently stores observability and local basin as explicit `NO_DATA` unless those evaluators are run separately. Candidate ambiguity is `KNOWN` only when at least two ranked candidates have measured descriptor/BBS scores; the raw scores and native ambiguity fields are preserved as diagnostics, never probabilities. Missing measurements are `NO_DATA`; `UNKNOWN` means the value or physical identity is unresolved; `CENSORED` means a bound or observation was interrupted; malformed, nonfinite, or internally inconsistent values are rejected.
+
+Empirical classifications are `CORRECT`, `FALSE_ACCEPT`, `REJECTED`, `TIMEOUT`, `NOT_RUN`, and `REFERENCE_UNKNOWN`. With a same-session frontend reference, a `CORRECT` or `FALSE_ACCEPT` classification is explicitly reference-relative and carries the measured error. It is not an independent ground-truth or paper-level success claim. A native convergence flag alone never produces `CORRECT`.
+
+`query_accumulation_frames` is the number of paired body patches fused as one query (`1`, `3`, or `5`). `candidate_top_k` is the number of native BBS candidate attempts. Both are independent of block size. Every query window and every entire block containing any query constituent are excluded from the generated target and descriptor database; exclusion IDs are frozen in the evidence.
+
+## M0 audit record
+
+- Source package validator: `agt_mapping_artifacts.frontend_package.verify_frontend_map_package`; the producer invokes it before reading any source patch and does not modify the source.
+- Existing structure contract: `agt_greenhouse_annotation` schema v1, `validate_topology`, `labels_for_package`, and the manual freeze path. The current green-house topology is a draft with no row/headland geometry and `manual_review_confirmed=false`; all physical identities must remain `UNKNOWN` until a person freezes reviewed geometry.
+- Existing localization: `agt_map_localization_benchmark.greenhouse.MapPackage`, `build_global_assets`, `run_global`, native descriptor/3D-BBS/GICP, and the existing trace schema. The installed default candidate binary in this workspace does not emit the Top-K trace; the analysis adapter detects that before building assets and accepts an explicit trace-capable existing binary. The greenhouse acceptance used the isolated Oct 3 trace-instrumented binary, whose SHA-256 and path are recorded in evidence. Its source snapshot was dirty; the recorded patch adds observation-only trace output and does not alter candidate ranking or registration math.
+- Existing MapStudio: Qt5/C++ source-package viewer, `ExternalToolRunner`, and workflow docks. The Relocalization MVP panel now builds/loads blocks, validates and shows the existing structure schema, selects keyframe/map-point/row-position queries, runs the sparse analysis asynchronously, reloads evidence, lists Top-K candidates, and lazily overlays the query and selected candidate in the source map frame. Runtime activation and publishers are unchanged.
+- Current pipeline behavior: source patches and poses remain the localization algorithm input. Formal block PCDs are separate inspected assets; candidate-to-block association is metadata. No evidence layer changes occupancy data.
+
+## Current acceptance boundary
+
+The contracts and validators are software-verifiable. Evidence integrity `PASS` is separate from freshness: `CURRENT` requires the current source and block set (and the current topology when one is recorded), `STALE` means a supplied revision mismatched, and `UNCHECKED` means a required current input was not supplied. The evidence verifier also checks native executable and linked-library/source fingerprints, GLOBAL defaults, repository HEAD, and a worktree-state digest; changes mark the record `STALE` while preserving its historical bytes. A sparse KF 590 query (`query_accumulation_frames=1`, `candidate_top_k=4`) was completed against the current source package. Its evidence bundle is retained in the workspace-level `experiments/mapstudio_relocalization_mvp_20261006_01/evidence/` directory; experiment outputs are not required contract inputs. It excluded `block_0056` and keyframes 586–596 from the target. The native backend converged on rank 1 (KF 305), but the estimated pose was 3.76 m from the same-session reference and was classified `FALSE_ACCEPT`; the relative yaw error was 1.97 degrees. This is a diagnostic failure observation, not independent-ground-truth acceptance or a paper-level result. The remaining Top-K candidates and physical row IDs are `UNKNOWN`; geometry observability and the separate local GICP-basin evaluator are `NO_DATA` in this job.
+
+All block, structure, candidate-display, and evidence outputs resolve symlinks and refuse paths inside the read-only source, immutable block sets, or immutable evidence bundles. Block production and analysis recheck source/asset fingerprints immediately before publication. Supplying a topology to an analysis requires an exact annotation digest match whenever the blocks carry row labels; evidence with row labels is stale unless its current topology revision is checked.
+
+The exact-current-source annotation draft still has zero rows/headlands/scenes and `manual_review_confirmed=false`. Therefore row-middle/row-end/headland query coverage cannot be claimed or synthesized from the older, source-mismatched annotation. GUI build and existing MapStudio tests pass, but a full interactive operator close/reopen acceptance and GUI automation are not verified. No online HMI, route editing, publication, runtime policy, or robotics control is introduced.

@@ -1,0 +1,29 @@
+{
+  "case_id": "row_middle_global_failure_02_fast_livo2_lio_MIDDLE_04_f1",
+  "selection": "row_middle_global_failure",
+  "backend": "fast_livo2_lio",
+  "scene_id": "MIDDLE_04",
+  "scene_type": "row_middle",
+  "frames": 1,
+  "keyframe": 819,
+  "reference_kind": "same-session frontend mapping reference; not absolute ground truth",
+  "candidate_patch": {
+    "file": "/home/yangxuan/ros2_ws/experiments/multi_lio_backend_20261003/runs/fast_livo2_lio/map_package/patches/815.pcd",
+    "keyframe": 815
+  },
+  "coarse_available": true,
+  "global_final_pose_available": true,
+  "final_nominal_success": false,
+  "coarse_xy_error_m": 4.882714420934163,
+  "coarse_yaw_error_deg": 10.67318073958538,
+  "final_xy_error_m": 4.366611153008203,
+  "final_yaw_error_deg": 0.004483087589884341,
+  "bbs_score": 0.997952,
+  "score_margin_normalized": null,
+  "candidate_attempted_count": "",
+  "candidate_valid_count": "",
+  "physical_row_id": "UNKNOWN",
+  "trajectory_row_group": "trajectory_pass_12",
+  "trajectory_group_candidate_proxy": "trajectory_pass_12",
+  "topk_full_scores_available": "False"
+}

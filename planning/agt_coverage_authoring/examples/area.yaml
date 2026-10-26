@@ -1,0 +1,12 @@
+# Synthetic selected aisle work areas; headlands are connection-only.
+map_yaml: greenhouse.yaml
+robot_profile: greenhouse_ackermann.yaml
+structure: structure.geojson
+mode: area
+start: [3.0, 3.0, 0.0]
+end: [3.0, 3.0, 0.0]
+backend: reference
+allow_reverse: true
+operation_width_m: 0.8
+heading_rad: 0.0
+planning_timeout_s: 120

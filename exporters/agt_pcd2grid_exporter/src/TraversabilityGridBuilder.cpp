@@ -1,3 +1,5 @@
+#include "CloudPublication.hpp"
+#include "agt_pcd2grid_exporter/OccupancyGridWriter.hpp"
 #include "agt_pcd2grid_exporter/TraversabilityGridBuilder.hpp"
 
 #include <pcl/io/pcd_io.h>
@@ -341,6 +343,7 @@ bool write_pgm(const std::filesystem::path &path, const std::vector<std::uint8_t
     stream.write(reinterpret_cast<const char *>(pixels.data() + static_cast<std::size_t>(y) * width),
                  width);
   }
+  stream.close();
   return stream.good();
 }
 
@@ -351,6 +354,17 @@ bool TraversabilityGridBuilder::build(const std::string &package_dir,
                                       OccupancyGrid *grid, ProjectionStats *stats,
                                       TraversabilityStats *traversability, std::string *error,
                                       const std::string &debug_dir) {
+  return build(package_dir, parameters, grid, stats, traversability, error, debug_dir, "");
+}
+
+bool TraversabilityGridBuilder::build(const std::string &package_dir,
+                                      const ProjectionParameters &parameters,
+                                      OccupancyGrid *grid, ProjectionStats *stats,
+                                      TraversabilityStats *traversability, std::string *error,
+                                      const std::string &debug_dir,
+                                      const std::string &cloud_output_dir,
+                                      const std::string &cloud_subdirectory,
+                                      const std::string &projection_source) {
   if (!grid || !stats || !traversability) {
     if (error) *error = "grid, stats and traversability stats must not be null";
     return false;
@@ -363,6 +377,19 @@ bool TraversabilityGridBuilder::build(const std::string &package_dir,
     if (error) *error = "robot.footprint needs at least three vertices";
     return false;
   }
+
+  detail::CloudPublication publication;
+  if (!cloud_output_dir.empty()) {
+    try {
+      publication.prepare(package_dir, cloud_output_dir, cloud_subdirectory, parameters,
+                          projection_source);
+    } catch (const std::exception &exception) {
+      if (error) *error = exception.what();
+      return false;
+    }
+  }
+  const std::string effective_debug_dir = cloud_output_dir.empty() ? debug_dir
+      : (publication.stage / "debug").string();
 
   // ---- 1. keyframes, self filter, temporal persistence ----------------------
   const Eigen::Isometry3f base_from_body = base_from_body_transform(parameters.robot);
@@ -1009,9 +1036,9 @@ bool TraversabilityGridBuilder::build(const std::string &package_dir,
   stats->empty_cells = stats->free_cells + stats->unknown_cells;
   traversability->valid = true;
 
-  if (tp.debug_layers && !debug_dir.empty()) {
+  if (tp.debug_layers && !effective_debug_dir.empty()) {
     try {
-      std::filesystem::create_directories(debug_dir);
+      std::filesystem::create_directories(effective_debug_dir);
     } catch (const std::exception &exception) {
       if (error) *error = exception.what();
       return false;
@@ -1027,28 +1054,30 @@ bool TraversabilityGridBuilder::build(const std::string &package_dir,
       const float ratio = std::min(1.0F, std::log1p(static_cast<float>(passes[i])) / std::log1p(200.0F));
       evidence[i] = static_cast<std::uint8_t>(ratio * 255.0F);
     }
-    if (!write_pgm(std::filesystem::path(debug_dir) / "ground_source.pgm", source_pixels,
+    if (!write_pgm(std::filesystem::path(effective_debug_dir) / "ground_source.pgm", source_pixels,
                    coarse.width, coarse.height) ||
-        !write_pgm(std::filesystem::path(debug_dir) / "ray_passes.pgm", evidence, fine.width,
+        !write_pgm(std::filesystem::path(effective_debug_dir) / "ray_passes.pgm", evidence, fine.width,
                    fine.height)) {
       if (error) *error = "failed writing traversability debug layers";
       return false;
     }
     {
       // raw little-endian float32, row 0 = lowest y, NaN = unknown
-      std::ofstream grown(std::filesystem::path(debug_dir) / "ground_height.f32", std::ios::binary);
+      std::ofstream grown(std::filesystem::path(effective_debug_dir) / "ground_height.f32", std::ios::binary);
       grown.write(reinterpret_cast<const char *>(ground.data()),
                   static_cast<std::streamsize>(ground.size() * sizeof(float)));
-      std::ofstream classified(std::filesystem::path(debug_dir) / "reference_height.f32",
+      std::ofstream classified(std::filesystem::path(effective_debug_dir) / "reference_height.f32",
                                std::ios::binary);
       classified.write(reinterpret_cast<const char *>(reference.data()),
                        static_cast<std::streamsize>(reference.size() * sizeof(float)));
+      grown.close();
+      classified.close();
       if (!grown.good() || !classified.good()) {
         if (error) *error = "failed writing traversability height layers";
         return false;
       }
     }
-    std::ofstream info(std::filesystem::path(debug_dir) / "layers.yaml");
+    std::ofstream info(std::filesystem::path(effective_debug_dir) / "layers.yaml");
     info << "ground_source.pgm: {resolution: " << coarse.resolution << ", origin: [" << coarse.origin_x
          << ", " << coarse.origin_y << "], values: {0: none, 90: inferred, 170: observed, 255: trajectory}}\n"
          << "ray_passes.pgm: {resolution: " << res << ", origin: [" << fine.origin_x << ", "
@@ -1059,6 +1088,56 @@ bool TraversabilityGridBuilder::build(const std::string &package_dir,
          << "reference_height.f32: {resolution: " << coarse.resolution << ", origin: ["
          << coarse.origin_x << ", " << coarse.origin_y << "], width: " << coarse.width
          << ", height: " << coarse.height << ", dtype: float32, row0: min_y, nan: fallback}\n";
+    info.close();
+    if (!info) { if (error) *error = "cannot write traversability layer metadata"; return false; }
+  }
+  // Use the SAME world-voxel observations as the grid. Ground remains useful
+  // even when observed only nearby; unconfirmed elevated returns are retained
+  // separately as candidates, not labelled as semantically detected people.
+  if (!cloud_output_dir.empty()) {
+    try {
+      if (!OccupancyGridWriter::write_navigation_map(*grid, parameters, *stats,
+            publication.stage.string(), package_dir, error, traversability)) return false;
+      pcl::PointCloud<pcl::PointXYZ> retained, removed;
+      std::size_t retained_ground = 0U;
+      for (const auto &point : points) {
+        const bool keep = point.persistent || point.kind == kGround;
+        auto &cloud = keep ? retained : removed;
+        cloud.push_back(pcl::PointXYZ(point.x, point.y, point.z));
+        if (keep && !point.persistent) ++retained_ground;
+      }
+      std::filesystem::create_directories(publication.cloud_directory);
+      const auto root = publication.cloud_directory;
+      const auto save = [](const std::filesystem::path &path,
+                           const pcl::PointCloud<pcl::PointXYZ> &cloud) {
+        if (!cloud.empty()) return pcl::io::savePCDFileBinary(path.string(), cloud);
+        // PCL throws for an empty cloud. No rejected candidates is a valid result.
+        std::ofstream empty(path, std::ios::binary);
+        empty << "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
+                 "WIDTH 0\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS 0\nDATA binary\n";
+        empty.close();
+        return empty.good() ? 0 : -1;
+      };
+      if (save(root / "static_map.pcd", retained) != 0 ||
+          save(root / "removed_candidates.pcd", removed) != 0) {
+        if (error) *error = "cannot write temporal cloud outputs";
+        return false;
+      }
+      std::ofstream report(root / "cloud_cleanup.yaml");
+      report << "input_points: " << stats->input_points << '\n'
+             << "self_filtered_points: " << traversability->self_filtered_points << '\n'
+             << "retained_points: " << retained.size() << '\n'
+             << "removed_candidate_points: " << removed.size() << '\n'
+             << "retained_near_or_single_observation_ground: " << retained_ground << '\n'
+             << "near_field_only_points: " << traversability->near_field_only_points << '\n';
+      if (!report.good()) { if (error) *error = "cannot write cleanup report"; return false; }
+      report.close();
+      if (!report) { if (error) *error = "cannot close cleanup report"; return false; }
+      publication.publish();
+    } catch (const std::exception &exception) {
+      if (error) *error = exception.what();
+      return false;
+    }
   }
   return true;
 }

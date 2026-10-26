@@ -1,10 +1,60 @@
 # AGT LIO–PGO Mapping
 
-ROS 2 Humble 的三维 LiDAR 建图基线：**Livox MID-360 → FAST-LIO2 → PGO → 可校验 PCD 地图包**。
+## 产品整合：建图、研究、编辑与离线路线
 
-它面向建图研究协作，不包含 Nav2、定位运行时、HMI、RTK 或底盘控制。FAST-LIO2、PGO、HBA 和 Batch-LIO 保持为锁定版本的外部依赖；本仓库只实现稳定的传感器、前后端和地图产物接口。
+当前代码树整合 FAST-LIVO2 建图、MapStudio 草稿/Study、空间覆盖研究、地图派生和温室覆盖路线。采集、研究、地图编辑与路线生成保持独立入口，未验收的后端不会自动启动。各分支来源、冲突取舍、本轮测试与未验证项见 [2026-10-26 整合记录](docs/audits/branch_consolidation_20261026.md)；产品配置见 [产品边界与命令](docs/product_mapping_architecture_v1.md)。
+
+```bash
+bash scripts/run_mapping.sh --capabilities
+bash scripts/run_mapping.sh /path/to/bag --dry-run --product-config bringup/agt_mapping_bringup/config/product_pipeline.yaml
+```
+
+MapStudio 增加独立 Study 对话框，复用既有 Query Set/Study CLI；保留地图草稿重开、结构标注、单查询 Top-K 和覆盖路线入口。显示抽样只影响视图，不改分析数据。Python offscreen 测试、原生 C++ 构建与真实显示器交互是分别验收的项目，不能互相替代。
+
+空间定位 benchmark 默认仍为 `--study phase3b`，几何/空间覆盖诊断通过 `--study phase3c` 显式选择。这里的 coverage 是研究采样覆盖，与机器人全覆盖作业路线不同。挂载传感器标定使用完整 `--backend-profile`，启动前冻结实际 FAST-LIVO2 配置；旧 `--fastlio-config` 不再作为可用入口。
+
+## MapStudio Relocalization MVP — SOFTWARE PARTIAL
+
+Implemented: immutable keyframe blocks and index, evidence contracts, sparse offline GLOBAL/Top-K/GICP queries, candidate inspection, reviewed row/headland freeze, manual and row-sampled Query Sets, and the Study authoring UI. Synthetic GUI save/close/reopen and real CLI authoring checks passed in this consolidation. The KF590 green-house run recorded a same-session `FALSE_ACCEPT` diagnostic. A representative real 20–50 query evaluation, independent localization ground truth, and the scientific conclusion remain incomplete. This is not production-ready.
+
+ROS 2 Humble 的三维 LiDAR 建图框架：用户指定默认 FAST-LIVO2 LIO-only（LiDAR+IMU，关闭视觉），支持明确选择其它已审核 source；关键帧分块不要求 PGO 优化。本项目工作流程不使用 FAST-LIO2，已有 legacy 代码仅保留历史兼容参照。
+
+**当前操作员建图入口已迁移为 FAST-LIVO2 LIO-only。** offline/live CLI 与 `mapping_v0` 使用 `fast_livo2_lio`、关闭视觉且不启动 PGO；运行时需加载 profile 指向的 FAST-LIVO2 backend overlay。历史 `green-house` 全量回放和 source package 校验已通过，只证明当时的采集、导出和格式完整性。本轮通过合成数据验证了原生 PCL 栅格重投影和 Qt 交互草稿；新增启动快照后的真实录包回放、地图几何质量及 cold-start / mid-route-loss 配对诊断尚未验收。
+
+它面向多源建图与离线地图研究；导航运行时、在线控制和底盘执行属于导航/平台仓库。FAST-LIO2、PGO、HBA 和 Batch-LIO 保持为锁定版本的外部依赖。
+
+## 当前需求与 AI 工作入口
+
+目标流程是多源输入 → 复用关键帧方法分块 → 离线重定位歧义分析/可视化/环境改造评估 → 导航地图与离线路线编辑 → 既有合同发布。已有不可变关键帧分块与证据资产；通用外部 HMI API 和统一任务编排仍待实现。温室覆盖路线的独立 authoring 入口见下文，不代表通用 AuthoringFacade 或导航执行已经实现。
+
+总体对照与阶段验收见 [需求计划](docs/map_task_asset_authoring_alignment_plan.md)，后续 AI 从 [最小任务阅读集](docs/ai_task_entrypoint.md) 进入；仓库规则见 [AGENTS.md](AGENTS.md)。[A0 验收](docs/contracts/a0_authoring_contract_acceptance.md) 当前为 PARTIAL，需求更新不自动启动 A1–A7。下文保留既有运行说明，历史测试数字不能替代当前验收。
+
+MapStudio Annotation 和 Map Edit 的当前 GUI 操作、Before/After 截图与控件清点见 [UX Cleanup V1](docs/research/mapstudio_ux_cleanup_v1.md)。
+
+## 温室覆盖路线 authoring
+
+`agt_coverage_authoring` 将已审查栅格地图、确认后的行道/地头和单一 Robot Profile 转成离线路线草稿。支持逐条行道遍历与选定作业区的幅宽覆盖，提供二维净空、整车扫掠、阿克曼约束、漏作/重叠与执行接口兼容性报告。前进优先，必要时保留明确的倒车和换向停车段；运行端不支持时保留草稿及原因。
+
+```bash
+agt_coverage_authoring analyze --request /path/to/request.yaml --output /path/to/new-analysis
+agt_coverage_authoring plan --request /path/to/request.yaml --output /path/to/new-plan
+```
+
+默认 ROS 后端使用独立离线 OpenNav/Smac 服务；显式 `reference` 后端用于无需 ROS 的有限解析候选比较，不能代替该后端或实车验收。`route_authoring` 在产品配置中仍默认禁用；设为 `manual` 只声明独立工具，不随建图 session 自动启动。输入、安装、MapStudio 操作与既有 READY Route 的发布边界见 [覆盖路线指南](docs/coverage_authoring.md)。
+
+Python 标注工具可把冻结的已审查拓扑导出为上述结构输入：`greenhouse_coverage_export --topology /path/to/topology.yaml --map-yaml /path/to/map.yaml --output /path/to/new-structure.geojson`。需要分别确认行道走廊、通行方向和作业边界；作物行参考线不会直接变成行车路径。非 `map` 坐标系还须显式给出并确认变换，选用地头也须指定已确认 ID。
 
 > MID-360 是 Livox 雷达。当前 **0.2.0 编排升级**已在共享目录对应的 Ubuntu 22.04 / ROS 2 Humble 宿主机完成 82 项自动化测试、完整基准录包回放及操作场景验证。MCP 的 Ubuntu 24.04 容器不是 ROS 执行环境。具体版本覆盖、测试安装层及剩余验收边界见 [宿主机测试报告](docs/mcp-host-validation.md)。
+
+## 可复用的温室拓扑标注与 Top-K 分析
+
+对新场景的 `map_package` 手工标注真实行中心线、地头区域和 scene markers：
+
+```bash
+./scripts/annotate_map_topology.sh /path/to/new/map_package /path/to/new/annotation
+```
+
+支持编辑、撤销/重做、YAML/GeoJSON/关键帧标签导出及冻结校验。冻结后可接原生 GLOBAL Top-K trace 和论文表图导出，见 [完整流水线](docs/paper/GREENHOUSE_TOPOLOGY_TOPK_PIPELINE.md) 与 [标注工具](tools/agt_greenhouse_annotation/README.md)。
 
 ## 一键开始
 
@@ -17,7 +67,7 @@ cd agt-lio-pgo-mapping
 ./scripts/bootstrap.sh
 ```
 
-脚本会锁定并获取 FAST-LIO2/PGO、Livox driver 和 Batch-LIO，安装 Humble 依赖并构建所需 package。
+脚本会锁定并获取历史 FAST-LIO2/PGO、Livox driver 和 Batch-LIO 依赖，安装 Humble 依赖并构建所需 package。操作员默认 workflow 使用 FAST-LIVO2 LIO-only，不启动 FAST-LIO2 或 PGO。
 
 已有工作区的全量/增量重编译、自动化测试、入口冒烟测试和现场验收步骤见 [编译与测试流程](docs/build_and_test.md)。
 
@@ -30,7 +80,7 @@ cd ~/ros2_ws/src/agt-lio-pgo-mapping
 ./scripts/run_mid360_mapping.sh /path/to/mid360_mapping_bag
 ```
 
-新入口会预检 metadata、存储分片、非空 CustomMsg/IMU 话题及输出目录，然后等待处理链就绪再回放。仅正常结束才请求 PGO 导出，只有完整地图通过校验才报告成功，并默认自动关闭本次 launch。回放失败/取消不会误触发导出，旧输出不会被覆盖。
+新入口会预检 metadata、存储分片、非空 CustomMsg/IMU 话题及输出目录，然后等待 FAST-LIVO2、frontend adapter 和 exporter 就绪再回放。仅正常结束才请求 paired source-package 导出；现有 `verify_frontend_map_package` 验证通过后才报告成功，并默认自动关闭本次 launch。回放失败/取消不会误触发导出，旧输出不会被覆盖。
 
 常用操作：
 
@@ -44,7 +94,7 @@ cd ~/ros2_ws/src/agt-lio-pgo-mapping
 
 `--dry-run` 需要 Python 3 + PyYAML。运行前请在宿主机 Humble 环境重建新版 `agt_mapping_bringup` / `agt_mapping_artifacts` / `agt_mapping_exporter`，见 [构建与完整操作指南](docs/runtime_setup.md)。wrapper 默认使用本机回环和独立 ROS domain 89；并发任务使用不同 `--domain-id`，不要与实机运行时混用。
 
-有图形环境时默认打开 RViz，无显示时自动无界面运行。RViz 中展示的是**实时 LIO**点云与轨迹，不是最终 PGO 地图；最终可交付地图以导出的 `map_package` 为准。运行阶段和失败原因记录到输出目录的 `session.json`。
+有图形环境时默认打开 RViz，无显示时自动无界面运行。RViz 展示 FAST-LIVO2 LIO 点云与轨迹；导出的 `map_package` 是同一 frontend session 的 patch+pose source reference，不是独立 ground truth。运行阶段和失败原因记录到输出目录的 `session.json`。
 
 检查导出结果：
 
@@ -66,12 +116,12 @@ map_package/
 └── checksums.sha256
 ```
 
-仅当 `metadata.yaml` 中存在 `backend: PGO`、`backend_status.optimized: true`，并且非空地图、必需文件、完整 checksum 清单及 SHA-256 全部通过校验时，才应交付地图。导出服务返回成功仅表示受理请求，不代表写入或校验完成。
+导出服务返回成功仅表示受理请求，不代表写入或校验完成。操作员 session 只在 `verify_frontend_map_package` 通过后标记完成；该 validator 不证明地图质量或绝对定位准确性。
 
 ### 单 MID360 实机建图（0.3.0）
 
 ```bash
-./scripts/run_mid360_live_mapping.sh [OUTPUT] --no-rviz          # 启动 Livox 驱动 + LIO/PGO，同步录制 raw_bag/
+./scripts/run_mid360_live_mapping.sh [OUTPUT] --no-rviz          # 启动 Livox 驱动 + FAST-LIVO2 LIO-only，同步录制 raw_bag/
 ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1 \
   ros2 service call /mapping/session/finish std_srvs/srv/Trigger "{}"   # 或 touch <OUTPUT>/STOP_MAPPING
 ```
@@ -88,7 +138,7 @@ ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1 \
   --imu-topic /agt/sensors/imu/data
 ```
 
-该入口先正常回放建图；最终 PGO 地图通过校验后，自动调用本仓库的
+该入口先正常回放建图；最终 source map package 通过校验后，自动调用本仓库的
 `agt_pcd2grid_exporter` 生成 PGM/YAML，再以轻量二维模式打开 Map Studio。
 此模式不会把大 PCD 加载到 OpenGL，编辑完成前不会产生“已确认”地图。使用
 `Erase rect`、`Obstacle line`、三种 polygon 或 `Forbidden zone` 修改后，点击
@@ -124,18 +174,44 @@ ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1 \
 长时间原地不动的人仍可能被当成静态物体，需在二维编辑器中删除；若现场仍频繁出现，
 再考虑在建图前端增加语义动态目标过滤，而不是直接改变 SLAM 主链。
 
+## 多 LIO Backend profiles
+
+本分支增加了显式 backend 选择和 backend-independent `map_package`：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/yangxuan/agt_navigation_v2/install/setup.bash
+source /home/yangxuan/lio_benchmark_algorithms/point_lio_ws/install/setup.bash
+source /home/yangxuan/lio_benchmark_algorithms/lio_sam_ws/install/setup.bash
+source /home/yangxuan/ros2_ws/experiments/multi_lio_backend_20261003/install/setup.bash
+
+ros2 launch agt_mapping_bringup mapping.launch.py \
+  bag_path:=/home/yangxuan/rosbags/green-house \
+  output_dir:=/home/yangxuan/ros2_ws/experiments/multi_lio_backend_20261003/runs/lio_sam_noloop \
+  mapping_backend:=lio_sam_noloop
+```
+
+低层 `mapping.launch.py` 可显式选择 `lio_sam_noloop`、`point_lio` 或
+`fast_livo2_lio`；操作员 session CLI 当前固定使用用户指定的默认
+`fast_livo2_lio`。FAST-LIO2 profile 保留作历史只读参照，但选择策略拒绝启用它。
+LIO-SAM loop 配置仅作实验 profile；温室重复行列数据上已观察到 false loop。
+
+这一入口导出 FAST-LIVO2 frontend same-session reference，不运行 PGO。该 reference
+保留成对的 patch 与 pose，可供后续离线建块/分析；它不能被当作独立 ground truth。
+仓库、源码、历史基准和本次运行状态见
+[`docs/backend/`](docs/backend/)，特别是
+[`MULTI_LIO_BACKEND_ACCEPTANCE.md`](docs/backend/MULTI_LIO_BACKEND_ACCEPTANCE.md)。
+
 ## 技术边界
 
 ```text
 MID-360 CustomMsg + IMU
           ↓
-MID360 adapter（校验扫描并保留时间/强度）
+FAST-LIVO2 LIO-only (img_en=0, loop/PGO disabled)
           ↓
-FAST-LIO2 frontend
+paired frontend body clouds + odometry
           ↓
-Keyframes + PGO
-          ↓
-Optimized PCD map artifact
+verified source map package (map + patches + poses + provenance)
 ```
 
 详细接口、地图格式、架构和研究扩展点见 [`docs/`](docs/)，交付验收记录见 [docs/delivery_acceptance.md](docs/delivery_acceptance.md)。本仓库独立完成建图、PCD→PGM、二维编辑和人工确认；确认后的地图可由其他运行时按需使用。

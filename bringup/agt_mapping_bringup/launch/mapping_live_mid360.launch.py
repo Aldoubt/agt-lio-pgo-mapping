@@ -1,4 +1,4 @@
-"""Live single-MID360 mapping: driver -> FAST-LIO2 -> PGO -> verified map package (+ raw bag)."""
+"""Live MID360 capture with FAST-LIVO2 LIO-only and verified paired source map package."""
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 
@@ -8,7 +8,15 @@ from agt_mapping_bringup.live_launch import launch_live_session
 def generate_launch_description():
     arguments = [
         DeclareLaunchArgument('livox_config', description='livox_ros_driver2 MID360 user config JSON'),
+        DeclareLaunchArgument('fastlio_config', default_value='',
+                              description='Retired: nonempty values fail; use backend_profile for FAST-LIVO2'),
         DeclareLaunchArgument('output_dir', description='New or empty run output directory'),
+        DeclareLaunchArgument('backend_profile_source_sha256', default_value='',
+                              description='Optional CLI-pinned hash of selected source profile; mismatch fails startup'),
+        DeclareLaunchArgument('backend_profile', default_value='',
+                              description='Optional mounted complete FAST-LIVO2 profile with native config hash and frames'),
+        DeclareLaunchArgument('mapping_backend', default_value='',
+                              description='Backend profile; defaults to fast_livo2_lio'),
         DeclareLaunchArgument('lidar_topic', default_value='/livox/lidar'),
         DeclareLaunchArgument('imu_topic', default_value='/livox/imu'),
         DeclareLaunchArgument('publish_freq', default_value='10.0'),

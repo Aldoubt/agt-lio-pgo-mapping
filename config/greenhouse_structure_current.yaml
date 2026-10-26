@@ -1,0 +1,11 @@
+# Current Point-LIO greenhouse smoke override. Tune only after human review.
+navigation:
+  resolution_m: 0.10
+  padding_m: 0.30
+global_profile:
+  row_direction_mode: auto
+local_tracks:
+  window_length_m: 2.0
+  window_stride_m: 0.75
+corridor:
+  enable_boundary_aisles: false

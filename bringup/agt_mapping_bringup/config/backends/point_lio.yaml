@@ -1,0 +1,53 @@
+backend:
+  id: point_lio
+  implementation: point_lio
+  project: Point-LIO
+  mode: odometry
+  status: supported_candidate
+  source_repository: https://github.com/dfloreaa/point_lio_ros2.git
+  source_branch: main
+  source_commit: a8e2d0d5090af97ead8dd4fac3d37cf3dbb33ff7
+  source_path: /home/yangxuan/lio_benchmark_algorithms/point_lio_ws/src/point_lio_ros2
+  config_path: /home/yangxuan/ros2_ws/src/agt_mapping_framework/bringup/agt_mapping_bringup/config/backends/point_lio_mid360_runtime.yaml
+  config_sha256: b82f83231ace698c5a2bdd0f4e6f60fe6f069f0e2a3bc448e8074b5307fe6c03
+  base_benchmark_config: /home/yangxuan/lio_benchmark_tools/configs/algorithms/point_lio/mid360.yaml
+  base_benchmark_config_sha256: 2fee4e1fefa13f3cd575b7e158215263cc548e881e4a69f665a3d3473ab3f9dc
+  runtime_changes:
+    common.lid_topic: /mapping/sensor/deskew_cloud
+    publish.scan_publish_en: true
+    publish.scan_bodyframe_pub_en: true
+  required_executables:
+    - /home/yangxuan/lio_benchmark_algorithms/point_lio_ws/install/point_lio/lib/point_lio/pointlio_mapping
+  input_format:
+    lidar: sensor_msgs/msg/PointCloud2
+    lidar_time_field: time
+    lidar_time_unit: seconds_relative_to_header
+    lidar_ring_field: ring
+    imu: sensor_msgs/msg/Imu
+    imu_acceleration_unit: g_native_config_acc_norm_1.0
+    deskew: per_point_time
+  loop_closure: false
+  gps_factor: false
+  external_global_correction: false
+  output_odom_topic: /aft_mapped_to_init
+  output_cloud_topic: /cloud_registered_body
+  output_path_topic: /path
+  path_output_enabled: false
+  output_cloud_frame_mode: body
+  output_status_topic: /mapping/frontend/status
+sensor:
+  lidar_topic: /agt/sensors/lidar/custom
+  imu_topic: /agt/sensors/imu/data
+  normalized_lidar_topic: /mapping/sensor/deskew_cloud
+  backend_imu_topic: /agt/sensors/imu/data
+  imu_acceleration_unit: g
+  lidar_frame: livox_frame
+  imu_frame: livox_imu
+  body_frame: body
+  T_body_lidar_translation_m: [0.011, 0.02329, -0.04412]
+  T_body_lidar_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+mapping:
+  map_frame: camera_init
+  keyframe_distance_m: 0.5
+  keyframe_rotation_deg: 10.0
+  absolute_ground_truth: false

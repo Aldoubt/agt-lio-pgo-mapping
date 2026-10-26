@@ -1,0 +1,27 @@
+schema_version: 1
+output_dir: /home/yangxuan/ros2_ws/experiments/artifacts/output/cross_stage_greenhouse_20261007_run008
+map_validator: /home/yangxuan/ros2_ws/src/agt_mapping_framework/scripts/verify_map_artifact.sh
+existing_alignment_json: /home/yangxuan/ros2_ws/experiments/artifacts/output/white_tomato_vs_green_house_20261007/comparison.json
+maps:
+  sparse:
+    package: /home/yangxuan/ros2_ws/experiments/artifacts/output/white_tomato_20261006_collect_080252_mapstudio_20261007/map_package
+    stage: USER_DECLARED_SPARSE
+    platform: UNKNOWN
+  reference:
+    package: /home/yangxuan/ros2_ws/experiments/fastlivo_lio_green-house_20261006_retry01/map_package
+    stage: UNVERIFIED
+    platform: UNKNOWN
+z_range_m: [-2.0, 6.0]
+se3_tolerance: 1.0e-6
+residual_voxel_m: 0.5
+residual_tile_m: 10.0
+residual_match_gate_m: 0.5
+roi_candidate_resolution_m: 0.5
+roi_min_points_per_cell_each_map: 50
+roi_min_component_cells: 100
+navigation_interior_shrink_m: 1.0
+allow_provisional_roi_metrics: true
+occupancy_resolutions_m: [0.5, 0.2]
+occupancy_min_points_per_cell: 1
+stable_residual_voxel_m: 0.5
+alignment_figure_voxel_m: 0.35

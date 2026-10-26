@@ -1,0 +1,13 @@
+schema_version: 1
+route_id: inspection
+revision: 1
+frame_id: map
+map_binding:
+  map_id: greenhouse_test
+  map_version_id: r01
+  map_content_sha256: sha256:af55d856bab8fcd0b28973cb21cfbd317cd4ced76bf0d4033051e95ae477a565
+vehicle_binding:
+  platform_id: mk_mini
+  platform_profile_sha256: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+route_csv_sha256: sha256:653d22b4a29489a180ce773252730628d4496cf9da28ce8a1522daa20dfac922
+status: READY

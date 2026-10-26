@@ -114,14 +114,6 @@ Navigation Map` writes a new `navigation_map/` directory containing `map.pgm`,
 Nav2-compatible `map.yaml`, `map_refinement.yaml` and `metadata.yaml`. The
 original base PGM is never modified.
 
-## Round 2A boundary
-
-This release implements point selection and non-destructive editing only. It
-does not generate PGM/Nav2 maps, run ROS nodes, filter dynamically, or modify
-FAST-LIO2/PGO and the mapping pipeline.
-
-Round 2B can add a PCD-to-PGM baseline exporter and a 2D occupancy-map editor.
-
 ## Phase 3A: geometry sidecar inspection (read-only)
 
 Open the original optimized PGO package first, then its matching V1 spatial
@@ -144,16 +136,63 @@ intent, stable selection, or any source file; no geometry-edit or map-publish
 path is added. Ht and Hr have different units and are not combined into a
 probability or location-performance claim.
 
-## Minimal Offline-DRAFT installation profile (S5.2)
 
-The `agt_map_studio` and `agt_spatial_map_core` binaries require
-`agt_pcd2grid_exporter` and `agt_mapping_artifacts` (the immutable PGO parent
-validator used by reviewed spatial export). Install these exact-version AGT
-packages in a clean Humble prefix. `agt_greenhouse_annotation`,
-`agt_map_localization_benchmark`, and `agt_global_relocalization_native` are
-**optional research tools**, not required to open/edit/save a local Studio DRAFT.
-They are resolved per operation; unavailable producers are rejected before
-execution. Missing `agt_map_converter`, `agt_map_manager` or
-`agt_map_refinement_core` similarly blocks the corresponding publish or
-conversion command and must never be replaced by source from an unidentified
-overlay. Editing a local DRAFT is **not** a READY Site or Route publication.
+## Durable local drafts
+
+`Ctrl+S` saves a Studio session and new UUID-named 2D/3D edit files. The
+session commit is atomic; an interrupted save leaves its prior referenced
+files intact. Opening a session checks the source PCD, base YAML/image and
+edit-file checksums, then strictly replays 2D edits in an isolated model before
+changing the current view. Undo/redo works on recovered 2D edits. A standalone
+2D draft does not inherit the previous session's point cloud or 3D edits.
+
+Saved 3D refinement rules remain explicit **manual reapplication required**;
+this implementation does not reconstruct their point selection. These local
+files are `DRAFT_NOT_READY_ROUTE` and do not publish or activate a map.
+
+## Offline localization studies
+
+`Tools → Offline studies / 离线重定位研究` opens an independent authoring dialog:
+
+1. Create/open a Project bound to a verified source, block set and optional
+   physical topology. Save/rebind records exact dependencies through the CLI.
+2. Create manual Query Sets by XY or a map click, or sample frozen reviewed
+   physical rows. Inspect resolved source keyframes and snap distances;
+   add/enable/disable/delete draft queries, clone or freeze a new revision.
+3. Create a Study with explicit accumulation frames and candidate Top-K. Run,
+   cancel, validate and export its existing report format. The ROS install
+   overlay is explicit and used for both execution and algorithm validation.
+4. Filter results by classification/scene/frames and open existing evidence.
+   Map markers require the exact loaded source. `STALE`/`INVALID` validation
+   clears markers even when the validator process exits with status zero.
+
+The optional `agt_mapstudio_workflow` command is discovered on PATH or through
+its installed ROS package. Its absence does not prevent local editing. The
+existing backend owns identity validation, query generation and classification;
+Studio does not duplicate localization algorithms. A running job retains its
+captured Study path. Cancellation allows a configurable cleanup grace (default
+10 seconds). Source/dependency changes invalidate previews. Result labels and
+same-session references are not independent ground truth or robot execution
+acceptance. Current language settings remain owned by MainWindow; the publish
+panel shares its existing display catalog.
+
+`View → Rendered points / 显示点数` selects a deterministic display cap (default
+500,000; `Full` is available). Z filtering precedes the display sample. All
+editing and export retain the complete cloud and original record indices.
+Study results and cross-session Comparison are separate layers, with separate
+colors and opacity; annotation editing and coverage authoring remain available.
+
+## Focused acceptance
+
+`test_study_workflow_dialog` exercises Qt command lifecycle, argument handling,
+missing optional tools, stale validation and fixed running-job identity with a
+**test command fixture**, not a localization implementation.
+`study_workflow_dialog_smoke PROJECT_YAML SCREENSHOT_PNG` instead drives the
+actual installed workflow CLI using a disposable verified Project. It creates
+manual queries, freezes them, creates/validates a Study and samples five points
+from a reviewed row. It does not run the native localization algorithm.
+
+With `AGT_BUILD_GUI_ACCEPTANCE=ON`, `s1_gui_draft_acceptance` tests real Qt draft
+save/reopen, tamper rejection, interrupted saves, unreplayed 3D intent and
+standalone 2D isolation. Run GUI/renderer acceptance on the target display;
+offscreen tests do not establish OpenGL performance or field behavior.

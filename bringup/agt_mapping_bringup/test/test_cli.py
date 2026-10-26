@@ -38,6 +38,11 @@ class CliTests(unittest.TestCase):
                 ],
             }}))
         self.output = self.root / 'output with spaces'
+        self.backend_setup = self.root / 'backend_setup.bash'
+        self.backend_setup.write_text('# synthetic fixture, not a ROS backend\n')
+        backend_setup = patch.object(cli, '_backend_setup', return_value=self.backend_setup)
+        backend_setup.start()
+        self.addCleanup(backend_setup.stop)
         self.environment = patch.dict(os.environ, {'AGT_MAPPING_REPOSITORY': str(REPOSITORY)})
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -60,6 +65,21 @@ class CliTests(unittest.TestCase):
         self.assertFalse(plan['runtime_checked'])
         self.assertFalse(self.output.exists())
         self.assertEqual((self.bag / 'metadata.yaml').read_bytes(), before)
+
+    def test_mounted_profile_is_validated_and_forwarded_for_bag(self):
+        from backend_fixture import backend_fixture
+        profile = backend_fixture(self.root)
+        code, output, errors = self.invoke(['--dry-run', '--backend-profile', str(profile)])
+        self.assertEqual((code, errors), (0, ''))
+        self.assertIn('backend_profile:=' + str(profile), json.loads(output)['command'])
+        self.assertFalse(self.output.exists())
+        document = yaml.safe_load(profile.read_text())
+        document['backend']['config_sha256'] = '0' * 64
+        profile.write_text(yaml.safe_dump(document))
+        code, _, error = self.invoke(['--dry-run', '--backend-profile', str(profile)])
+        self.assertEqual(code, 2)
+        self.assertIn('hash mismatch', error)
+        self.assertFalse(self.output.exists())
 
     def test_pause_manual_and_keep_open_are_explicit(self):
         code, output, _ = self.invoke(['--dry-run', '--start-paused', '--manual-export', '--keep-open'])
@@ -116,19 +136,25 @@ class CliTests(unittest.TestCase):
         stub.write_text('#!' + sys.executable + '\n'
                         'import json,os,sys\n'
                         'if sys.argv[1:3] == ["pkg","executables"]:\n'
-                        ' print("agt_mapping_bringup mapping_wait_ready")\n'
-                        ' print("agt_mapping_bringup mapping_export_verified")\n'
+                        ' if sys.argv[3] == "agt_mapping_bringup":\n'
+                        '  print("agt_mapping_bringup mapping_wait_ready")\n'
+                        '  print("agt_mapping_bringup mapping_export_verified")\n'
+                        ' elif sys.argv[3] == "agt_mapping_frontend_adapter":\n'
+                        '  print("agt_mapping_frontend_adapter mapping_frontend_adapter_node")\n'
+                        'elif sys.argv[1:3] == ["pkg","prefix"]:\n'
+                        ' print("/opt/ros/humble/share/fast_livo")\n'
                         'else:\n'
                         ' open(os.environ["RECORD"],"w").write(json.dumps(sys.argv[1:]))\n')
         stub.chmod(0o755)
-        ros, overlay = self.root / 'ros.bash', self.root / 'overlay.bash'
+        ros, backend, overlay = self.root / 'ros.bash', self.root / 'backend.bash', self.root / 'overlay.bash'
         ros.write_text('# mock ROS setup\n')
+        backend.write_text('# mock backend setup\n')
         overlay.write_text('# mock overlay\n')
         record = self.root / 'argv.json'
         unsafe = 'bag_path:=spaces;$(touch SHOULD_NOT_EXIST)'
         environment = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ['PATH'], RECORD=str(record))
         result = subprocess.run(['bash', str(REPOSITORY / 'scripts/mapping_launch_env.sh'),
-                                 str(ros), str(overlay), 'ros2', 'launch', unsafe],
+                                 str(ros), str(backend), str(overlay), 'ros2', 'launch', unsafe],
                                 env=environment, cwd=self.root, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(record.read_text()), ['launch', unsafe])
