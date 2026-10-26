@@ -33,6 +33,7 @@ public:
   void read_publish_target(PublishTarget *target) const;
   void set_publish_target(const PublishTarget &target);
   void set_converter(const ConverterParameters &parameters);
+  void set_display_language(const QString &language);
 
 signals:
   void refine_requested();
@@ -55,7 +56,8 @@ private:
   };
 
   StepRow make_step(int number, const QString &title, const QString &hint, QWidget *host);
-  static void paint_badge(QLabel *badge, StageState state, bool applicable);
+  static void paint_badge(QLabel *badge, StageState state, bool applicable,
+                          const QString &language);
 
   std::array<StepRow, 5> steps_{};
   QLabel *source_label_ = nullptr;
@@ -74,6 +76,10 @@ private:
   QProgressBar *progress_ = nullptr;
   QLabel *progress_label_ = nullptr;
   QPlainTextEdit *log_ = nullptr;
+  QString display_language_ = QStringLiteral("en");
+  WorkflowSession last_session_;
+  bool has_last_session_ = false;
+  bool last_tool_running_ = false;
 };
 
 }  // namespace agt_map_studio

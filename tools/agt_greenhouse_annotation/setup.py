@@ -6,6 +6,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/agt_greenhouse_annotation']),
         ('share/agt_greenhouse_annotation', ['package.xml', 'README.md']),
+        ('share/agt_greenhouse_annotation/config', ['../../config/greenhouse_structure_current.yaml']),
     ],
     install_requires=['setuptools', 'PyYAML', 'numpy', 'Shapely'],
     tests_require=['pytest'],
@@ -18,5 +19,6 @@ setup(
         'greenhouse_annotation_validate = agt_greenhouse_annotation.validator:main',
         'greenhouse_topology_export = agt_greenhouse_annotation.export:main',
         'greenhouse_annotation_freeze = agt_greenhouse_annotation.freeze:main',
+        'greenhouse_structure_workbench = agt_greenhouse_annotation.workbench:main',
     ]},
 )
