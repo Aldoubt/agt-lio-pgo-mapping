@@ -1,6 +1,6 @@
 # 分支整合记录 — 2026-10-26
 
-本次把八条保留分支的历史纳入同一代码树，协调真实行为和测试后，再收敛为 `main` 与 `integration/mapstudio-mapping-product-v1` 两条长期分支。历史已合并不代表每项旧实现都原样启用；下表记录保留、替换及未验证的部分。远端发布与删除旧引用由最终验证后的操作结果确认，本文不预先宣称完成。
+本次已把八条保留分支的历史纳入同一代码树，协调真实行为和测试后，合入 `main`，并将远端收敛为 `main` 与 `integration/mapstudio-mapping-product-v1` 两条长期分支。历史已合并不代表每项旧实现都原样启用；下表记录保留、替换及未验证的部分。
 
 ## 来源与整合顺序
 
@@ -82,4 +82,12 @@ agt_coverage_authoring plan --request /path/to/request.yaml --output /path/to/ne
 
 ## 发布与分支收敛
 
-最终发布提交、远端验证及剩余分支：**PENDING_FINAL_VERIFICATION**。目标是测试通过后保留 `main` 与 `integration/mapstudio-mapping-product-v1`；旧引用只在确认全部历史已包含且无独有工作后删除。PR #2 的关闭/替代与旧引用删除必须在远端操作后记录，不能由本地 merge 或本文自动推导完成。
+2026-10-26 已完成以下远端操作：
+
+- 整合实现提交：`c0e4ffbe3d6befdb515e5b425e117c0482629a1e`。
+- [PR #2](https://github.com/Aldoubt/agt-lio-pgo-mapping/pull/2) 已重定向到 `main` 并通过 merge commit 合并；合并提交为 `db50d2e469fe5d232ab5fab41315df626f29cdff`，源码树与受测整合提交相同。
+- 精确 PR head 的 [PR CI](https://github.com/Aldoubt/agt-lio-pgo-mapping/actions/runs/40313636394) 和 [push CI](https://github.com/Aldoubt/agt-lio-pgo-mapping/actions/runs/40313628479) 均成功。Ubuntu 22.04 / Python 3.10 共 **584 passed、17 skipped**，含额外 7 项便携研究测试。相对本地，缺少 PCL 的 1 项和外部 V4 的 7 项明确跳过；其余跳过为 native Top-K 5 项、ROS SDK 4 项。
+- 确认上表全部八个来源 tip 均为新 `main` 的祖先；使用每条旧引用的精确 SHA lease，一次原子推送删除六条已吸收的 `feature/*` / `fix/*`，同时将 integration 快进到主线。提交历史保留，未 squash 或改写历史。
+- 远端保留 `main` 与 `integration/mapstudio-mapping-product-v1`。本记录的发布补记同步进入两条分支，不改变已验证的生产源码。
+
+后续以 `main` 作为共同基线，跨模块整合进入现有 integration；确需隔离的小功能分支在合并后及时删除。历史分支按上表 SHA 查询，不重新创建长期平行实现。
