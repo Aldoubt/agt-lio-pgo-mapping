@@ -74,6 +74,21 @@ public:
   QString keepout_zones_path() const;
   QString pipeline_config_path() const;
   QString hmi_edit_metadata_path() const;
+  // Studio-local edit draft; not a Site, MapRef, Profile or READY Route.
+  QString occupancy_draft_path() const;
+  // Files named for a save generation. Existing v1 sessions use the fixed names.
+  void set_occupancy_draft_filename(const QString &name) { occupancy_draft_filename_ = name; }
+  void set_refinement_rules_filename(const QString &name) { refinement_rules_filename_ = name; }
+  void set_occupancy_base(const QString &yaml, const QString &image);
+  bool has_occupancy_base() const { return !occupancy_base_yaml_.isEmpty(); }
+  const QString &occupancy_base_yaml() const { return occupancy_base_yaml_; }
+  bool occupancy_base_matches_disk() const;
+  bool source_matches_disk() const;
+  void set_occupancy_draft_sha256(const QString &sha) { occupancy_draft_sha256_ = sha; }
+  const QString &occupancy_draft_sha256() const { return occupancy_draft_sha256_; }
+  void set_refinement_draft_sha256(const QString &sha) { refinement_draft_sha256_ = sha; }
+  bool refinement_draft_matches_disk() const;
+  bool occupancy_draft_matches_disk() const;
 
   // Fingerprints of the current in-memory edits; owned by the caller.
   void set_refinement_fingerprint(const QString &value) { refinement_fingerprint_ = value; }
@@ -116,6 +131,14 @@ private:
   QString work_dir_;
   QString refinement_fingerprint_;
   QString patch_fingerprint_;
+  QString occupancy_base_yaml_;
+  QString occupancy_base_yaml_sha256_;
+  QString occupancy_base_image_;
+  QString occupancy_base_image_sha256_;
+  QString occupancy_draft_sha256_;
+  QString refinement_draft_sha256_;
+  QString occupancy_draft_filename_ = QStringLiteral("occupancy_draft.yaml");
+  QString refinement_rules_filename_ = QStringLiteral("refinement.yaml");
   ConverterParameters converter_;
   PublishTarget publish_target_;
   std::map<int, StageRecord> records_;

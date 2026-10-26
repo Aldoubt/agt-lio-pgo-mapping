@@ -5,11 +5,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QSaveFile>
+#include <QRegularExpression>
 
 #include <yaml-cpp/yaml.h>
 
 #include <exception>
-#include <fstream>
 
 namespace agt_map_studio {
 
@@ -52,6 +53,14 @@ void WorkflowSession::reset(const QString &source_pcd, const QString &source_pac
   source_pcd_sha256_ = sha256_file(source_pcd);
   refinement_fingerprint_.clear();
   patch_fingerprint_.clear();
+  occupancy_base_yaml_.clear();
+  occupancy_base_yaml_sha256_.clear();
+  occupancy_base_image_.clear();
+  occupancy_base_image_sha256_.clear();
+  occupancy_draft_sha256_.clear();
+  refinement_draft_sha256_.clear();
+  occupancy_draft_filename_ = QStringLiteral("occupancy_draft.yaml");
+  refinement_rules_filename_ = QStringLiteral("refinement.yaml");
   records_.clear();
   if (work_dir_.isEmpty() && !source_pcd.isEmpty()) {
     work_dir_ = QDir(QFileInfo(source_pcd).absolutePath()).filePath(QStringLiteral("studio_work"));
@@ -71,7 +80,7 @@ QString WorkflowSession::log_path() const {
   return QDir(work_dir_).filePath(QStringLiteral("studio_tools.log"));
 }
 QString WorkflowSession::refinement_rules_path() const {
-  return QDir(work_dir_).filePath(QStringLiteral("refinement.yaml"));
+  return QDir(work_dir_).filePath(refinement_rules_filename_);
 }
 QString WorkflowSession::navigation_patch_path() const {
   return QDir(work_dir_).filePath(QStringLiteral("navigation_patch.yaml"));
@@ -84,6 +93,44 @@ QString WorkflowSession::pipeline_config_path() const {
 }
 QString WorkflowSession::hmi_edit_metadata_path() const {
   return QDir(work_dir_).filePath(QStringLiteral("hmi_edit_metadata.yaml"));
+}
+
+QString WorkflowSession::occupancy_draft_path() const {
+  return QDir(work_dir_).filePath(occupancy_draft_filename_);
+}
+
+void WorkflowSession::set_occupancy_base(const QString &yaml, const QString &image) {
+  const QString absolute_yaml = QFileInfo(yaml).absoluteFilePath();
+  const QString absolute_image = QFileInfo(image).absoluteFilePath();
+  if (absolute_yaml != occupancy_base_yaml_ || absolute_image != occupancy_base_image_) {
+    occupancy_draft_sha256_.clear();
+  }
+  occupancy_base_yaml_ = absolute_yaml;
+  occupancy_base_yaml_sha256_ = sha256_file(absolute_yaml);
+  occupancy_base_image_ = absolute_image;
+  occupancy_base_image_sha256_ = sha256_file(absolute_image);
+}
+
+bool WorkflowSession::occupancy_base_matches_disk() const {
+  return !occupancy_base_yaml_.isEmpty() && !occupancy_base_yaml_sha256_.isEmpty() &&
+         !occupancy_base_image_sha256_.isEmpty() &&
+         sha256_file(occupancy_base_yaml_) == occupancy_base_yaml_sha256_ &&
+         sha256_file(occupancy_base_image_) == occupancy_base_image_sha256_;
+}
+
+bool WorkflowSession::source_matches_disk() const {
+  return source_pcd_.isEmpty() ||
+         (!source_pcd_sha256_.isEmpty() && sha256_file(source_pcd_) == source_pcd_sha256_);
+}
+
+bool WorkflowSession::occupancy_draft_matches_disk() const {
+  return occupancy_draft_sha256_.isEmpty() ||
+         sha256_file(occupancy_draft_path()) == occupancy_draft_sha256_;
+}
+
+bool WorkflowSession::refinement_draft_matches_disk() const {
+  return refinement_draft_sha256_.isEmpty() ||
+         sha256_file(refinement_rules_path()) == refinement_draft_sha256_;
 }
 
 QString WorkflowSession::expected_input_fingerprint(Stage stage) const {
@@ -214,7 +261,10 @@ bool WorkflowSession::save(QString *error) const {
     return false;
   }
   try {
-    QDir().mkpath(work_dir_);
+    if (!QDir().mkpath(work_dir_)) {
+      if (error) *error = QStringLiteral("cannot create session directory %1").arg(work_dir_);
+      return false;
+    }
     YAML::Emitter out;
     out << YAML::BeginMap;
     out << YAML::Key << "schema_version" << YAML::Value << 1;
@@ -228,6 +278,17 @@ bool WorkflowSession::save(QString *error) const {
     out << YAML::Key << "edits" << YAML::Value << YAML::BeginMap
         << YAML::Key << "refinement_fingerprint" << YAML::Value << refinement_fingerprint_.toStdString()
         << YAML::Key << "patch_fingerprint" << YAML::Value << patch_fingerprint_.toStdString()
+        << YAML::EndMap;
+    out << YAML::Key << "occupancy_draft" << YAML::Value << YAML::BeginMap
+        << YAML::Key << "status" << YAML::Value << "DRAFT_NOT_READY_ROUTE"
+        << YAML::Key << "base_yaml" << YAML::Value << occupancy_base_yaml_.toStdString()
+        << YAML::Key << "base_yaml_sha256" << YAML::Value << occupancy_base_yaml_sha256_.toStdString()
+        << YAML::Key << "base_image" << YAML::Value << occupancy_base_image_.toStdString()
+        << YAML::Key << "base_image_sha256" << YAML::Value << occupancy_base_image_sha256_.toStdString()
+        << YAML::Key << "draft_sha256" << YAML::Value << occupancy_draft_sha256_.toStdString()
+        << YAML::Key << "draft_file" << YAML::Value << occupancy_draft_filename_.toStdString()
+        << YAML::Key << "refinement_rules_sha256" << YAML::Value << refinement_draft_sha256_.toStdString()
+        << YAML::Key << "refinement_rules_file" << YAML::Value << refinement_rules_filename_.toStdString()
         << YAML::EndMap;
     out << YAML::Key << "converter" << YAML::Value << YAML::BeginMap
         << YAML::Key << "resolution" << YAML::Value << converter_.resolution
@@ -260,10 +321,14 @@ bool WorkflowSession::save(QString *error) const {
           << YAML::EndMap;
     }
     out << YAML::EndMap << YAML::EndMap;
-    std::ofstream stream(session_file().toStdString());
-    stream << out.c_str() << '\n';
-    if (!stream.good()) {
-      if (error) *error = QStringLiteral("cannot write %1").arg(session_file());
+    QSaveFile file(session_file());
+    if (!file.open(QIODevice::WriteOnly)) {
+      if (error) *error = QStringLiteral("cannot open %1: %2").arg(session_file(), file.errorString());
+      return false;
+    }
+    const QByteArray bytes = QByteArray(out.c_str()) + '\n';
+    if (file.write(bytes) != bytes.size() || !file.commit()) {
+      if (error) *error = QStringLiteral("cannot commit %1: %2").arg(session_file(), file.errorString());
       return false;
     }
   } catch (const std::exception &exception) {
@@ -288,6 +353,24 @@ bool WorkflowSession::load(const QString &session_file, QString *error) {
     const YAML::Node edits = root["edits"];
     refinement_fingerprint_ = QString::fromStdString(edits["refinement_fingerprint"].as<std::string>(""));
     patch_fingerprint_ = QString::fromStdString(edits["patch_fingerprint"].as<std::string>(""));
+    const YAML::Node occupancy = root["occupancy_draft"];
+    if (occupancy) {
+      occupancy_base_yaml_ = QString::fromStdString(occupancy["base_yaml"].as<std::string>(""));
+      occupancy_base_yaml_sha256_ = QString::fromStdString(occupancy["base_yaml_sha256"].as<std::string>(""));
+      occupancy_base_image_ = QString::fromStdString(occupancy["base_image"].as<std::string>(""));
+      occupancy_base_image_sha256_ = QString::fromStdString(occupancy["base_image_sha256"].as<std::string>(""));
+      occupancy_draft_sha256_ = QString::fromStdString(occupancy["draft_sha256"].as<std::string>(""));
+      refinement_draft_sha256_ = QString::fromStdString(occupancy["refinement_rules_sha256"].as<std::string>(""));
+      occupancy_draft_filename_ = QString::fromStdString(occupancy["draft_file"].as<std::string>("occupancy_draft.yaml"));
+      refinement_rules_filename_ = QString::fromStdString(occupancy["refinement_rules_file"].as<std::string>("refinement.yaml"));
+      const QRegularExpression valid_draft(QStringLiteral("^occupancy_draft(?:_[0-9a-f-]{36})?\\.yaml$"));
+      const QRegularExpression valid_rules(QStringLiteral("^refinement(?:_[0-9a-f-]{36})?\\.yaml$"));
+      if (!valid_draft.match(occupancy_draft_filename_).hasMatch() ||
+          !valid_rules.match(refinement_rules_filename_).hasMatch()) {
+        if (error) *error = QStringLiteral("Invalid Studio-local draft filename");
+        return false;
+      }
+    }
     const YAML::Node converter = root["converter"];
     if (converter) {
       converter_.resolution = converter["resolution"].as<double>(converter_.resolution);
