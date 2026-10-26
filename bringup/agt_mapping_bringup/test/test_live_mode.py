@@ -79,6 +79,11 @@ class LiveCliTests(unittest.TestCase):
         self.config = self.root / 'MID360_config.json'
         self.config.write_text(json.dumps(livox_config()))
         self.output = self.root / 'live output'
+        backend_setup = self.root / 'backend_setup.bash'
+        backend_setup.write_text('# synthetic fixture, not a ROS backend\n')
+        setup_patch = patch.object(cli, '_backend_setup', return_value=backend_setup)
+        setup_patch.start()
+        self.addCleanup(setup_patch.stop)
         self.environment = patch.dict(os.environ, {'AGT_MAPPING_REPOSITORY': str(REPOSITORY)})
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -116,6 +121,18 @@ class LiveCliTests(unittest.TestCase):
         self.assertTrue(plan['sensor_only_no_base'])
         self.assertIn('mapping_live_yhs_mid360.launch.py', plan['command'])
         self.assertFalse(self.output.exists())
+
+    def test_external_profile_is_forwarded_for_both_live_sensor_owners(self):
+        from backend_fixture import backend_fixture
+        profile = backend_fixture(self.root)
+        for robot in ('bunker_v1', 'yhs_v1'):
+            with self.subTest(robot=robot):
+                code, output, error = self.invoke([
+                    '--live', str(self.output), '--robot', robot, '--livox-config', str(self.config),
+                    '--backend-profile', str(profile), '--dry-run', '--no-rviz'])
+                self.assertEqual((code, error), (0, ''))
+                self.assertIn('backend_profile:=' + str(profile), json.loads(output)['command'])
+                self.assertFalse(self.output.exists())
 
     def test_live_rejects_bag_and_replay_only_flags(self):
         bag = self.root / 'bag'

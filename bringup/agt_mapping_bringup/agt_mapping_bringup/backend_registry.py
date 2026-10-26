@@ -131,16 +131,8 @@ def _verify_local_provenance(profile: dict[str, Any]) -> None:
     if actual_hash != expected_hash:
         raise BackendSelectionError(f'backend config hash mismatch for {config}')
     if backend['id'] == 'fast_livo2_lio':
-        try:
-            import yaml
-            document = yaml.safe_load(config.read_text(encoding='utf-8'))
-            parameters = document['/**']['ros__parameters']
-            common = parameters['common']
-        except (KeyError, TypeError, OSError, ValueError, yaml.YAMLError) as exc:
-            raise BackendSelectionError(f'cannot inspect FAST-LIVO2 LIO-only config: {exc}') from exc
-        if common.get('img_en') != 0 or common.get('lidar_en') != 1:
-            raise BackendSelectionError(
-                'FAST-LIVO2 default requires common.img_en=0 and common.lidar_en=1')
+        from .backend_snapshot import validate_native_config
+        validate_native_config(config.read_bytes(), profile)
     for executable_value in backend.get('required_executables', []):
         executable = Path(executable_value).expanduser()
         if not executable.is_file() or not os.access(executable, os.X_OK):
@@ -181,6 +173,8 @@ def _verify_local_provenance(profile: dict[str, Any]) -> None:
             raise BackendSelectionError(
                 f'source revision mismatch for {backend["id"]}: expected {expected}, got {current}')
         expected_container = backend.get('containing_repository_commit')
+        if backend['id'] == 'fast_livo2_lio' and expected_container is None and current != expected:
+            raise BackendSelectionError('FAST-LIVO2 source must match source_commit or an explicit containing_repository_commit')
         if expected_container is not None and current != expected_container:
             raise BackendSelectionError(
                 f'containing repository revision mismatch for {backend["id"]}: '
@@ -199,6 +193,12 @@ def _verify_local_provenance(profile: dict[str, Any]) -> None:
                 raise BackendSelectionError(
                     f'source subtree revision mismatch for {backend["id"]}: '
                     f'expected {expected_tree}, got {actual_tree}')
+        changed = subprocess.run(['git', '-C', str(repo), 'diff', '--quiet', 'HEAD', '--', str(source.resolve())],
+                                 capture_output=True)
+        if changed.returncode != 0:
+            raise BackendSelectionError(f'backend tracked source differs from its recorded revision: {source}')
+    elif not source_files:
+        raise BackendSelectionError('backend source revision cannot be verified: provide a Git checkout or source_files_sha256')
 
 
 def resolve_backend(
@@ -207,6 +207,7 @@ def resolve_backend(
     allow_experimental_backend: bool = False,
     selection_path: Path = SELECTION_PATH,
     profile_dir: Path = PROFILE_DIR,
+    profile_path: Path | None = None,
     check_sources: bool = True,
 ) -> dict[str, Any]:
     """Load and validate the user-selected default or one explicit backend.
@@ -224,8 +225,35 @@ def resolve_backend(
     backend_id = str(backend_id)
     if backend_id == 'fast_lio2_legacy':
         raise BackendSelectionError('FAST-LIO2 is disabled by the mapping backend policy')
-    profile = validate_profile(_load_yaml(_profile_path(Path(profile_dir), backend_id)), backend_id)
+    # A mounted profile replaces the complete native-config/frame contract, not
+    # just an unchecked calibration file. Selection policy still applies.
+    default_path = _profile_path(Path(profile_dir), backend_id)
+    selected_path = Path(profile_path).expanduser().resolve() if profile_path else default_path.resolve()
+    try:
+        profile_bytes = selected_path.read_bytes()
+        document = yaml.safe_load(profile_bytes)
+    except (OSError, yaml.YAMLError) as exc:
+        raise BackendSelectionError(f'cannot read backend profile {selected_path}: {exc}') from exc
+    if not isinstance(document, dict):
+        raise BackendSelectionError(f'backend profile must be a mapping: {selected_path}')
+    profile = validate_profile(document, backend_id)
     backend = profile['backend']
+    if profile_path:
+        # Mounted files may live anywhere; relative dependencies are relative to
+        # that file, never whichever directory ros2 launch happens to inherit.
+        for key in ('source_path', 'config_path', 'source_patch', 'setup_path'):
+            if backend.get(key):
+                candidate = Path(str(backend[key])).expanduser()
+                backend[key] = str((selected_path.parent / candidate).resolve())
+        backend['required_executables'] = [str((selected_path.parent / Path(item).expanduser()).resolve())
+                                           for item in backend.get('required_executables', [])]
+        if isinstance(backend.get('source_files_sha256'), dict):
+            backend['source_files_sha256'] = {
+                str((selected_path.parent / Path(item).expanduser()).resolve()): value
+                for item, value in backend['source_files_sha256'].items()
+            }
+    backend['profile_origin_path'] = str(selected_path)
+    backend['profile_origin_sha256'] = hashlib.sha256(profile_bytes).hexdigest()
     if backend.get('experimental') is True and not allow_experimental_backend:
         raise BackendSelectionError(
             f'{backend_id} is experimental/legacy; set allow_experimental_backend:=true explicitly')

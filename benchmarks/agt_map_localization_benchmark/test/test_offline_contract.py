@@ -346,12 +346,12 @@ def test_standard_requires_completed_same_code_native_and_linked_libraries_smoke
         COVERAGE_CELL_M, COVERAGE_FRACTIONS, MIN_POINTS_PER_CELL, MIN_VOXELS_PER_CELL)
     smoke = tmp_path / 'smoke'
     smoke.mkdir()
-    args = Namespace(profile='standard', smoke_run=smoke)
+    args = Namespace(profile='standard', smoke_run=smoke, study='phase3c')
     locks = ({'data': 'source-bytes'}, {'bench': 'source-bytes'},
              {'native': 'source-bytes'}, {'gicp': 'native-bytes'},
              {'small_gicp': 'library-bytes'})
     manifest = {
-        'status': 'COMPLETED', 'profile': 'smoke',
+        'schema_version': 3, 'status': 'COMPLETED', 'profile': 'smoke',
         'source_sha256_before': locks[0], 'source_sha256_after': locks[0],
         'benchmark_source_sha256_after': locks[1],
         'algorithm_source_sha256': locks[2],

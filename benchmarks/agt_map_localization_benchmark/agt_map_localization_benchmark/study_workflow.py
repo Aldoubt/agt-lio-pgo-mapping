@@ -1071,6 +1071,7 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument('--time-budget-s', type=float, default=18.0)
     validate_s = commands.add_parser('study-validate')
     validate_s.add_argument('study', type=Path)
+    validate_s.add_argument('--ros-install', type=Path, default=Path.home() / 'ros2_ws/install')
     run = commands.add_parser('run-study')
     run.add_argument('study', type=Path)
     run.add_argument('--ros-install', type=Path, default=Path.home() / 'ros2_ws/install')
@@ -1141,7 +1142,7 @@ def main(argv: list[str] | None = None) -> int:
             result = {'status': 'PASS', 'path': str(args.output_dir / 'study.yaml'),
                       'job_total': value['job']['total']}
         elif args.command == 'study-validate':
-            result = validate_study(args.study, ros_install=Path.home() / 'ros2_ws/install')
+            result = validate_study(args.study, ros_install=args.ros_install)
         elif args.command == 'run-study':
             value = run_study(args.study, ros_install=args.ros_install,
                               native_localizer_path=args.native_localizer_path)

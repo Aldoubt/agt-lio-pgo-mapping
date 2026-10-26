@@ -16,9 +16,9 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from .backends import NativePrograms, dependency_fingerprints
-from .cli import (CONFIDENCE, EXPERIMENTS, GEOMETRY, PARENT, REVIEWED, ROS_INSTALL,
+from .cli import (CONFIDENCE, GEOMETRY, NAVIGATION_SOURCE, PARENT, REVIEWED, ROS_INSTALL,
                   _algorithm_source_hashes, _benchmark_source_hashes,
-                  _source_version, write_json)
+                  _manifest_study, _source_version, _validate_output_root, write_json)
 from .dataset import PgoEvidence, lookup_sorted_keys, point_keys
 from .geometry import alignment_and_recovery, query_geometry
 from .metrics import FAILURE_CODES, SUCCESS_RULES, classify_failure, measure_pose, pose_record, write_outputs
@@ -36,6 +36,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--geometry-source', type=Path, default=GEOMETRY)
     p.add_argument('--reviewed-source', type=Path, default=REVIEWED)
     p.add_argument('--ros-install', type=Path, default=ROS_INSTALL)
+    p.add_argument('--navigation-source', type=Path, default=NAVIGATION_SOURCE)
+    p.add_argument('--dependency-source-root', type=Path,
+                   help='parent of external/{small_gicp,3d_bbs}; defaults to navigation-source parent')
     return p
 
 
@@ -176,22 +179,26 @@ def _recompute(run: Path, original: dict, data: PgoEvidence) -> tuple[list[dict]
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     run = args.source_run.resolve(strict=True)
-    out = args.output_dir.resolve()
-    if out.exists() or out.is_relative_to(run):
+    args.navigation_source = args.navigation_source.expanduser().resolve()
+    dependency_source = (args.dependency_source_root or args.navigation_source.parent).expanduser().resolve()
+    try:
+        out = _validate_output_root(args.output_dir, (
+            run, args.map_package, args.confidence_source, args.geometry_source, args.reviewed_source,
+            Path(__file__).resolve().parents[3], args.ros_install,
+            args.ros_install.expanduser().resolve().parent / '.agt_native',
+            args.navigation_source, dependency_source / 'external/small_gicp',
+            dependency_source / 'external/3d_bbs'))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if out.exists():
         raise SystemExit('postprocess output must be NEW and outside the original run')
-    if out.parent != EXPERIMENTS.parent / 'reanalysis':
-        raise SystemExit('postprocess output must be a fresh Phase 3B reanalysis subdirectory')
     data = PgoEvidence(args.map_package, args.confidence_source, args.geometry_source,
                        args.reviewed_source if args.reviewed_source.is_dir() else None)
-    for protected in (data.pgo, data.confidence, data.geometry, data.reviewed,
-                      Path(__file__).resolve().parents[3], args.ros_install.resolve()):
-        if protected is not None and out.is_relative_to(protected):
-            raise SystemExit('postprocess output inside a protected input/source tree')
     original = json.loads((run / 'manifest.json').read_text())
     hashes_before = data.validate_sources()
     binary = NativePrograms.discover(args.ros_install)
-    dependencies = dependency_fingerprints(args.ros_install, Path(__file__).resolve().parents[3].parent)
-    algorithms = _algorithm_source_hashes()
+    dependencies = dependency_fingerprints(args.ros_install, dependency_source)
+    algorithms = _algorithm_source_hashes(args.navigation_source)
     prior_dependencies = original.get('linked_registration_dependencies_before')
     if prior_dependencies is not None and (prior_dependencies != dependencies or
                                             original.get('linked_registration_dependencies_after') != dependencies):
@@ -209,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=False)
     manifest = {
         'schema_version': 2, 'status': 'IN_PROGRESS', 'kind': 'POSTPROCESS_NO_NATIVE_RERUN',
+        'source_study': _manifest_study(original),
         'created_utc': datetime.now(timezone.utc).isoformat(),
         'source_native_run': str(run),
         'source_native_manifest_sha256': old_manifest_sha,
@@ -225,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         'algorithm_source_sha256': algorithms,
         'benchmark_source_sha256_before': code_hashes, 'benchmark_source_sha256_after': None,
         'mapping_source_git': _source_version(Path(__file__).resolve().parents[3]),
-        'navigation_source_git': _source_version(Path('/home/yangxuan/ros2_ws/src/agt_navigation_v3')),
+        'navigation_source_git': _source_version(args.navigation_source),
         'parameters': dict(original['parameters'], success_criteria_exploratory=SUCCESS_RULES,
                            case_failure_codes=FAILURE_CODES),
         'splits': original['splits'], 'candidates': None, 'not_run': original['not_run'],
@@ -258,9 +266,9 @@ def main(argv: list[str] | None = None) -> int:
         report.write_text(report.read_text().replace('\n\n', '\n\n' + prefix, 1),
                           encoding='utf-8')
         if (data.validate_sources() != hashes_before
-                or _algorithm_source_hashes() != algorithms
+                or _algorithm_source_hashes(args.navigation_source) != algorithms
                 or NativePrograms.discover(args.ros_install).sha256 != binary.sha256
-                or dependency_fingerprints(args.ros_install, Path(__file__).resolve().parents[3].parent)
+                or dependency_fingerprints(args.ros_install, dependency_source)
                    != dependencies
                 or _source_file_hashes(run, original) != prior_files
                 or sha256_file(run / 'manifest.json') != old_manifest_sha

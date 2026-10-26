@@ -5,6 +5,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from .reference_review import load_reference_draft, simplify_reference_line
 from .reference_editor import ReferenceEditorMixin
+from .coverage_review import CoverageReviewMixin
 import json
 import math
 from pathlib import Path
@@ -96,7 +97,7 @@ class StructureAnalyzer(QtCore.QThread):
 class GeometryDialog(QtWidgets.QDialog):
     def __init__(self, kind, item, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('人工编辑'+('垄线' if kind == 'row' else '地头'))
+        self.setWindowTitle('人工编辑'+('垄线' if kind == 'row' else '温室边界' if kind == 'coverage_boundary' else '地头'))
         self.kind = kind
         form = QtWidgets.QFormLayout(self)
         self.identifier = QtWidgets.QLineEdit(item.get('id', ''))
@@ -220,7 +221,7 @@ class ProposalGeometryDialog(QtWidgets.QDialog):
                 'width_m': self.width.value()}
 
 
-class Annotator(ReferenceEditorMixin, QtWidgets.QMainWindow):
+class Annotator(CoverageReviewMixin, ReferenceEditorMixin, QtWidgets.QMainWindow):
     def __init__(self, args):
         super().__init__()
         self.gui_load_started = time.perf_counter()
@@ -311,7 +312,7 @@ class Annotator(ReferenceEditorMixin, QtWidgets.QMainWindow):
             '坐标依据：人工拓扑与同次建图前端；非绝对真值。')
         self.help.setWordWrap(True)
         self.mode_combo = QtWidgets.QComboBox()
-        self.mode_combo.addItems(['查看', '绘制垄线中心线', '绘制地头边界', '添加人工场景标记', '编辑顶点', '设置边界通道锚点', '框选局部审查（两点）', '圈出墙壁 / 非垄区域', '新增参考垄', '新增参考中心线'])
+        self.mode_combo.addItems(['查看', '绘制垄线中心线', '绘制地头边界', '添加人工场景标记', '编辑顶点', '设置边界通道锚点', '框选局部审查（两点）', '圈出墙壁 / 非垄区域', '新增参考垄', '新增参考中心线', '绘制温室作业边界'])
         self.mode_combo.currentIndexChanged.connect(self.change_mode)
         self.distance = QtWidgets.QDoubleSpinBox()
         self.distance.setRange(.01, 100)
@@ -336,8 +337,25 @@ class Annotator(ReferenceEditorMixin, QtWidgets.QMainWindow):
         self.structure_panel.undoRequested.connect(self.undo)
         self.structure_panel.redoRequested.connect(self.redo)
         self.structure_panel.freezeRequested.connect(self.export_reference_dialog)
+        self.structure_panel.acceptRowsRequested.connect(self.accept_row_proposals)
+        self.structure_panel.acceptAisleRequested.connect(self.review_coverage_aisle)
+        self.structure_panel.coverageExportRequested.connect(self.export_coverage_dialog)
+        self.structure_panel.boundaryRequested.connect(lambda: self.start_region_mode(10))
+        self.structure_panel.headlandRequested.connect(lambda: self.start_region_mode(2))
         self.structure_panel.clear_exclusions.setVisible(bool(self.row_exclusion_polygons))
         side_layout.addWidget(self.structure_panel)
+        geometry_controls = QtWidgets.QWidget()
+        geometry_layout = QtWidgets.QVBoxLayout(geometry_controls)
+        self.list.setMaximumHeight(120)
+        self.list.show()
+        geometry_layout.addWidget(self.list)
+        for label, callback in [('编辑所选物理标注', self.edit_selected), ('删除所选物理标注', self.delete_selected)]:
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(callback)
+            geometry_layout.addWidget(button)
+        geometry_controls.hide()
+        self.structure_panel.geometryReviewToggled.connect(geometry_controls.setVisible)
+        side_layout.addWidget(geometry_controls)
         self.evidence_panel = EvidenceLayerPanel({
             'point_cloud': True, 'global_row_proposal': True,
             'local_row_tracks': True, 'aisle_proposals': True,
@@ -773,20 +791,15 @@ class Annotator(ReferenceEditorMixin, QtWidgets.QMainWindow):
             existing_ids = {item.get('id') for item in self.topology.get('rows', [])}
             existing_ids.update(item.physical_row_id for item in rows if item.physical_row_id)
             physical_id, ok = QtWidgets.QInputDialog.getText(
-                self, '填写实际垄编号', f'为 {row.auto_id} 指定实际编号（AUTO 编号会作为来源记录保留）：'
+                self, '确认作物垄参考编号', f'为 {row.auto_id} 指定人工确认的参考编号。该作物垄中心线不会作为行驶路线：'
             )
             if not ok:
                 break
             if not physical_id.strip() or physical_id.strip() in existing_ids:
                 QtWidgets.QMessageBox.warning(self, '实际垄编号', '请输入非空且唯一的实际垄编号。')
                 continue
-            direction, ok = QtWidgets.QInputDialog.getItem(
-                self, '确认实际垄线通行方向', '请选择人工确认的通行方向：',
-                ['正向通行', '反向通行', '双向通行'], 2, False
-            )
-            if not ok:
-                break
-            direction_value = {'正向通行': 'forward', '反向通行': 'reverse', '双向通行': 'bidirectional'}[direction]
+            # Crop reference orientation is not a vehicle direction restriction.
+            direction_value = 'bidirectional'
             rows[index] = decision_for_proposal(
                 row, 'accepted', physical_row_id=physical_id, direction=direction_value
             )
@@ -1136,6 +1149,17 @@ class Annotator(ReferenceEditorMixin, QtWidgets.QMainWindow):
         if self.keyframes_visible:
             self.axes.scatter(xy[:, 0], xy[:, 1], s=4, c='#71b4ef', alpha=.7, label='关键帧')
         self.draw_evidence_layers()
+        boundary = self.topology.get('coverage_boundary', {})
+        if boundary.get('polygon'):
+            points = np.asarray(boundary['polygon'])
+            points = np.vstack([points, points[0]])
+            self.axes.plot(points[:, 0], points[:, 1], color='#f2d75c', lw=1.5)
+            self.axes.annotate('覆盖边界: '+boundary.get('id', ''), points[0], color='#f2d75c')
+        for aisle in self.aisle_proposals:
+            review = aisle.diagnostics.get('coverage_review', {})
+            if aisle.decision == 'accepted' and review.get('status') == 'CONFIRMED':
+                polygon = np.asarray(review['corridor']['coordinates'][0])
+                self.axes.fill(polygon[:, 0], polygon[:, 1], color='#3ba76d', alpha=.18)
         selected = self.selected()
         for collection, index, item in self.entries():
             if collection == 'rows' and not (self.physical_topology_visible and self.physical_rows_visible):
@@ -1302,7 +1326,7 @@ class Annotator(ReferenceEditorMixin, QtWidgets.QMainWindow):
             self.region_status.setText(str(exc))
 
     def change_mode(self, index):
-        self.mode = ['inspect', 'row', 'headland', 'scene', 'edit', 'boundary_anchor', 'review_region', 'row_exclusion', 'reference_row', 'reference_aisle'][index]
+        self.mode = ['inspect', 'row', 'headland', 'scene', 'edit', 'boundary_anchor', 'review_region', 'row_exclusion', 'reference_row', 'reference_aisle', 'coverage_boundary'][index]
         self.pending = []
         self.draw()
 
@@ -1348,7 +1372,7 @@ class Annotator(ReferenceEditorMixin, QtWidgets.QMainWindow):
             elif event.button == 1:
                 self.pending.append([float(event.xdata), float(event.ydata)])
                 self.draw()
-        elif self.mode in ('row', 'headland') and self.editable():
+        elif self.mode in ('row', 'headland', 'coverage_boundary') and self.editable():
             if event.button == 3 or event.dblclick:
                 self.finish_geometry()
             elif event.button == 1:
@@ -1428,7 +1452,7 @@ class Annotator(ReferenceEditorMixin, QtWidgets.QMainWindow):
             self.finish_reference_line()
         elif event.key == 'enter' and self.mode == 'row_exclusion':
             self.finish_row_exclusion()
-        elif event.key == 'enter' and self.mode in ('row', 'headland'):
+        elif event.key == 'enter' and self.mode in ('row', 'headland', 'coverage_boundary'):
             self.finish_geometry()
         elif event.key == 'escape':
             self.pending = []
@@ -1445,6 +1469,15 @@ class Annotator(ReferenceEditorMixin, QtWidgets.QMainWindow):
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             try:
                 item = dialog.value()
+                if self.mode == 'coverage_boundary':
+                    validate_polygon(item['polygon'])
+                    if not item['id'] or item.get('confidence') != 'confirmed':
+                        raise ValueError('温室边界需要明确编号和人工确认')
+                    self.mutate(lambda: self.topology.update(coverage_boundary=item))
+                    self.pending = []
+                    self.mode_combo.setCurrentIndex(0)
+                    self.draw()
+                    return
                 collection = 'rows' if self.mode == 'row' else 'headlands'
                 proposed = copy.deepcopy(self.topology)
                 proposed[collection].append(item)

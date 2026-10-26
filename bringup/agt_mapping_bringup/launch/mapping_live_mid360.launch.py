@@ -9,8 +9,12 @@ def generate_launch_description():
     arguments = [
         DeclareLaunchArgument('livox_config', description='livox_ros_driver2 MID360 user config JSON'),
         DeclareLaunchArgument('fastlio_config', default_value='',
-                              description='Optional mounted FAST-LIO2 calibration YAML'),
+                              description='Retired: nonempty values fail; use backend_profile for FAST-LIVO2'),
         DeclareLaunchArgument('output_dir', description='New or empty run output directory'),
+        DeclareLaunchArgument('backend_profile_source_sha256', default_value='',
+                              description='Optional CLI-pinned hash of selected source profile; mismatch fails startup'),
+        DeclareLaunchArgument('backend_profile', default_value='',
+                              description='Optional mounted complete FAST-LIVO2 profile with native config hash and frames'),
         DeclareLaunchArgument('mapping_backend', default_value='',
                               description='Backend profile; defaults to fast_livo2_lio'),
         DeclareLaunchArgument('lidar_topic', default_value='/livox/lidar'),

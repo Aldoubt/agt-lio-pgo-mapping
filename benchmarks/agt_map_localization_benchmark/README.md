@@ -1,4 +1,4 @@
-# Phase 3B: Offline Localization A/B (experimental only)
+# Phase 3B / explicit Phase 3C: Offline Localization A/B (experimental only)
 
 This independent ament_python package **does not run a ROS node, subscribe to a
 sensor, publish a map, publish TF, or modify navigation runtime**. It only
@@ -6,6 +6,14 @@ prepares *new* PCDs in a uniquely named experiment directory and invokes the
 **unchanged** `agt_global_relocalization_native` executables already used by
 manual-seed LOCAL and candidate-led GLOBAL localization. Do not interpret any
 output as a production map, field gate, calibrated probability, or absolute GT.
+
+The existing command defaults to **Phase 3B**: its original candidates,
+manifest schema 2 and experiment directory are retained. Select
+`--study phase3c` to add the coverage-preserving candidates and diagnostics
+described below; those runs use schema 3. New manifests record `study` explicitly.
+This CLI is separate from the MapStudio Query Set / Relocalization Study
+services (`agt_mapstudio_workflow`), and neither protocol generates navigation
+maps, READY Routes or robot task coverage plans.
 
 ## Source contract
 
@@ -103,13 +111,46 @@ versions and parameter settings;
 it uses two Tier1 centers, 1/3/5-frame queries and all 20 predeclared starts.
 GLOBAL (if available) is run only **after all LOCAL registrations**; its
 no-initial-pose workload is deliberately bounded. The CLI refuses to reuse a
-run-id and refuses output outside a direct child of the dedicated Phase 3B
-experiment directory. If interrupted, it leaves `INCOMPLETE` and `results.jsonl`, never
+run-id. Its default output root is
+`~/ros2_ws/experiments/agt_map_localization_phase3b_20260927/runs`.
+An explicit `--output-root` may select another isolated directory, but it must
+be disjoint from all input datasets, source checkouts and installed runtime;
+symlink aliases and output ancestors of protected paths are rejected too.
+If interrupted, it leaves `INCOMPLETE` and `results.jsonl`, never
 claims partial statistics were a completed run. Each completed output has
 `manifest.json`, `real/<tier>/{split,queries,candidates}.json`, new candidate
 PCDs, per-query PCDs, `results.jsonl`, `results.csv`, `summary.json`,
 `report.md`, and offline plots. All source checksums are validated before and
 after. No Phase 1–3A source is written.
+
+All input locations are configurable. Defaults resolve under the current
+user's `~/ros2_ws`; they do not depend on another user's home directory:
+
+```bash
+agt_map_localization_benchmark --study phase3b --profile smoke --run-id smoke_new \
+  --map-package /data/verified_pgo/map_package \
+  --confidence-source /data/verified_confidence \
+  --geometry-source /data/verified_geometry \
+  --reviewed-source /data/optional_reviewed \
+  --ros-install /opt/agt-native/install \
+  --navigation-source /opt/agt-src/agt_navigation_v3 \
+  --dependency-source-root /opt/agt-src \
+  --output-root /data/offline_experiments/phase3b/runs
+```
+
+`--navigation-source` is the read-only repository containing
+`navigation/localization`; its algorithm files are hashed before and after.
+`--dependency-source-root` contains `external/small_gicp` and `external/3d_bbs`
+and defaults to the navigation repository's parent. Native shared-library
+fingerprints retain the existing `<ros-install>/../.agt_native/lib` convention.
+The postprocess command accepts the same native/source path options and a new,
+disjoint `--output-dir`; it never modifies the source run or invokes native
+registration. The original source/binary hash locks remain mandatory.
+
+Legacy schema-2 Phase 3B smoke manifests need no new `study` or coverage fields.
+They can precede Phase 3B STANDARD only when the existing code/data/native
+locks match. A historical run made with different benchmark bytes still needs
+a fresh smoke after this upgrade; compatibility does not bypass provenance.
 
 Strict/nominal/loose analytical criteria (3D translation m, heading yaw °):
 **(0.20, 2), (0.50, 5), (1.00, 10)**. The reported z error is already
@@ -170,7 +211,7 @@ build/install directories; the benchmark does not modify those packages.
 
 ## Phase 3C: coverage-preserving geometry experiment
 
-Phase 3C keeps all Phase 3B candidates as baselines/negative controls and adds
+Opt-in `--study phase3c` keeps all Phase 3B candidates as baselines/negative controls and adds
 three **B_AUTO_STABLE-derived** candidates for each within-cell retention
 fraction (25/50/75%):
 
@@ -185,6 +226,12 @@ fraction (25/50/75%):
 This is deliberately different from legacy `D_QT_qXX`, where `qXX` means a
 **global Qt quantile threshold** and can collapse spatial coverage.  The new
 `fXX` suffix means the **within-cell retention fraction**.
+The per-cell quota is `min(n, max(4, ceil(fraction*n)))`, so sparse cells can
+retain all their points; the final map is not necessarily exactly 25/50/75%
+of B. Matching XY cells and counts does not match XYZ coverage or structure
+within a cell. The retained Phase 3B sweep still requires at least 12 valid Qt
+voxels globally; deterministic invalid-Qt cell fallback does not remove that
+experiment-level precondition.
 
 Every LOCAL/GLOBAL result also carries a reference-centered diagnostic crop
 with:
@@ -238,10 +285,10 @@ colcon --log-base "$E/log" build \
 source "$E/install/setup.bash"
 
 ros2 run agt_map_localization_benchmark agt_map_localization_benchmark \
-  --profile smoke --run-id smoke_phase3c_01
+  --study phase3c --profile smoke --run-id smoke_phase3c_01
 
 ros2 run agt_map_localization_benchmark agt_map_localization_benchmark \
-  --profile standard --run-id standard_phase3c_01 \
+  --study phase3c --profile standard --run-id standard_phase3c_01 \
   --smoke-run "$E/runs/smoke_phase3c_01"
 ```
 

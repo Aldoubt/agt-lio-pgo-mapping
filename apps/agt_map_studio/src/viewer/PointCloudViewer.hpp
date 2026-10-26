@@ -50,7 +50,7 @@ inline bool is_geometry_color_mode(PointColorMode mode) {
 
 // How a selection is drawn in Select/Delete mode.
 enum class SelectionTool { ScreenRect, PolygonPrism, Sphere };
-enum class AuxiliaryLayer { Structure = 0, Blocks = 1, Query = 2, Candidate = 3, Comparison = 4 };
+enum class AuxiliaryLayer { Structure = 0, Blocks = 1, Query = 2, Candidate = 3, Comparison = 4, StudyResults = 5 };
 
 class PointCloudViewer : public QOpenGLWidget, protected QOpenGLFunctions {
   Q_OBJECT
@@ -62,7 +62,8 @@ public:
   void set_cloud(LoadedPointCloud cloud, const QString &filename);
   void set_primary_visible(bool visible);
   void set_auxiliary_cloud(AuxiliaryLayer layer, const LoadedPointCloud &cloud,
-                           bool visible = true, float opacity = 1.0F);
+                           bool visible = true, float opacity = 1.0F,
+                           const std::vector<QVector3D> &point_colors = {});
   void set_auxiliary_visible(AuxiliaryLayer layer, bool visible);
   void set_auxiliary_opacity(AuxiliaryLayer layer, float opacity);
   void clear_auxiliary_cloud(AuxiliaryLayer layer);
@@ -104,6 +105,7 @@ public:
   SelectionTool selection_tool() const { return tool_; }
   // Z window applied to PolygonPrism / ScreenRect selections when enabled.
   void set_z_window(bool enabled, double z_min, double z_max);
+  void set_render_point_limit(std::size_t maximum_points);
   void set_sphere_radius(double radius_m) { sphere_radius_ = radius_m; }
   double sphere_radius() const { return sphere_radius_; }
 
@@ -159,6 +161,7 @@ private slots:
   void tick();
 
 private:
+  void rebuild_render_cloud();
   void upload_cloud();
   void upload_statuses();
   void upload_confidence_cloud();
@@ -187,6 +190,10 @@ private:
   float zoom_anchor_height() const;
 
   LoadedPointCloud cloud_;
+  QTimer render_rebuild_timer_;
+  std::size_t render_point_limit_ = 500000U;
+  std::vector<std::size_t> render_indices_;
+  std::vector<float> render_xyz_;
   QString filename_;
   CameraController camera_;
   QOpenGLBuffer cloud_buffer_;
@@ -221,12 +228,13 @@ private:
     QOpenGLBuffer statuses{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer colors{QOpenGLBuffer::VertexBuffer};
     std::vector<float> xyz;
+    std::vector<QVector3D> point_colors;
     QVector3D color;
     float opacity = 1.0F;
     bool visible = false;
     bool dirty = true;
   };
-  std::array<AuxiliaryCloud, 5> auxiliary_clouds_;
+  std::array<AuxiliaryCloud, 6> auxiliary_clouds_;
   bool query_pick_mode_ = false;
   bool left_drag_ = false;
   bool right_drag_ = false;

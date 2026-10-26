@@ -5,9 +5,34 @@ import math
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 from agt_mapping_artifacts.frontend_package import write_frontend_map_package
+
+from .backend_snapshot import load_backend_snapshot
+
+
+def build_frontend_provenance(snapshot, *, bag_path, lidar_topic, imu_topic, map_frame, body_frame):
+    """Build export evidence from the exact startup inputs, never a mounted file."""
+    profile = snapshot.profile
+    backend, sensor = profile['backend'], profile['sensor']
+    if (lidar_topic, imu_topic, body_frame) != (sensor['lidar_topic'], sensor['imu_topic'], sensor['body_frame']):
+        raise ValueError('export input topics/body frame disagree with the startup backend snapshot')
+    if map_frame != profile['mapping']['map_frame']:
+        raise ValueError('export map frame disagrees with the startup backend profile')
+    return {
+        'mapping_backend': dict(backend),
+        'source': {'rosbag': str(bag_path), 'lidar_topic': lidar_topic, 'imu_topic': imu_topic},
+        'frames': {
+            'map': map_frame, 'body': body_frame,
+            'lidar': sensor['lidar_frame'], 'imu': sensor['imu_frame'],
+            'T_frontend_body': 'Odometry.pose.pose; native state rigidly normalized to body frame',
+            'T_body_lidar_translation_m': sensor['T_body_lidar_translation_m'],
+            'T_body_lidar_quaternion_xyzw': sensor['T_body_lidar_quaternion_xyzw'],
+        },
+        'calibration': snapshot.calibration_provenance(),
+        'reference': {'same_session': True, 'absolute_ground_truth': False,
+                      'source': 'mapping_frontend_odometry', 'pgo_applied': False, 'optimized': False},
+    }
 
 
 def main(args=None) -> int:
@@ -34,13 +59,18 @@ def main(args=None) -> int:
             self.body_frame = str(self.declare_parameter('body_frame', 'body').value)
             if not self.bag_path or not self.profile_path.is_file():
                 raise ValueError('bag_path and profile_path are required')
-            profile = yaml.safe_load(self.profile_path.read_text(encoding='utf-8'))
+            profile_sha256 = str(self.declare_parameter('profile_sha256', '').value)
+            self.snapshot = load_backend_snapshot(self.profile_path, profile_sha256)
+            profile = self.snapshot.profile
             self.mapping_backend = profile['backend']
             self.sensor = profile['sensor']
             self.lidar_topic = str(self.declare_parameter(
                 'input_lidar_topic', self.sensor['lidar_topic']).value)
             self.imu_topic = str(self.declare_parameter(
                 'input_imu_topic', self.sensor['imu_topic']).value)
+            if (self.lidar_topic, self.imu_topic, self.body_frame) != (
+                    self.sensor['lidar_topic'], self.sensor['imu_topic'], self.sensor['body_frame']):
+                raise ValueError('exporter parameters disagree with startup backend snapshot')
             self.output_dir.mkdir(parents=True, exist_ok=True)
             self.package_root = self.output_dir / 'map_package'
             self.records = []
@@ -148,34 +178,9 @@ def main(args=None) -> int:
             try:
                 if not self.records:
                     raise ValueError('no synchronized frontend keyframes were received')
-                backend = dict(self.mapping_backend)
-                provenance = {
-                    'mapping_backend': backend,
-                    'source': {
-                        'rosbag': self.bag_path,
-                        'lidar_topic': self.lidar_topic,
-                        'imu_topic': self.imu_topic,
-                    },
-                    'frames': {
-                        'map': self.map_frame, 'body': self.body_frame,
-                        'lidar': self.sensor['lidar_frame'], 'imu': self.sensor['imu_frame'],
-                        'T_frontend_body': 'Odometry.pose.pose; native state rigidly normalized to body frame',
-                        'T_body_lidar_translation_m': self.sensor['T_body_lidar_translation_m'],
-                        'T_body_lidar_quaternion_xyzw': self.sensor['T_body_lidar_quaternion_xyzw'],
-                    },
-                    'calibration': {
-                        'status': 'profile extrinsic',
-                        'T_body_lidar_translation_m': self.sensor['T_body_lidar_translation_m'],
-                        'T_body_lidar_quaternion_xyzw': self.sensor['T_body_lidar_quaternion_xyzw'],
-                    },
-                    'reference': {
-                        'same_session': True,
-                        'absolute_ground_truth': False,
-                        'source': 'mapping_frontend_odometry',
-                        'pgo_applied': False,
-                        'optimized': False,
-                    },
-                }
+                provenance = build_frontend_provenance(
+                    self.snapshot, bag_path=self.bag_path, lidar_topic=self.lidar_topic,
+                    imu_topic=self.imu_topic, map_frame=self.map_frame, body_frame=self.body_frame)
                 result = write_frontend_map_package(self.package_root, self.records, provenance)
                 self.exported = True
                 response.success = True

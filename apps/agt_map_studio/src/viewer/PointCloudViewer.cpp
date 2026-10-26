@@ -2,6 +2,7 @@
 
 #include "confidence/ConfidenceColor.hpp"
 #include "geometry/GeometryColor.hpp"
+#include "viewer/PointCloudRenderSampler.hpp"
 
 #include <QPolygonF>
 #include <QVector2D>
@@ -35,6 +36,19 @@ PointCloudViewer::PointCloudViewer(QWidget *parent)
   setMouseTracking(true);
   connect(&timer_, &QTimer::timeout, this, &PointCloudViewer::tick);
   timer_.start(16);
+  render_rebuild_timer_.setSingleShot(true);
+  render_rebuild_timer_.setInterval(100);
+  connect(&render_rebuild_timer_, &QTimer::timeout, this, [this]() {
+    rebuild_render_cloud();
+    if (gl_ready_) {
+      makeCurrent();
+      upload_cloud();
+      upload_statuses();
+      doneCurrent();
+    }
+    emit_stats();
+    update();
+  });
 }
 
 PointCloudViewer::~PointCloudViewer() {
@@ -59,8 +73,10 @@ void PointCloudViewer::set_cloud(LoadedPointCloud cloud,
                                  const QString &filename) {
   cloud_ = std::move(cloud);
   filename_ = filename;
+  rebuild_render_cloud();
   for (auto &layer : auxiliary_clouds_) {
     layer.xyz.clear();
+    layer.point_colors.clear();
     layer.visible = false;
     layer.dirty = true;
   }
@@ -80,15 +96,18 @@ void PointCloudViewer::set_cloud(LoadedPointCloud cloud,
 
 void PointCloudViewer::set_auxiliary_cloud(AuxiliaryLayer layer_id,
                                             const LoadedPointCloud &cloud,
-                                            bool visible, float opacity) {
+                                            bool visible, float opacity,
+                                            const std::vector<QVector3D> &point_colors) {
   auto &layer = auxiliary_clouds_.at(static_cast<std::size_t>(layer_id));
   layer.xyz = cloud.xyz;
+  layer.point_colors = point_colors.size() == cloud.point_count() ? point_colors : std::vector<QVector3D>{};
   layer.visible = visible && !layer.xyz.empty();
   const QVector3D colors[] = {QVector3D(0.20F, 0.90F, 0.35F),
                               QVector3D(0.70F, 0.45F, 1.00F),
                               QVector3D(0.05F, 0.90F, 1.00F),
                               QVector3D(1.00F, 0.34F, 0.08F),
-                              QVector3D(1.00F, 0.52F, 0.02F)};
+                              QVector3D(1.00F, 0.52F, 0.02F),
+                              QVector3D(1.00F, 1.00F, 1.00F)};
   layer.color = colors[static_cast<std::size_t>(layer_id)];
   layer.opacity = std::clamp(opacity, 0.05F, 1.0F);
   layer.dirty = true;
@@ -121,6 +140,7 @@ void PointCloudViewer::set_auxiliary_visible(AuxiliaryLayer layer_id,
 void PointCloudViewer::clear_auxiliary_cloud(AuxiliaryLayer layer_id) {
   auto &layer = auxiliary_clouds_.at(static_cast<std::size_t>(layer_id));
   layer.xyz.clear();
+  layer.point_colors.clear();
   layer.visible = false;
   layer.dirty = true;
   if (gl_ready_) {
@@ -335,8 +355,23 @@ void PointCloudViewer::set_z_window(bool enabled, double z_min, double z_max) {
   z_window_min_ = std::min(z_min, z_max);
   z_window_max_ = std::max(z_min, z_max);
   camera_.focus_height(zoom_anchor_height());
+  render_rebuild_timer_.start();
   emit_stats();
   update();
+}
+
+void PointCloudViewer::set_render_point_limit(std::size_t maximum_points) {
+  if (render_point_limit_ == maximum_points) return;
+  render_point_limit_ = maximum_points;
+  render_rebuild_timer_.start();
+}
+
+void PointCloudViewer::rebuild_render_cloud() {
+  auto subset = make_render_point_subset(cloud_.xyz, render_point_limit_,
+      z_window_enabled_, z_window_min_, z_window_max_);
+  render_indices_ = std::move(subset.source_indices);
+  render_xyz_ = std::move(subset.xyz);
+  status_buffer_dirty_ = true;
 }
 
 void PointCloudViewer::set_chinese_ui(bool enabled) {
@@ -477,6 +512,7 @@ QString PointCloudViewer::stats_text() const {
   if (mode_ != InteractionMode::Navigate)
     text += chinese_ui_ ? QStringLiteral(" / %1").arg(tool_text())
                         : QStringLiteral(" / %1").arg(tool_text());
+  if (!confidence_mode()) text += (chinese_ui_ ? QStringLiteral(" | 显示点数：%1") : QStringLiteral(" | Rendered: %1")).arg(static_cast<qulonglong>(render_indices_.size()));
   if (z_window_enabled_) {
     text += chinese_ui_
         ? QStringLiteral(" | Z裁剪 [%1, %2] 米").arg(z_window_min_, 0, 'f', 2).arg(z_window_max_, 0, 'f', 2)
@@ -687,7 +723,8 @@ void PointCloudViewer::paintGL() {
                                      : QVector4D(0.12F, 0.12F, 0.12F, 1.0F));
     QOpenGLBuffer &positions = confidence ? confidence_buffer_ : cloud_buffer_;
     QOpenGLBuffer &statuses = confidence ? confidence_status_buffer_ : status_buffer_;
-    if ((confidence || primary_visible_) && !active_xyz().empty() && positions.isCreated() && statuses.isCreated() &&
+    const auto &draw_xyz = confidence ? active_xyz() : render_xyz_;
+    if ((confidence || primary_visible_) && !draw_xyz.empty() && positions.isCreated() && statuses.isCreated() &&
         (!confidence || confidence_color_buffer_.isCreated())) {
       positions.bind();
       shader_->enableAttributeArray("a_position");
@@ -704,7 +741,7 @@ void PointCloudViewer::paintGL() {
         confidence_color_buffer_.release();
       }
       positions.bind();
-      glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(active_xyz().size() / 3U));
+      glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(draw_xyz.size() / 3U));
       shader_->disableAttributeArray("a_position");
       shader_->disableAttributeArray("a_status");
       if (confidence) shader_->disableAttributeArray("a_rgb");
@@ -936,26 +973,27 @@ void PointCloudViewer::upload_cloud() {
   if (!gl_ready_ || !cloud_buffer_.isCreated()) return;
   cloud_buffer_.bind();
   cloud_buffer_.setUsagePattern(QOpenGLBuffer::StaticDraw);
-  cloud_buffer_.allocate(cloud_.xyz.data(),
-                         static_cast<int>(cloud_.xyz.size() * sizeof(float)));
+  cloud_buffer_.allocate(render_xyz_.empty() ? nullptr : render_xyz_.data(),
+                         static_cast<int>(render_xyz_.size() * sizeof(float)));
   cloud_buffer_.release();
 }
 
 void PointCloudViewer::upload_statuses() {
   if (!gl_ready_ || !status_buffer_.isCreated()) return;
-  std::vector<float> values(cloud_.point_count(), 0.0F);
-  if (selection_manager_ && selection_manager_->statuses().size() == values.size()) {
+  std::vector<float> values(render_indices_.size(), 0.0F);
+  if (selection_manager_ && selection_manager_->statuses().size() == cloud_.point_count()) {
     const auto &statuses = selection_manager_->statuses();
     const bool hide_deleted = selection_manager_->hide_deleted();
     const bool isolate = selection_manager_->isolate_selected() &&
                          selection_manager_->selected_count() > 0U;
-    for (std::size_t i = 0; i < statuses.size(); ++i) {
+    for (std::size_t render_index = 0; render_index < render_indices_.size(); ++render_index) {
+      const auto i = render_indices_[render_index];
       float value = static_cast<float>(statuses[i]);
       if ((hide_deleted && statuses[i] == PointStatus::DELETED) ||
           (isolate && statuses[i] == PointStatus::VISIBLE)) {
         value = 3.0F;  // hidden: discarded by the fragment shader
       }
-      values[i] = value;
+      values[render_index] = value;
     }
   }
   status_buffer_.bind();
@@ -1068,7 +1106,8 @@ void PointCloudViewer::upload_auxiliary_clouds() {
     std::vector<float> colors;
     colors.reserve(statuses.size() * 3U);
     for (std::size_t i = 0; i < statuses.size(); ++i) {
-      colors.insert(colors.end(), {layer.color.x(), layer.color.y(), layer.color.z()});
+      const auto color = layer.point_colors.size() == statuses.size() ? layer.point_colors[i] : layer.color;
+      colors.insert(colors.end(), {color.x(), color.y(), color.z()});
     }
     layer.colors.bind();
     layer.colors.setUsagePattern(QOpenGLBuffer::StaticDraw);

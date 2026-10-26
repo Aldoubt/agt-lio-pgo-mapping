@@ -346,6 +346,7 @@ bool ParameterLoader::write(const std::string &path,
       return false;
     }
     stream << emitter.c_str() << '\n';
+    stream.close();
     if (!stream.good()) {
       if (error) *error = "failed writing projection.yaml: " + path;
       return false;

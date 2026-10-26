@@ -30,6 +30,7 @@ def parser():
     result.add_argument('--capabilities', action='store_true', help='Print supported adapters/processors as JSON; no ROS required')
     result.add_argument('--backend', default=None,
                         help='mapping backend profile (default: fast_livo2_lio; FAST-LIO2 is disabled)')
+    result.add_argument('--backend-profile', help='Mounted complete FAST-LIVO2 profile: native config path/hash, source revision and frame extrinsics')
     result.add_argument('--lidar-topic', default='auto', help='CustomMsg topic, default: auto-detect unique stream')
     result.add_argument('--imu-topic', default='auto', help='Imu topic, default: auto-detect unique stream')
     rviz = result.add_mutually_exclusive_group()
@@ -51,7 +52,7 @@ def parser():
                       help='Map from the connected MID360 instead of a bag; always records a raw bag')
     live.add_argument('--robot', choices=('bunker_v1', 'yhs_v1'), default='bunker_v1',
                       help='live sensor owner; YHS requires an explicit YHS IP config and never starts a chassis')
-    live.add_argument('--fastlio-config', help='Mounted measured FAST-LIO2 calibration YAML; no image rebuild')
+    live.add_argument('--fastlio-config', help=argparse.SUPPRESS)
     live.add_argument('--livox-config', help='livox_ros_driver2 MID360 JSON (YHS: REQUIRED; no Bunker default)')
     live.add_argument('--publish-freq', type=float, default=10.0, help='Livox publish frequency Hz (5/10/20/50)')
     live.add_argument('--frame-id', default='livox_frame', help='Livox driver frame_id')
@@ -93,12 +94,10 @@ def _live_plan(args, workspace, setup, ros_setup, start_rviz, backend_id):
         'startup_timeout': args.startup_timeout, 'export_timeout': args.export_timeout,
         'drain_seconds': args.drain_seconds,
         'mapping_backend': backend_id,
+        'backend_profile_source_sha256': getattr(args, 'backend_profile_source_sha256', ''),
     }
-    if args.fastlio_config:
-        lio = Path(args.fastlio_config).expanduser().resolve()
-        if not lio.is_file():
-            raise PreflightError(f'FAST-LIO2 configuration missing: {lio}')
-        parameters['fastlio_config'] = str(lio)
+    if args.backend_profile:
+        parameters['backend_profile'] = str(Path(args.backend_profile).expanduser().resolve())
     launch_file = ('mapping_live_yhs_mid360.launch.py' if args.robot == 'yhs_v1'
                    else 'mapping_live_mid360.launch.py')
     command = ['ros2', 'launch', 'agt_mapping_bringup', launch_file]
@@ -138,11 +137,20 @@ def _launch(repository, ros_setup, backend_setup, setup, command, environment):
 
 
 def _backend_setup(profile):
+    if profile['backend'].get('setup_path'):
+        return Path(profile['backend']['setup_path']).expanduser().resolve()
     source = Path(profile['backend']['source_path']).expanduser().resolve()
     repository = source
     while repository != repository.parent and not (repository / '.git').exists():
         repository = repository.parent
     if not (repository / '.git').exists():
+        # A read-only dry-run can describe the recorded installed layout on a
+        # machine without the backend checkout. Execution still checks the setup
+        # file and launch still verifies every source/config dependency.
+        for executable in profile['backend'].get('required_executables', []):
+            for parent in Path(executable).expanduser().parents:
+                if parent.name == 'install':
+                    return parent / 'setup.bash'
         raise PreflightError(f"Cannot locate FAST-LIVO2 workspace root from {source}")
     return repository / 'install' / 'setup.bash'
 
@@ -153,6 +161,8 @@ def main(argv=None):
     workspace = repository.parent.parent
     try:
         from .backend_registry import BackendSelectionError, PROFILE_DIR, resolve_backend
+        if args.fastlio_config:
+            raise PreflightError('--fastlio-config is retired; use --backend-profile with a complete FAST-LIVO2 profile')
         from .product_pipeline import (
             ProductPipelineError, apply_to_cli, capability_report, load_product_pipeline,
         )
@@ -170,8 +180,10 @@ def main(argv=None):
                 raise PreflightError(str(exc)) from exc
 
         try:
-            selected_profile = resolve_backend(args.backend, check_sources=False)
+            selected_profile = resolve_backend(args.backend, profile_path=args.backend_profile,
+                                               check_sources=bool(args.backend_profile))
             selected_backend = selected_profile['backend']['id']
+            args.backend_profile_source_sha256 = selected_profile['backend']['profile_origin_sha256']
         except BackendSelectionError as exc:
             raise PreflightError(str(exc)) from exc
         if selected_backend != 'fast_livo2_lio':
@@ -234,11 +246,14 @@ def main(argv=None):
             'bag_path': str(bag.path), 'output_dir': str(output),
             'lidar_topic': bag.lidar_topic, 'imu_topic': bag.imu_topic,
             'reference_mode': 'frontend', 'mapping_backend': selected_backend,
+            'backend_profile_source_sha256': args.backend_profile_source_sha256,
             'playback_rate': args.rate, 'start_rviz': start_rviz,
             'start_paused': args.start_paused, 'auto_export': not args.manual_export,
             'keep_open': args.keep_open, 'startup_timeout': args.startup_timeout,
             'export_timeout': args.export_timeout, 'drain_seconds': args.drain_seconds,
         }
+        if args.backend_profile:
+            parameters['backend_profile'] = str(Path(args.backend_profile).expanduser().resolve())
         command = ['ros2', 'launch', 'agt_mapping_bringup', 'mapping_v0.launch.py']
         command += [f'{key}:={str(value).lower() if isinstance(value, bool) else value}'
                     for key, value in parameters.items()]

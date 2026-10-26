@@ -1,5 +1,5 @@
 #include "ui/WorkflowPanel.hpp"
-#include "ui/UiLanguage.hpp"
+#include "ui/LocalizedUiText.hpp"
 
 #include <QCheckBox>
 #include <QDoubleSpinBox>
@@ -17,6 +17,12 @@
 #include <QVBoxLayout>
 
 namespace agt_map_studio {
+namespace {
+QString workflow_text(const QString &source, const QString &language) {
+  return localized_ui_text(source, language == QStringLiteral("zh_CN"));
+}
+}  // namespace
+
 
 WorkflowPanel::WorkflowPanel(QWidget *parent) : QWidget(parent) {
   auto *outer = new QVBoxLayout(this);
@@ -191,7 +197,7 @@ void WorkflowPanel::paint_badge(QLabel *badge, StageState state, bool applicable
       default: text = QStringLiteral("missing"); color = QStringLiteral("#757575"); break;
     }
   }
-  badge->setText(UiLanguage::display_text(text, language));
+  badge->setText(workflow_text(text, language));
   badge->setStyleSheet(QStringLiteral("QLabel { background: %1; color: white; border-radius: 6px; "
                                       "padding: 2px 6px; font-weight: bold; }").arg(color));
 }
@@ -201,12 +207,12 @@ void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
   has_last_session_ = true;
   last_tool_running_ = tool_running;
   if (session.empty()) {
-    source_label_->setText(UiLanguage::display_text(
+    source_label_->setText(workflow_text(
         QStringLiteral("No source loaded. Open a PCD or a mapping package."), display_language_));
   } else {
-    source_label_->setText(UiLanguage::display_text(QStringLiteral("Source: %1%2\nWork dir: %3"), display_language_)
+    source_label_->setText(workflow_text(QStringLiteral("Source: %1%2\nWork dir: %3"), display_language_)
                                .arg(session.source_pcd(),
-                                    UiLanguage::display_text(session.source_is_mapping_package()
+                                    workflow_text(session.source_is_mapping_package()
                                         ? QStringLiteral(" (mapping package)")
                                         : QStringLiteral(" (bare PCD)"), display_language_),
                                     session.work_dir()));
@@ -230,23 +236,23 @@ void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
     }
   }
   if (!session.has_3d_edits()) {
-    steps_[0].detail->setText(UiLanguage::display_text(
+    steps_[0].detail->setText(workflow_text(
         QStringLiteral("No 3D deletions yet: downstream steps use the source PCD."), display_language_));
   } else {
-    steps_[0].detail->setText(UiLanguage::display_text(QStringLiteral("Refinement rules -> %1"), display_language_)
+    steps_[0].detail->setText(workflow_text(QStringLiteral("Refinement rules -> %1"), display_language_)
                                   .arg(session.refinement_rules_path()));
   }
   if (!session.has_2d_edits()) {
-    steps_[3].detail->setText(UiLanguage::display_text(
+    steps_[3].detail->setText(workflow_text(
         QStringLiteral("No 2D edits yet: publish uses the generated navigation layers."), display_language_));
   } else {
-    steps_[3].detail->setText(UiLanguage::display_text(QStringLiteral("Patch YAML -> %1"), display_language_)
+    steps_[3].detail->setText(workflow_text(QStringLiteral("Patch YAML -> %1"), display_language_)
                                   .arg(session.navigation_patch_path()));
   }
   const QStringList reasons = session.blocking_reasons_for_publish();
   steps_[4].detail->setText(reasons.isEmpty()
-      ? UiLanguage::display_text(QStringLiteral("Ready to publish."), display_language_)
-      : UiLanguage::display_text(QStringLiteral("Blocked: %1"), display_language_)
+      ? workflow_text(QStringLiteral("Ready to publish."), display_language_)
+      : workflow_text(QStringLiteral("Blocked: %1"), display_language_)
             .arg(reasons.join(QStringLiteral("; "))));
   steps_[4].run->setEnabled(!tool_running && reasons.isEmpty());
   run_all_->setEnabled(!tool_running && !session.empty());
@@ -262,7 +268,7 @@ void WorkflowPanel::append_log(const QString &text) {
 void WorkflowPanel::clear_log() { log_->clear(); }
 
 void WorkflowPanel::set_progress(const QString &label, bool busy) {
-  progress_label_->setText(UiLanguage::display_text(label, display_language_));
+  progress_label_->setText(workflow_text(label, display_language_));
   progress_->setRange(0, busy ? 0 : 1);
   progress_->setValue(busy ? 0 : 1);
 }

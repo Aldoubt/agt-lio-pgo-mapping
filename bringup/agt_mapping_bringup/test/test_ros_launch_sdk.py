@@ -60,11 +60,13 @@ class RealLaunchSdkTests(unittest.TestCase):
                     {'topic_metadata': {'name': '/livox/imu', 'type': 'sensor_msgs/msg/Imu'},
                      'message_count': 1},
                 ]}}))
+            from backend_fixture import backend_fixture
+            fixture_profile = backend_fixture(root)
             context = LaunchContext()
             context.launch_configurations.update({
                 'bag_path': str(bag), 'output_dir': str(root / 'output'),
                 'lidar_topic': 'auto', 'imu_topic': 'auto', 'playback_rate': '1.0',
-                'reference_mode': 'frontend', 'mapping_backend': '',
+                'reference_mode': 'frontend', 'mapping_backend': '', 'backend_profile_source_sha256': '', 'backend_profile': str(fixture_profile), 'fastlio_config': '',
                 'startup_timeout': '45', 'export_timeout': '180', 'drain_seconds': '3',
                 'start_rviz': 'false', 'start_paused': 'false',
                 'auto_export': 'true', 'keep_open': 'false',

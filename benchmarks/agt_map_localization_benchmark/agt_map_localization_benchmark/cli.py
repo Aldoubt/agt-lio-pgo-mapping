@@ -29,30 +29,36 @@ from .coverage_sampling import (COVERAGE_CELL_M, COVERAGE_FRACTIONS,
 from .synthetic import run_synthetic
 
 
-PARENT = Path('/home/yangxuan/ros2_ws/experiments/artifacts/output/'
-              'live_mid360_20260922_143427_fixed_replay/map_package')
-CONFIDENCE = Path('/home/yangxuan/ros2_ws/experiments/'
-                  'agt_spatial_confidence_20260927/real_derivative')
-GEOMETRY = Path('/home/yangxuan/ros2_ws/experiments/'
-                'agt_spatial_geometry_phase3a_20260927/real_geometry_evidence')
-REVIEWED = Path('/home/yangxuan/ros2_ws/experiments/'
-                'agt_spatial_confidence_phase2b_20260927/studio_reviewed_agent_final')
-ROS_INSTALL = Path('/home/yangxuan/ros2_ws/install')
-EXPERIMENTS = Path('/home/yangxuan/ros2_ws/experiments/'
-                   'agt_map_localization_phase3c_20260928/runs')
+WORKSPACE = Path.home() / 'ros2_ws'
+PARENT = WORKSPACE / 'experiments/artifacts/output/live_mid360_20260922_143427_fixed_replay/map_package'
+CONFIDENCE = WORKSPACE / 'experiments/agt_spatial_confidence_20260927/real_derivative'
+GEOMETRY = WORKSPACE / 'experiments/agt_spatial_geometry_phase3a_20260927/real_geometry_evidence'
+REVIEWED = WORKSPACE / 'experiments/agt_spatial_confidence_phase2b_20260927/studio_reviewed_agent_final'
+ROS_INSTALL = WORKSPACE / 'install'
+NAVIGATION_SOURCE = WORKSPACE / 'src/agt_navigation_v3'
+# Keep the original protocol/default directory; Phase 3C is an explicit opt-in.
+EXPERIMENTS = WORKSPACE / 'experiments/agt_map_localization_phase3b_20260927/runs'
+PHASE3C_EXPERIMENTS = WORKSPACE / 'experiments/agt_map_localization_phase3c_20260928/runs'
 SOURCE = Path(__file__).resolve().parents[2]  # agt_mapping_framework/benchmarks
 
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description='Offline, non-publishing localization A/B; never overwrite an old run.')
+    p.add_argument('--study', choices=('phase3b', 'phase3c'), default='phase3b',
+                   help='protocol: original Phase 3B (default), or opt-in Phase 3C coverage sampling')
     p.add_argument('--profile', choices=('smoke', 'standard'), required=True)
     p.add_argument('--run-id', required=True, help='unique output directory name, e.g. smoke_20260927_01')
-    p.add_argument('--output-root', type=Path, default=EXPERIMENTS)
+    p.add_argument('--output-root', type=Path,
+                   help='isolated run directory parent; defaults to the selected study experiment tree')
     p.add_argument('--map-package', type=Path, default=PARENT)
     p.add_argument('--confidence-source', type=Path, default=CONFIDENCE)
     p.add_argument('--geometry-source', type=Path, default=GEOMETRY)
     p.add_argument('--reviewed-source', type=Path, default=REVIEWED)
     p.add_argument('--ros-install', type=Path, default=ROS_INSTALL)
+    p.add_argument('--navigation-source', type=Path, default=NAVIGATION_SOURCE,
+                   help='read-only navigation repository containing navigation/localization')
+    p.add_argument('--dependency-source-root', type=Path,
+                   help='read-only parent of external/{small_gicp,3d_bbs}; defaults to navigation-source parent')
     p.add_argument('--global-backend', choices=('auto', 'off'), default='auto')
     p.add_argument('--smoke-run', type=Path, help='required STANDARD predecessor manifest directory')
     return p
@@ -88,8 +94,8 @@ def _benchmark_source_hashes() -> dict[str, str]:
     return {str(path.relative_to(package)): sha256_file(path) for path in paths}
 
 
-def _algorithm_source_hashes() -> dict[str, str]:
-    src = Path('/home/yangxuan/ros2_ws/src/agt_navigation_v3/navigation/localization')
+def _algorithm_source_hashes(navigation_source: Path = NAVIGATION_SOURCE) -> dict[str, str]:
+    src = Path(navigation_source).expanduser().resolve() / 'navigation/localization'
     files = [
         src / 'agt_global_relocalization_native/src/map_gicp_tracker.cpp',
         src / 'agt_global_relocalization_native/src/candidate_bbs_gicp_localizer.cpp',
@@ -99,6 +105,43 @@ def _algorithm_source_hashes() -> dict[str, str]:
         src / 'agt_global_relocalization/config/global_relocalization.yaml',
     ]
     return {str(path): sha256_file(path) for path in files}
+
+
+def _validate_output_root(root: Path, protected_paths) -> Path:
+    """Resolve symlinks and keep all writes disjoint from immutable inputs/code.
+
+    Output roots are configurable. A new run directory is still created with
+    exist_ok=False; this check also prevents an output ancestor from containing
+    an input under a later chosen run ID.
+    """
+    root = Path(root).expanduser().resolve()
+    for path in protected_paths:
+        if path is None:
+            continue
+        protected = Path(path).expanduser().resolve()
+        if root.is_relative_to(protected) or protected.is_relative_to(root):
+            raise ValueError(f'output must be disjoint from protected input/source/runtime: {protected}')
+    return root
+
+
+def _manifest_study(manifest: dict) -> str:
+    """Read pre-mode Phase 3B/3C manifests without reinterpreting their schema."""
+    schema = manifest.get('schema_version')
+    inferred = 'phase3c' if schema == 3 else 'phase3b'
+    study = manifest.get('study', inferred)
+    if study not in ('phase3b', 'phase3c') or (schema is not None and
+            schema != (3 if study == 'phase3c' else 2)):
+        raise ValueError('SMOKE study/schema mismatch')
+    return study
+
+
+def _coverage_parameters() -> dict:
+    return {'coverage_cell_m': COVERAGE_CELL_M,
+            'coverage_fractions_predeclared': list(COVERAGE_FRACTIONS),
+            'coverage_min_points_per_cell': MIN_POINTS_PER_CELL,
+            'coverage_min_voxels_per_cell': MIN_VOXELS_PER_CELL,
+            'native_min_map_points': NATIVE_MIN_MAP_POINTS,
+            'native_min_map_points_source': NATIVE_MIN_MAP_POINTS_SOURCE}
 
 
 def _profile_plan(profile: str) -> dict:
@@ -125,6 +168,12 @@ def _check_standard_predecessor(args: argparse.Namespace, source_hashes: dict,
     file = args.smoke_run / 'manifest.json'
     smoke = json.loads(file.read_text())
     settings = smoke.get('parameters', {})
+    study = getattr(args, 'study', 'phase3b')
+    if _manifest_study(smoke) != study:
+        raise ValueError('SMOKE study differs; Phase 3B and Phase 3C predecessors are not interchangeable')
+    coverage_matches = study != 'phase3c' or all(
+        settings.get(name) == expected for name, expected in _coverage_parameters().items()
+        if name.startswith('coverage_'))
     if (smoke.get('status') != 'COMPLETED' or smoke.get('profile') != 'smoke'
             or smoke.get('source_sha256_before') != source_hashes
             or smoke.get('source_sha256_after') != source_hashes
@@ -137,10 +186,7 @@ def _check_standard_predecessor(args: argparse.Namespace, source_hashes: dict,
             or settings.get('success_criteria_exploratory') != SUCCESS_RULES
             or settings.get('qt_quantile_sweep_predeclared') != list(SWEEP_QUANTILES)
             or settings.get('control_seed') != CONTROL_SEED
-            or settings.get('coverage_cell_m') != COVERAGE_CELL_M
-            or settings.get('coverage_fractions_predeclared') != list(COVERAGE_FRACTIONS)
-            or settings.get('coverage_min_points_per_cell') != MIN_POINTS_PER_CELL
-            or settings.get('coverage_min_voxels_per_cell') != MIN_VOXELS_PER_CELL
+            or not coverage_matches
             or smoke.get('synthetic', {}).get('local_cases', 0) < 15
             or smoke.get('real_trial_count', 0) < 1):
         raise ValueError('SMOKE predecessor incomplete or inputs/code/algorithms/settings differ')
@@ -151,8 +197,22 @@ def _candidate_record(c) -> dict:
     return {'name': c.name, 'path': str(c.path), 'detail': c.detail, 'coverage': c.coverage}
 
 
+def _phase3c_features(study, data, candidate, baseline_b, coords, lookup, found, ref, geom):
+    if study != 'phase3c':
+        return {}
+    support = local_crop_support(
+        candidate.indices, baseline_b, coords, lookup, found, data.geom, ref.t,
+        radius_xy=LOCAL_SETTINGS['radius_xy_m'],
+        half_height=LOCAL_SETTINGS['half_height_m'])
+    eps = data.geom_meta['parameters']['epsilon']
+    return {'local_support': support, 'quality_features': localization_quality_features(
+        geom, support, translation_epsilon=float(eps['translation']),
+        rotation_epsilon_m2=float(eps['rotation_m2']))}
+
+
 def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
               plan: dict, manifest: dict, *, use_global: bool) -> tuple[list[dict], dict, list[dict]]:
+    study = manifest.get('study', 'phase3b')
     base = run / 'real'
     base.mkdir()
     results = run / 'results.jsonl'
@@ -174,7 +234,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                 frame_ids = set(range(c - f // 2, c + f // 2 + 1))
                 if tier == 'tier1' and frame_ids.intersection(split.map_indices):
                     raise AssertionError('Tier1 query frames overlap candidate map subset')
-        selected, raw = make_candidates(data, split.map_indices, stage / 'candidates')
+        selected, raw = make_candidates(data, split.map_indices, stage / 'candidates', study=study)
         coords, lookup, found = raw['points'], raw['lookups'], raw['found']
         baseline_b = raw['baseline_B_indices']
         for entry in raw['coverage_field']:
@@ -240,14 +300,8 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                     geom = query_geometry(data, coords, lookup, found, candidate.indices, ref.t,
                                           radius_xy=LOCAL_SETTINGS['radius_xy_m'],
                                           half_height=LOCAL_SETTINGS['half_height_m'])
-                    support = local_crop_support(
-                        candidate.indices, baseline_b, coords, lookup, found, data.geom, ref.t,
-                        radius_xy=LOCAL_SETTINGS['radius_xy_m'],
-                        half_height=LOCAL_SETTINGS['half_height_m'])
-                    eps = data.geom_meta['parameters']['epsilon']
-                    quality = localization_quality_features(
-                        geom, support, translation_epsilon=float(eps['translation']),
-                        rotation_epsilon_m2=float(eps['rotation_m2']))
+                    features = _phase3c_features(study, data, candidate, baseline_b,
+                                                coords, lookup, found, ref, geom)
                     for name in settings['scenario_names']:
                         scenario = scenario_map[name]
                         t, quat = initial_pose(ref.t, ref.quat_xyzw, scenario)
@@ -268,8 +322,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                                'query_pcd': query, 'candidate_pcd': str(candidate.path),
                                'reference_pose': ref_pose, 'initial_pose': pose_record(t, quat),
                                'perturbation': scenario, 'native': native_result,
-                               'geometry': geom, 'local_support': support,
-                               'quality_features': quality, 'weak_alignment': recovery,
+                               'geometry': geom, 'weak_alignment': recovery, **features,
                                **measure_pose(ref_pose, native_result)}
                         row['failure_code'] = classify_failure(row)
                         append(row)
@@ -298,14 +351,8 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                     ref = data.poses[center]
                     ref_pose = pose_record(ref.t, ref.quat_xyzw)
                     geom = query_geometry(data, coords, lookup, found, candidate.indices, ref.t)
-                    support = local_crop_support(
-                        candidate.indices, baseline_b, coords, lookup, found, data.geom, ref.t,
-                        radius_xy=LOCAL_SETTINGS['radius_xy_m'],
-                        half_height=LOCAL_SETTINGS['half_height_m'])
-                    eps = data.geom_meta['parameters']['epsilon']
-                    quality = localization_quality_features(
-                        geom, support, translation_epsilon=float(eps['translation']),
-                        rotation_epsilon_m2=float(eps['rotation_m2']))
+                    features = _phase3c_features(study, data, candidate, baseline_b,
+                                                coords, lookup, found, ref, geom)
                     for frames in plan['global']['frames']:
                         query = queries[f'kf{center:03d}_f{frames}']['path']
                         native_result = invoke(global_command(native.paths['candidate_bbs_gicp_localizer'],
@@ -318,7 +365,7 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
                                'query_pcd': query, 'candidate_pcd': str(candidate.path),
                                'reference_pose': ref_pose, 'initial_pose': None,
                                'perturbation': None, 'native': native_result, 'geometry': geom,
-                               'local_support': support, 'quality_features': quality,
+                               **features,
                                'weak_alignment': alignment_and_recovery(
                                    ref.t, ref.t, np.array([native_result['pose'][k] for k in ('x', 'y', 'z')])
                                    if native_result['pose'] else None, geom, 0),
@@ -336,27 +383,35 @@ def _run_real(run: Path, data: PgoEvidence, native: NativePrograms,
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     safe_run_id(args.run_id)
+    args.navigation_source = args.navigation_source.expanduser().resolve()
+    dependency_source = (args.dependency_source_root or args.navigation_source.parent).expanduser().resolve()
+    output_root = args.output_root or (PHASE3C_EXPERIMENTS if args.study == 'phase3c' else EXPERIMENTS)
+    try:
+        root = _validate_output_root(output_root, (
+            args.map_package, args.confidence_source, args.geometry_source, args.reviewed_source,
+            args.ros_install, args.ros_install.expanduser().resolve().parent / '.agt_native',
+            args.navigation_source,
+            dependency_source / 'external/small_gicp', dependency_source / 'external/3d_bbs',
+            Path(__file__).resolve().parents[3]))
+        # SMOKE and STANDARD normally share an output parent. Protect the
+        # predecessor against the concrete new run, not their common parent.
+        _validate_output_root(root / args.run_id, (args.smoke_run,))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if not args.map_package.is_dir() or not args.geometry_source.is_dir():
         raise SystemExit('missing verified PGO/geometry source; no run created')
     native = NativePrograms.discover(args.ros_install)
-    dependencies = dependency_fingerprints(args.ros_install, Path(__file__).resolve().parents[3].parent)
+    dependencies = dependency_fingerprints(args.ros_install, dependency_source)
     if not native.local_ready:
         raise SystemExit('runtime map_gicp_tracker is absent; LOCAL cannot use the actual implementation')
     data = PgoEvidence(args.map_package, args.confidence_source, args.geometry_source,
                        args.reviewed_source if args.reviewed_source.is_dir() else None)
     digests = data.validate_sources()
     code_hashes = _benchmark_source_hashes()
-    algorithm_hashes = _algorithm_source_hashes()
+    algorithm_hashes = _algorithm_source_hashes(args.navigation_source)
     predecessor = _check_standard_predecessor(
         args, digests, code_hashes, algorithm_hashes, native.sha256, dependencies)
     use_global = args.global_backend != 'off' and native.global_ready
-    root = args.output_root.resolve()
-    # This tool is never allowed to write to an input, source checkout,
-    # installed runtime, or arbitrary production/active map. Even a mistakenly
-    # supplied --output-root must remain in the dedicated experiment tree.
-    experiment_root = EXPERIMENTS.parent.resolve()
-    if root.parent != experiment_root:
-        raise SystemExit('--output-root must be a direct child of the dedicated Phase 3C experiment root')
     root.mkdir(parents=True, exist_ok=True)
     run = root / args.run_id
     if run.exists():
@@ -364,12 +419,15 @@ def main(argv: list[str] | None = None) -> int:
     run.mkdir(mode=0o755)
     plan = _profile_plan(args.profile)
     manifest = {
-        'schema_version': 3, 'status': 'IN_PROGRESS',
+        'schema_version': 3 if args.study == 'phase3c' else 2, 'status': 'IN_PROGRESS',
         'created_utc': datetime.now(timezone.utc).isoformat(),
-        'run_id': args.run_id, 'profile': args.profile,
+        'run_id': args.run_id, 'profile': args.profile, 'study': args.study,
         'offline_only': True, 'publish_production_map': False,
         'mapping_source_git': _source_version(Path(__file__).resolve().parents[3]),
-        'navigation_source_git': _source_version(Path('/home/yangxuan/ros2_ws/src/agt_navigation_v3')),
+        'navigation_source_git': _source_version(args.navigation_source),
+        'runtime_paths': {'navigation_source': str(args.navigation_source),
+                          'ros_install': str(args.ros_install.resolve()),
+                          'dependency_source_root': str(dependency_source)},
         'native_executable_sha256': native.sha256,
         'linked_registration_dependencies_before': dependencies,
         'linked_registration_dependencies_after': None,
@@ -386,18 +444,15 @@ def main(argv: list[str] | None = None) -> int:
             'case_failure_codes': FAILURE_CODES,
             'qt_quantile_sweep_predeclared': SWEEP_QUANTILES,
             'control_seed': CONTROL_SEED,
-            'coverage_cell_m': COVERAGE_CELL_M,
-            'coverage_fractions_predeclared': list(COVERAGE_FRACTIONS),
-            'coverage_min_points_per_cell': MIN_POINTS_PER_CELL,
-            'coverage_min_voxels_per_cell': MIN_VOXELS_PER_CELL,
-            'native_min_map_points': NATIVE_MIN_MAP_POINTS,
-            'native_min_map_points_source': NATIVE_MIN_MAP_POINTS_SOURCE,
+            **(_coverage_parameters() if args.study == 'phase3c' else {}),
             'map_subset_rule': 'within 30m of fixed optimized PGO centers, i%3!=2; '
                                'nearest 96 patches per center; Tier1 holds out every ±2 query patch; '
                                'oracle ROI bias, offline resource control only',
-            'candidate_selection': 'A raw, B V1 stable, C reviewed stable, legacy global Qt negative '
-                                   'control, plus B-derived coverage-preserving Qt/random/uniform '
-                                   'samplers with the same 1m XY cell set and exact per-cell quota',
+            'candidate_selection': ('A raw, B V1 stable, C reviewed stable, D=B&valid Qt>=quantile; '
+                                    'B-matched random and 1m XY voxel-stratified controls' +
+                                    ('; plus B-derived coverage-preserving Qt/random/uniform '
+                                     'samplers with the same 1m XY cell set and exact per-cell quota'
+                                     if args.study == 'phase3c' else '')),
             'reference_frame': 'optimized_PGO_pose T_map_body, not absolute ground truth',
             'query_accumulation': 'inverse(T_map_body_ref)*T_map_body_i applied to body patch i',
         },
@@ -408,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
             'FULL': 'profile not supported; explicit user approval required',
             'online_robot_nav_tf': 'offline CLI only, no ROS node / map->odom / Guardian / robot',
             'negative_session_false_relocation_rate': 'no verified independent negative-session query',
-            'confidence_v2_or_product_threshold': 'forbidden in Phase 3C; evidence remains experimental',
+            'confidence_v2_or_product_threshold': 'not part of this study; evidence remains experimental',
         },
     }
     if data.rev is None:
@@ -424,10 +479,10 @@ def main(argv: list[str] | None = None) -> int:
         final_digests = data.validate_sources()
         if final_digests != digests:
             raise RuntimeError('input source bytes changed during benchmark; discard this run')
-        if (_algorithm_source_hashes() != manifest['algorithm_source_sha256']
+        if (_algorithm_source_hashes(args.navigation_source) != manifest['algorithm_source_sha256']
                 or native.sha256 != NativePrograms.discover(args.ros_install).sha256
                 or dependencies != dependency_fingerprints(
-                    args.ros_install, Path(__file__).resolve().parents[3].parent)):
+                    args.ros_install, dependency_source)):
             raise RuntimeError('native algorithm sources/binaries/linked dependencies changed during benchmark')
         manifest['linked_registration_dependencies_after'] = dependencies
         code_after = _benchmark_source_hashes()
@@ -438,13 +493,14 @@ def main(argv: list[str] | None = None) -> int:
         manifest['real_trial_count'] = len(rows)
         manifest['status'] = 'COMPLETED'
         write_outputs(run, rows, candidate_meta, manifest)
-        phase3c = write_phase3c_outputs(run, rows, coverage_rows, candidate_meta)
-        manifest['phase3c_analysis'] = {
-            'summary': 'coverage_geometry_summary.json',
-            'report': 'coverage_geometry_report.md',
-            'coverage_field': 'coverage_field.csv',
-            'semantics': phase3c['semantics'],
-        }
+        if args.study == 'phase3c':
+            phase3c = write_phase3c_outputs(run, rows, coverage_rows, candidate_meta)
+            manifest['phase3c_analysis'] = {
+                'summary': 'coverage_geometry_summary.json',
+                'report': 'coverage_geometry_report.md',
+                'coverage_field': 'coverage_field.csv',
+                'semantics': phase3c['semantics'],
+            }
         write_json(run / 'manifest.json', manifest)
         print(f'BENCHMARK COMPLETED: {run} ({len(rows)} real registrations)', flush=True)
         return 0

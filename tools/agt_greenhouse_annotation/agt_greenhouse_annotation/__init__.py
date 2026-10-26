@@ -37,4 +37,7 @@ from .agricultural_aisle_graph import (
     derive_agricultural_aisle_graph, write_agricultural_aisle_graph,
 )
 
-from .review_3d import deterministic_display_sample
+def deterministic_display_sample(*args, **kwargs):
+    """Load the optional viewer only when its display helper is requested."""
+    from .review_3d import deterministic_display_sample as sample
+    return sample(*args, **kwargs)

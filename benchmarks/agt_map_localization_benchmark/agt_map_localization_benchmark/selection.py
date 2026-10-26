@@ -72,13 +72,16 @@ def voxel_round_robin(indices: np.ndarray, coords: np.ndarray, count: int, seed:
 
 
 def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Path,
-                    *, controls_all_quantiles: bool = True) -> tuple[list[Candidate], dict]:
-    """Build Phase 3B negative controls plus Phase 3C coverage-preserving maps.
+                    *, controls_all_quantiles: bool = True,
+                    study: str = 'phase3b') -> tuple[list[Candidate], dict]:
+    """Build original Phase 3B candidates, optionally extended for Phase 3C.
 
     All maps use ONLY the supplied map-index slices of the immutable PGO map.
     B/C are filtered *raw map-subset points* using verified V1/reviewed voxel
     predicates. Phase 3C coverage candidates all start from B_AUTO_STABLE.
     """
+    if study not in ('phase3b', 'phase3c'):
+        raise ValueError('study must be phase3b or phase3c')
     points, intensity = data.raw_map_subset(map_indices)
     keys = point_keys(points, data.voxel_size)
     lookup, found = lookup_sorted_keys(data.keys, keys)
@@ -103,7 +106,7 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
         dest = output / f'{name}.pcd'
         write_pcd(dest, points[chosen], intensity[chosen])
         stats = spatial_coverage(points[chosen], raw_cells, raw_xyz_cells)
-        if name != 'A_RAW':
+        if study == 'phase3c' and name != 'A_RAW':
             stats.update(cell_distribution(chosen, points, b, cell_size_m=COVERAGE_CELL_M))
         stats.update({'pcd_sha256': sha256_file(dest),
                       'source_map_keyframe_count': len(map_indices)})
@@ -134,11 +137,6 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
         'cutoffs': {},
         'control_source': 'B_AUTO_STABLE',
         'control_seed': CONTROL_SEED,
-        'coverage_grid_xy_m': COVERAGE_CELL_M,
-        'coverage_fractions_predeclared': list(COVERAGE_FRACTIONS),
-        'coverage_min_points_per_cell': MIN_POINTS_PER_CELL,
-        'coverage_min_voxels_per_cell': MIN_VOXELS_PER_CELL,
-        'coverage_candidates': {},
     }
     for q, cutoff in zip(SWEEP_QUANTILES, cuts):
         label = f'q{int(q * 100):02d}'
@@ -160,8 +158,14 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
                 {'criterion': 'legacy global 1m-XY stratified equal-point subset of B',
                  'target': f'D_QT_{label}', 'seed': CONTROL_SEED + 1000 + int(q * 100)})
 
-    # Phase 3C: lock coverage-cell set AND exact point quota per source cell.
-    for fraction in COVERAGE_FRACTIONS:
+    # Phase 3C is opt-in: preserve original candidate bytes/counts in Phase 3B.
+    if study == 'phase3c':
+        extra.update({'coverage_grid_xy_m': COVERAGE_CELL_M,
+                      'coverage_fractions_predeclared': list(COVERAGE_FRACTIONS),
+                      'coverage_min_points_per_cell': MIN_POINTS_PER_CELL,
+                      'coverage_min_voxels_per_cell': MIN_VOXELS_PER_CELL,
+                      'coverage_candidates': {}})
+    for fraction in COVERAGE_FRACTIONS if study == 'phase3c' else ():
         label = f'f{int(fraction * 100):02d}'
         subsets, meta = coverage_matched_subsets(
             b, points, lookup, data.geom, fraction,
@@ -181,8 +185,8 @@ def make_candidates(data: PgoEvidence, map_indices: tuple[int, ...], output: Pat
              'target': f'D_COVERAGE_QT_{label}', **meta})
 
     candidate_indices = {candidate.name: candidate.indices for candidate in cands}
-    field = coverage_field_rows(points, b, candidate_indices, lookup, data.geom,
-                                cell_size_m=COVERAGE_CELL_M)
+    field = (coverage_field_rows(points, b, candidate_indices, lookup, data.geom,
+                                cell_size_m=COVERAGE_CELL_M) if study == 'phase3c' else [])
     return cands, {'points': points, 'lookups': lookup, 'found': found,
                    'voxel_keys': keys, 'baseline_B_indices': b,
                    'coverage_field': field, 'meta': extra}

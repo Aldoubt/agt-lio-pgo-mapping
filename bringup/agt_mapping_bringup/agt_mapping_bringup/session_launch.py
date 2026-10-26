@@ -10,7 +10,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-from .backend_registry import BackendSelectionError, PROFILE_DIR, resolve_backend
+from .backend_registry import BackendSelectionError, resolve_backend
+from .backend_snapshot import prepare_backend_snapshot
 from .preflight import inspect_bag, parse_bool, validate_number
 from .session_state import create_session, mark_session, playback_action
 from .session_lock import acquire_domain_lease
@@ -31,6 +32,7 @@ def launch_session(context):
     options = {
         'reference_mode': value('reference_mode'),
         'mapping_backend': value('mapping_backend').strip(),
+        'backend_profile': value('backend_profile').strip(),
         'playback_rate': validate_number(value('playback_rate'), 'playback_rate'),
         'startup_timeout': validate_number(value('startup_timeout'), 'startup_timeout'),
         'export_timeout': validate_number(value('export_timeout'), 'export_timeout'),
@@ -38,29 +40,37 @@ def launch_session(context):
         **{key: parse_bool(value(key)) for key in
            ('start_rviz', 'start_paused', 'auto_export', 'keep_open')},
     }
+    if value('fastlio_config').strip():
+        raise ValueError('fastlio_config is retired; use backend_profile with a validated FAST-LIVO2 profile')
     if options['export_timeout'] <= options['drain_seconds']:
         raise ValueError('export_timeout must exceed drain_seconds')
     if options['reference_mode'] != 'frontend':
         raise ValueError('only the verified frontend source-package mode is supported; PGO/FAST-LIO2 are disabled')
     try:
-        profile = resolve_backend(options['mapping_backend'] or None)
+        profile = resolve_backend(options['mapping_backend'] or None,
+                                  profile_path=options['backend_profile'] or None)
     except BackendSelectionError as exc:
         raise ValueError(str(exc)) from exc
     backend = profile['backend']
+    expected_profile_hash = value('backend_profile_source_sha256').strip()
+    if expected_profile_hash and backend['profile_origin_sha256'] != expected_profile_hash:
+        raise ValueError('backend profile changed after CLI preflight; rerun with the intended profile')
     options['mapping_backend'] = backend['id']
     sensor = profile['sensor']
     mapping = profile['mapping']
     if backend['id'] != 'fast_livo2_lio':
         raise ValueError(f"offline session launch does not yet support backend {backend['id']!r}")
     share = Path(get_package_share_directory('agt_mapping_bringup'))
+    snapshot = prepare_backend_snapshot(profile, output, lidar_topic=bag.lidar_topic,
+                                        imu_topic=bag.imu_topic, use_sim_time=True)
+    profile = snapshot.profile
+    backend, sensor, mapping = profile['backend'], profile['sensor'], profile['mapping']
+    options['backend_profile_sha256'] = snapshot.profile_sha256
+    options['backend_config_sha256'] = backend['config_sha256']
     text = lambda value: ParameterValue(str(value), value_type=str)
     nodes = [
         Node(package='fast_livo', executable='fastlivo_mapping', name='fastlivo_mapping', output='log',
-             parameters=[backend['config_path'], {
-                 'use_sim_time': True,
-                 'common.lid_topic': bag.lidar_topic,
-                 'common.imu_topic': bag.imu_topic,
-             }]),
+             parameters=[backend['config_path']]),
         Node(package='agt_mapping_frontend_adapter', executable='mapping_frontend_adapter_node',
              name='mapping_frontend_adapter', output='screen', parameters=[{
                  'use_sim_time': True, 'backend_id': backend['id'],
@@ -83,7 +93,8 @@ def launch_session(context):
         Node(package='agt_mapping_bringup', executable='frontend_map_exporter',
              name='frontend_map_exporter', output='screen', parameters=[{
                  'use_sim_time': True, 'output_dir': text(output), 'bag_path': str(bag.path),
-                 'profile_path': str(PROFILE_DIR / f"{backend['id']}.yaml"),
+                 'profile_path': str(snapshot.profile_path),
+                 'profile_sha256': snapshot.profile_sha256,
                  'input_lidar_topic': bag.lidar_topic, 'input_imu_topic': bag.imu_topic,
                  'keyframe_distance_m': float(mapping['keyframe_distance_m']),
                  'keyframe_rotation_deg': float(mapping['keyframe_rotation_deg']),
@@ -177,6 +188,7 @@ def launch_session(context):
     lease = acquire_domain_lease()
     try:
         create_session(output, bag, options)
+        snapshot.write()
     except Exception:
         lease.close()
         raise

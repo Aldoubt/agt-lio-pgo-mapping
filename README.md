@@ -1,29 +1,31 @@
 # AGT LIO–PGO Mapping
 
-## Product integration V1 — staged for cloud review
+## 产品整合：建图、研究、编辑与离线路线
 
-当前独立分支提供可选传感器输入、FAST-LIVO2 默认建图前端以及独立手动地图处理的显式配置；未验收的 Point-LIO、LIO-SAM、动态清理/地形/路线后端不会自动启动。详细见 [产品边界与命令](docs/product_mapping_architecture_v1.md) 和 [集成审计](docs/audits/mapping_product_integration_20261009.md)。
+当前代码树整合 FAST-LIVO2 建图、MapStudio 草稿/Study、空间覆盖研究、地图派生和温室覆盖路线。采集、研究、地图编辑与路线生成保持独立入口，未验收的后端不会自动启动。各分支来源、冲突取舍、本轮测试与未验证项见 [2026-10-26 整合记录](docs/audits/branch_consolidation_20261026.md)；产品配置见 [产品边界与命令](docs/product_mapping_architecture_v1.md)。
 
 ```bash
 bash scripts/run_mapping.sh --capabilities
 bash scripts/run_mapping.sh /path/to/bag --dry-run --product-config bringup/agt_mapping_bringup/config/product_pipeline.yaml
 ```
 
-这次仅迁入 Operator Workflow 的离线 Study CLI 与独立渲染抽样助手，原生 MapStudio GUI 尚未完成分支融合和真实界面验收。`main` 与原分支均未改变。
+MapStudio 增加独立 Study 对话框，复用既有 Query Set/Study CLI；保留地图草稿重开、结构标注、单查询 Top-K 和覆盖路线入口。显示抽样只影响视图，不改分析数据。Python offscreen 测试、原生 C++ 构建与真实显示器交互是分别验收的项目，不能互相替代。
+
+空间定位 benchmark 默认仍为 `--study phase3b`，几何/空间覆盖诊断通过 `--study phase3c` 显式选择。这里的 coverage 是研究采样覆盖，与机器人全覆盖作业路线不同。挂载传感器标定使用完整 `--backend-profile`，启动前冻结实际 FAST-LIVO2 配置；旧 `--fastlio-config` 不再作为可用入口。
 
 ## MapStudio Relocalization MVP — SOFTWARE PARTIAL
 
-Implemented: immutable keyframe blocks and index, evidence contracts, sparse offline GLOBAL/Top-K/GICP queries, candidate inspection and query/candidate overlays. The KF590 green-house run recorded a same-session `FALSE_ACCEPT` diagnostic. Reviewed row/headland freeze, row-middle/end/headland query coverage, a representative 20–50 query set, interactive close/reopen acceptance, independent localization ground truth, and the scientific conclusion remain incomplete. This is not production-ready.
+Implemented: immutable keyframe blocks and index, evidence contracts, sparse offline GLOBAL/Top-K/GICP queries, candidate inspection, reviewed row/headland freeze, manual and row-sampled Query Sets, and the Study authoring UI. Synthetic GUI save/close/reopen and real CLI authoring checks passed in this consolidation. The KF590 green-house run recorded a same-session `FALSE_ACCEPT` diagnostic. A representative real 20–50 query evaluation, independent localization ground truth, and the scientific conclusion remain incomplete. This is not production-ready.
 
 ROS 2 Humble 的三维 LiDAR 建图框架：用户指定默认 FAST-LIVO2 LIO-only（LiDAR+IMU，关闭视觉），支持明确选择其它已审核 source；关键帧分块不要求 PGO 优化。本项目工作流程不使用 FAST-LIO2，已有 legacy 代码仅保留历史兼容参照。
 
-**当前操作员建图入口已迁移为 FAST-LIVO2 LIO-only。** offline/live CLI 与 `mapping_v0` 使用 `fast_livo2_lio`、关闭视觉且不启动 PGO；运行时需加载 profile 指向的 FAST-LIVO2 backend overlay。`green-house` 全量回放和 source package 校验已通过；这只证明采集、导出和格式完整性，不证明地图几何质量或重定位正确性。PCD→PGM、交互编辑和 cold-start / mid-route-loss 配对诊断仍未由本轮验证。
+**当前操作员建图入口已迁移为 FAST-LIVO2 LIO-only。** offline/live CLI 与 `mapping_v0` 使用 `fast_livo2_lio`、关闭视觉且不启动 PGO；运行时需加载 profile 指向的 FAST-LIVO2 backend overlay。历史 `green-house` 全量回放和 source package 校验已通过，只证明当时的采集、导出和格式完整性。本轮通过合成数据验证了原生 PCL 栅格重投影和 Qt 交互草稿；新增启动快照后的真实录包回放、地图几何质量及 cold-start / mid-route-loss 配对诊断尚未验收。
 
 它面向多源建图与离线地图研究；导航运行时、在线控制和底盘执行属于导航/平台仓库。FAST-LIO2、PGO、HBA 和 Batch-LIO 保持为锁定版本的外部依赖。
 
 ## 当前需求与 AI 工作入口
 
-目标流程是多源输入 → 复用关键帧方法分块 → 离线重定位歧义分析/可视化/环境改造评估 → 导航地图与离线路线编辑 → 既有合同发布。MapStudio 与外部 HMI 是 authoring client；通用 HMI API 与分块资产化仍为待实现需求。温室覆盖路线的独立 authoring 入口见下文，不代表通用 AuthoringFacade 或导航执行已经实现。
+目标流程是多源输入 → 复用关键帧方法分块 → 离线重定位歧义分析/可视化/环境改造评估 → 导航地图与离线路线编辑 → 既有合同发布。已有不可变关键帧分块与证据资产；通用外部 HMI API 和统一任务编排仍待实现。温室覆盖路线的独立 authoring 入口见下文，不代表通用 AuthoringFacade 或导航执行已经实现。
 
 总体对照与阶段验收见 [需求计划](docs/map_task_asset_authoring_alignment_plan.md)，后续 AI 从 [最小任务阅读集](docs/ai_task_entrypoint.md) 进入；仓库规则见 [AGENTS.md](AGENTS.md)。[A0 验收](docs/contracts/a0_authoring_contract_acceptance.md) 当前为 PARTIAL，需求更新不自动启动 A1–A7。下文保留既有运行说明，历史测试数字不能替代当前验收。
 
@@ -39,6 +41,8 @@ agt_coverage_authoring plan --request /path/to/request.yaml --output /path/to/ne
 ```
 
 默认 ROS 后端使用独立离线 OpenNav/Smac 服务；显式 `reference` 后端用于无需 ROS 的有限解析候选比较，不能代替该后端或实车验收。`route_authoring` 在产品配置中仍默认禁用；设为 `manual` 只声明独立工具，不随建图 session 自动启动。输入、安装、MapStudio 操作与既有 READY Route 的发布边界见 [覆盖路线指南](docs/coverage_authoring.md)。
+
+Python 标注工具可把冻结的已审查拓扑导出为上述结构输入：`greenhouse_coverage_export --topology /path/to/topology.yaml --map-yaml /path/to/map.yaml --output /path/to/new-structure.geojson`。需要分别确认行道走廊、通行方向和作业边界；作物行参考线不会直接变成行车路径。非 `map` 坐标系还须显式给出并确认变换，选用地头也须指定已确认 ID。
 
 > MID-360 是 Livox 雷达。当前 **0.2.0 编排升级**已在共享目录对应的 Ubuntu 22.04 / ROS 2 Humble 宿主机完成 82 项自动化测试、完整基准录包回放及操作场景验证。MCP 的 Ubuntu 24.04 容器不是 ROS 执行环境。具体版本覆盖、测试安装层及剩余验收边界见 [宿主机测试报告](docs/mcp-host-validation.md)。
 

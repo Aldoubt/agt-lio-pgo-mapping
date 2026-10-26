@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 
 import numpy as np
-from shapely.geometry import LineString, Polygon
+from shapely.geometry import LineString, Polygon, shape
 
 from .topology import (REFERENCE_STATUS, labels_for_package, load_map_package,
                        load_topology, sha256_file)
@@ -95,6 +95,30 @@ def validate_topology(topology, package=None, annotation_path=None, labels_path=
                     errors.append(f'{identifier}: frozen physical geometry must be manually confirmed')
             except (ValueError, KeyError, TypeError) as exc:
                 errors.append(f'{identifier}: {exc}')
+    aisle_entries = entries_for('aisles')
+    aisle_ids = [item.get('id') for item in aisle_entries]
+    if any(not isinstance(i, str) or not i.strip() for i in aisle_ids) or len(aisle_ids) != len(set(aisle_ids)):
+        errors.append('aisles: IDs must be unique nonempty strings')
+    for item in aisle_entries:
+        try:
+            points = np.asarray(item.get('centerline'), dtype=float)
+            if points.ndim != 2 or points.shape[1] != 2 or len(points) < 2 or not np.isfinite(points).all():
+                raise ValueError('aisle needs finite XY vertices')
+            line = LineString(points)
+            if line.length <= 0 or not line.is_simple:
+                raise ValueError('aisle centerline must be simple with positive length')
+            if annotation.get('status') == 'frozen' and item.get('confidence') != 'confirmed':
+                raise ValueError('frozen aisle must be manually confirmed')
+            review = item.get('diagnostics', {}).get('coverage_review')
+            if review is not None:
+                corridor = shape(review.get('corridor', {}))
+                if (review.get('status') != 'CONFIRMED' or review.get('semantic_role') != 'traversable_aisle'
+                        or review.get('allowed_direction') not in ('along', 'against', 'bidirectional')
+                        or points.tolist() != review.get('centerline_xy')
+                        or corridor.geom_type != 'Polygon' or not corridor.is_valid or not corridor.covers(line)):
+                    raise ValueError('aisle corridor review is invalid or stale')
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            errors.append(f'{item.get("id", "UNKNOWN")}: {exc}')
     try:
         overlap_limit = float(settings.get('large_corridor_overlap_fraction', .2))
         if not math.isfinite(overlap_limit) or not 0 <= overlap_limit <= 1:
@@ -117,7 +141,7 @@ def validate_topology(topology, package=None, annotation_path=None, labels_path=
         errors.append('scene IDs must be unique nonempty strings')
     if any(isinstance(i, str) and any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in i) for i in scene_ids):
         errors.append('scene IDs must use ASCII letters, digits, _ or - for the existing benchmark')
-    if annotation.get('status') == 'frozen' and not topology.get('rows') and not topology.get('headlands'):
+    if annotation.get('status') == 'frozen' and not topology.get('rows') and not topology.get('headlands') and not topology.get('aisles'):
         errors.append('cannot freeze empty physical topology')
     try:
         package = package or load_map_package(source['map_package'])

@@ -205,6 +205,7 @@ class ReferenceEditorMixin:
         items = self.row_proposals if kind == 'row' else self.aisle_proposals
         item = items[index]
         diagnostics = {**dict(item.diagnostics), 'manually_edited': True, 'reference_reviewed': False}
+        diagnostics.pop('coverage_review', None)
         if kind == 'row':
             perpendicular = np.array([-item.direction_xy[1], item.direction_xy[0]])
             items[index] = replace(item, centerline_xy=line, lateral_v_m=float(np.median(xy@perpendicular)),

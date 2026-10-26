@@ -4,6 +4,63 @@ Reusable offline GUI for any **validated AGT map_package**, including a new gree
 
 Reference status is always `MANUAL_TOPOLOGY_PLUS_SAME_SESSION_FRONTEND_REFERENCE`, with `absolute_ground_truth: false`. A frontend map provides the coordinate system; the manually drawn topology identifies physical corridors. Its quality is limited by that map and the manual review.
 
+## Optional reviewed coverage export
+
+The workbench's GLOBAL_PROFILE / LOCAL_TRACKS / COMPARE output remains offline
+evidence. Its detected **crop-row reference centerlines are not vehicle paths**.
+Reference editing, checkboxes and the existing reference YAML/GeoJSON export are
+preserved; reference review alone never creates a coverage input.
+
+With `agt_coverage_authoring` installed, use **结构用于覆盖规划**:
+
+1. Confirm the neighboring crop-reference IDs for automatically extracted aisles.
+   A manually drawn aisle can instead be reviewed without inventing crop IDs.
+2. Select an aisle and choose **审查所选通行行道**. Enter its physical ID, inspect
+   the displayed constant-width polygon, select the allowed direction and confirm
+   that it is traversable aisle space. Editing that centerline clears this review.
+3. Draw and confirm a greenhouse boundary and the headlands needed at both ends.
+   The width polygon has flat ends at the centerline endpoints. Full vehicle
+   footprints extend beyond those endpoints: select sufficient reviewed headlands
+   during export. Missing space remains `AISLE_TOO_NARROW` in the planner; the
+   exporter does not enlarge geometry or mark unobserved ground free.
+4. Choose **冻结并导出覆盖结构**, select the reviewed map YAML, explicitly select
+   the headlands and confirm the structure. A non-`map` source needs a reviewed
+   `[dx, dy, yaw]` transformation, including when the transformation is zero.
+5. In a new version directory, the existing freeze core writes
+   `annotation/greenhouse_topology.yaml` with its normal sidecars. The sibling
+   `coverage_structure.geojson` is accepted by the existing coverage input loader.
+   Select this GeoJSON in MapStudio's coverage dialog. It is not a READY Route.
+
+The adapter exports only separately reviewed `aisles`, the boundary and explicitly
+selected headlands. Crop references stay in annotation provenance. Coverage source
+records bind the annotation bytes, map YAML and map image hashes, original frame
+and any reviewed transform. Inputs are snapshotted before reading and checked
+again before publication. Outputs cannot overwrite files, follow an existing
+output symlink, or be written inside a source map or frozen annotation directory.
+If an input changes after topology freeze, that valid frozen annotation can
+remain while coverage export fails; no GeoJSON is published with a false binding.
+
+Re-export an existing frozen annotation through the same adapter:
+
+```bash
+greenhouse_coverage_export \
+  --topology /path/to/version/annotation/greenhouse_topology.yaml \
+  --map-yaml /path/to/reviewed/map.yaml \
+  --output /path/to/new-coverage.geojson \
+  --map-from-reference 0 0 0 --confirm-transform-review \
+  --headland ENTRY_HEADLAND --headland EXIT_HEADLAND
+```
+
+Omit transform arguments only when the source already uses `map`. Headlands are
+connection/endpoint space, not automatically required work area. Area coverage
+uses the selected reviewed aisle corridor polygons and the request's operation
+width. Vehicle-specific collision, steering and execution compatibility checks
+remain in coverage authoring and the runtime. Source/map/model review is not
+physical-vehicle acceptance.
+
+Headless topology and coverage-adapter imports do not import Qt or Matplotlib;
+the interactive workbench requires the GUI dependencies below.
+
 ## Build and launch
 
 Existing Ubuntu 22.04 dependencies: PyQt5, Matplotlib, Open3D, NumPy, PyYAML, Shapely. This package adds no web framework, ROS node, or localization implementation.

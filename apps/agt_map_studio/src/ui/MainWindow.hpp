@@ -85,6 +85,7 @@ private slots:
   void import_run008_candidate_dialog();
   void propose_aisles_from_cloud();
   void open_coverage_authoring();
+  void open_study_workflow();
   void start_research_polygon();
   void finish_research_polygon();
   void toggle_research_edit(bool enabled);
@@ -186,9 +187,10 @@ private:
   void run_tool(const ToolInvocation &invocation, std::function<void(const ToolResult &)> on_done);
   void continue_queue();
   void fail_queue(const QString &message);
-  bool replay_2d_history(const std::vector<RefinementOperation> &history);
+  bool replay_2d_history(RefinementModel &model, const std::vector<RefinementOperation> &history, bool strict = false);
   bool load_navigation_dir_into_2d(const QString &directory, QString *error);
   bool write_pipeline_config(QString *error) const;
+  bool save_studio_draft(QString *error);
   void save_session_quietly();
 
   PointCloudViewer *viewer_ = nullptr;
@@ -324,6 +326,7 @@ private:
   QString review_base_map_;
   QString review_output_;
   bool review_mode_ = false;
+  QString unreplayed_3d_fingerprint_;
   QString research_project_path_;
   QString research_annotation_path_;
   QString research_candidate_roi_path_;

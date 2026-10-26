@@ -55,8 +55,11 @@ add_executable(map_viewer
   src/tools/ExternalToolRunner.cpp
   src/workflow/WorkflowSession.cpp
   src/ui/WorkflowPanel.cpp
+  src/ui/LocalizedUiText.cpp
   src/ui/CoverageAuthoringIO.cpp
   src/ui/CoverageAuthoringDialog.cpp
+  src/ui/StudyWorkflowDialog.cpp
+  src/ui/StudyResultMarkers.cpp
   src/ui/MainWindow.cpp
 )
 
@@ -90,6 +93,27 @@ install(DIRECTORY config
 )
 
 if(BUILD_TESTING)
+  # Explicit optional Qt GUI acceptance executable; includes the complete merged
+  # application, so draft replay is exercised through actual operator actions.
+  option(AGT_BUILD_GUI_ACCEPTANCE "Build the interactive Studio acceptance harness" OFF)
+  if(AGT_BUILD_GUI_ACCEPTANCE)
+    if(Qt6_FOUND)
+      find_package(Qt6 REQUIRED COMPONENTS Test)
+      set(QT_TEST_TARGET Qt6::Test)
+    else()
+      find_package(Qt5 REQUIRED COMPONENTS Test)
+      set(QT_TEST_TARGET Qt5::Test)
+    endif()
+    get_target_property(_gui_sources map_viewer SOURCES)
+    list(REMOVE_ITEM _gui_sources src/main.cpp)
+    add_executable(s1_gui_draft_acceptance test/test_s1_gui_draft_acceptance.cpp ${_gui_sources})
+    target_include_directories(s1_gui_draft_acceptance PRIVATE src ${PCL_INCLUDE_DIRS})
+    target_compile_definitions(s1_gui_draft_acceptance PRIVATE ${PCL_DEFINITIONS})
+    ament_target_dependencies(s1_gui_draft_acceptance ament_index_cpp)
+    target_link_libraries(s1_gui_draft_acceptance ${PCL_LIBRARIES} ${QT_WIDGETS_TARGET}
+      ${QT_OPENGL_TARGET} ${QT_TEST_TARGET} yaml-cpp agt_pcd2grid_exporter::agt_pcd2grid_exporter
+      agt_spatial_map_core::agt_spatial_map_core OpenGL::GL)
+  endif()
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_confidence_color
     test/test_confidence_color.cpp src/confidence/ConfidenceColor.cpp)
@@ -199,7 +223,23 @@ if(BUILD_TESTING)
   target_include_directories(coverage_authoring_dialog_smoke PRIVATE src)
   target_link_libraries(coverage_authoring_dialog_smoke ${QT_WIDGETS_TARGET} yaml-cpp)
 
-  # Ported independent render-cap policy; does not modify the current viewer.
+  add_executable(study_workflow_dialog_smoke
+    test/study_workflow_dialog_smoke.cpp src/ui/StudyWorkflowDialog.cpp src/tools/ExternalToolRunner.cpp)
+  target_include_directories(study_workflow_dialog_smoke PRIVATE src)
+  target_link_libraries(study_workflow_dialog_smoke ${QT_WIDGETS_TARGET} yaml-cpp)
+
+  ament_add_gtest(test_study_workflow_dialog
+    test/test_study_workflow_dialog.cpp src/ui/StudyWorkflowDialog.cpp src/tools/ExternalToolRunner.cpp)
+  target_include_directories(test_study_workflow_dialog PRIVATE src)
+  target_link_libraries(test_study_workflow_dialog ${QT_WIDGETS_TARGET} yaml-cpp)
+  set_tests_properties(test_study_workflow_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+  ament_add_gtest(test_study_result_markers
+    test/test_study_result_markers.cpp src/ui/StudyResultMarkers.cpp)
+  target_include_directories(test_study_result_markers PRIVATE src ${PCL_INCLUDE_DIRS})
+  target_link_libraries(test_study_result_markers ${QT_WIDGETS_TARGET} yaml-cpp Eigen3::Eigen)
+
+  # Deterministic render-only sampling; original edit/export indices stay intact.
   ament_add_gtest(test_point_cloud_render_sampler
     test/test_point_cloud_render_sampler.cpp)
   target_include_directories(test_point_cloud_render_sampler PRIVATE src)

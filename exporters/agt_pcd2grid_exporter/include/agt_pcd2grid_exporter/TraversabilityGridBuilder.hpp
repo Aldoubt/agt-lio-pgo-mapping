@@ -31,7 +31,13 @@ public:
                     const ProjectionParameters &parameters, OccupancyGrid *grid,
                     ProjectionStats *stats, TraversabilityStats *traversability,
                     std::string *error, const std::string &debug_dir,
-                    const std::string &cloud_output_dir);
+                    const std::string &cloud_output_dir,
+                    const std::string &cloud_subdirectory = ".",
+                    const std::string &projection_source = "");
+  // With cloud_output_dir, publish one new immutable review directory containing
+  // the navigation map, effective robot/projection parameters and cleanup clouds.
+  // The installed agt_mapping_artifacts integrity helper is required. Cloud
+  // files may be placed in a relative child directory within this transaction.
 };
 
 }  // namespace agt_pcd2grid_exporter

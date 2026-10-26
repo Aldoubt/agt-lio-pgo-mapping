@@ -20,5 +20,6 @@ setup(
         'greenhouse_topology_export = agt_greenhouse_annotation.export:main',
         'greenhouse_annotation_freeze = agt_greenhouse_annotation.freeze:main',
         'greenhouse_structure_workbench = agt_greenhouse_annotation.workbench:main',
+        'greenhouse_coverage_export = agt_greenhouse_annotation.coverage_export:main',
     ]},
 )

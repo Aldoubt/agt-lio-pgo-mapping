@@ -12,7 +12,9 @@
   <exec_depend>libpcl-dev</exec_depend>
   <build_depend>libyaml-cpp-dev</build_depend>
   <exec_depend>libyaml-cpp-dev</exec_depend>
+  <exec_depend>agt_mapping_artifacts</exec_depend>
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

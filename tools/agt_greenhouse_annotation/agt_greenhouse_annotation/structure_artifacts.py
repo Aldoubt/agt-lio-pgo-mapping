@@ -715,13 +715,9 @@ def load_proposal_artifact(path: str | Path) -> dict[str, Any]:
     return payload
 
 
-def freeze_accepted_proposals(topology: Mapping[str, Any], rows: Iterable[GlobalRowProposal],
-                              aisles: Iterable[AisleProposal], output_path: str | Path,
-                              *, package: Any | None = None) -> dict[str, Any]:
-    """Return a schema-v1 topology with reviewed proposal geometry; never overwrite."""
-    target = Path(output_path).expanduser().resolve()
-    if target.exists():
-        raise FileExistsError(f"frozen topology is immutable: {target}")
+def frozen_proposal_document(topology: Mapping[str, Any], rows: Iterable[GlobalRowProposal],
+                             aisles: Iterable[AisleProposal]) -> dict[str, Any]:
+    """Prepare the existing topology document without writing or publishing it."""
     result = _plain(dict(topology))
     if result.get("schema_version") != 1:
         raise ValueError("frozen topology must use existing schema v1")
@@ -741,7 +737,8 @@ def freeze_accepted_proposals(topology: Mapping[str, Any], rows: Iterable[Global
             "id": physical_id, "centerline": _plain(row.centerline_xy),
             "nominal_width_m": 2.0 * float(row.half_width_m),
             "direction": row.confirmed_direction, "confidence": "confirmed",
-            "proposal_source": {"auto_id": row.auto_id, "analysis_mode": row.source_mode},
+            "proposal_source": {"auto_id": row.auto_id, "analysis_mode": row.source_mode,
+                                "semantic_role": "crop_row_reference"},
             "proposal_diagnostics": _plain(row.diagnostics),
         })
     aisle_ids = {str(item.get("id")) for item in result.get("aisles", [])}
@@ -755,6 +752,9 @@ def freeze_accepted_proposals(topology: Mapping[str, Any], rows: Iterable[Global
                 raise ValueError("boundary aisle requires an explicit manual boundary anchor")
             if aisle.left_row_auto_id not in auto_to_physical:
                 raise ValueError("boundary aisle requires its adjacent row to be manually accepted")
+        elif aisle.aisle_kind == "REFERENCE":
+            if aisle.diagnostics.get("coverage_review", {}).get("status") != "CONFIRMED":
+                raise ValueError("manual reference aisle requires an explicit traversable corridor review")
         else:
             if aisle.left_row_auto_id not in auto_to_physical or aisle.right_row_auto_id not in auto_to_physical:
                 raise ValueError("formal aisle requires both adjacent rows to be manually accepted")
@@ -767,7 +767,7 @@ def freeze_accepted_proposals(topology: Mapping[str, Any], rows: Iterable[Global
             raise ValueError("accepted aisles require a unique manually assigned physical ID")
         aisle_ids.add(aisle_id)
         result.setdefault("aisles", []).append({
-            "id": aisle_id, "left_row_id": auto_to_physical[aisle.left_row_auto_id],
+            "id": aisle_id, "left_row_id": auto_to_physical.get(aisle.left_row_auto_id),
             "right_row_id": auto_to_physical.get(aisle.right_row_auto_id),
             "boundary_anchor_xy": _plain(aisle.boundary_anchor_xy),
             "centerline": _plain(aisle.centerline_xy), "confidence": "confirmed",
@@ -780,6 +780,17 @@ def freeze_accepted_proposals(topology: Mapping[str, Any], rows: Iterable[Global
     result["annotation"].update(status="frozen", manual_review_confirmed=True, frozen_at=_now())
     result["annotation"].setdefault("annotator", "manual")
     result["annotation"].setdefault("absolute_ground_truth", False)
+    return result
+
+
+def freeze_accepted_proposals(topology: Mapping[str, Any], rows: Iterable[GlobalRowProposal],
+                              aisles: Iterable[AisleProposal], output_path: str | Path,
+                              *, package: Any | None = None) -> dict[str, Any]:
+    """Return a schema-v1 topology with reviewed proposal geometry; never overwrite."""
+    target = Path(output_path).expanduser().resolve()
+    if target.exists():
+        raise FileExistsError(f"frozen topology is immutable: {target}")
+    result = frozen_proposal_document(topology, rows, aisles)
     if package is not None:
         # Existing schema-v1 validator and sidecar exporter remain authoritative.
         from .topology import save_topology

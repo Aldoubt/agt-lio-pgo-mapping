@@ -37,6 +37,8 @@ def reference_document(package, analysis, rows, aisles):
         'artifact_type': 'greenhouse_reference_lines',
         'reference_status': 'MANUALLY_REVIEWED_REFERENCE',
         'absolute_ground_truth': False,
+        'row_semantics': 'crop_row_reference_not_drive_path',
+        'aisle_semantics': 'reference_centerline_requires_separate_traversability_review',
         'map_package_hash': package.map_package_hash,
         'map_frame': package.map_frame,
         'analysis_hash': analysis.analysis_hash if analysis else None,
@@ -88,6 +90,7 @@ def export_reviewed_reference(path, package, analysis, rows, aisles):
                 raise ValueError(f'{item.auto_id} 的参考线几何无效')
             features.append({'type': 'Feature', 'geometry': {'type': 'LineString', 'coordinates': xy.tolist()},
                 'properties': {'id': item.auto_id, 'kind': kind, 'reference_reviewed': True,
+                    'semantic_role': 'crop_row_reference' if kind == 'row' else 'aisle_centerline_reference',
                     'manually_edited': bool(item.diagnostics.get('manually_edited', False)),
                     'absolute_ground_truth': False}})
     path = Path(path)

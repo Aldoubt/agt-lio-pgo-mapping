@@ -374,3 +374,34 @@ def test_project_marks_missing_study_evidence_stale(assets, monkeypatch):
     assert validate_project(project_path)['state'] == 'CURRENT'
     shutil.rmtree(evidence_dir)
     assert validate_project(project_path)['state'] == 'STALE'
+
+
+@pytest.mark.parametrize('explicit_overlay', [False, True])
+def test_study_validate_cli_preserves_default_and_forwards_explicit_overlay(
+        assets, monkeypatch, capsys, explicit_overlay):
+    source, blocks, topology, project = assets
+    draft = project / 'overlay_queries.yaml'
+    create_manual_query_set(query_set_id='overlay', map_package=source, block_dir=blocks,
+                            topology_path=topology,
+                            locations=[{'query_id': 'Q001', 'scene': 'MIDDLE', 'xy': [4., 0.]}],
+                            output=draft)
+    frozen = project / 'overlay_frozen.yaml'
+    freeze_query_set(draft, frozen)
+    output = project / 'overlay_study'
+    create_study(study_id='overlay', query_set_path=frozen, output_dir=output, frames=(1,))
+    original_validator = workflow.validate_study
+    observed = []
+
+    def recording_validator(path, **kwargs):
+        observed.append(kwargs.get('ros_install'))
+        # Run the actual asset/dependency validator; no fabricated asset result.
+        return original_validator(path, **kwargs)
+
+    monkeypatch.setattr(workflow, 'validate_study', recording_validator)
+    args = ['study-validate', str(output / 'study.yaml')]
+    overlay = project / 'custom ROS install'
+    if explicit_overlay:
+        args.extend(['--ros-install', str(overlay)])
+    assert workflow.main(args) == 0
+    assert observed == [overlay if explicit_overlay else Path.home() / 'ros2_ws/install']
+    assert '"state": "CURRENT"' in capsys.readouterr().out

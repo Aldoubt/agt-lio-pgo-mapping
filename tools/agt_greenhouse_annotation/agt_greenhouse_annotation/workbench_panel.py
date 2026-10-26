@@ -88,6 +88,10 @@ class StructureProposalPanel(QtWidgets.QWidget):
     focusRequested = QtCore.pyqtSignal()
     deleteReferenceRequested = QtCore.pyqtSignal()
     clearExclusionsRequested = QtCore.pyqtSignal()
+    coverageExportRequested = QtCore.pyqtSignal()
+    boundaryRequested = QtCore.pyqtSignal()
+    headlandRequested = QtCore.pyqtSignal()
+    geometryReviewToggled = QtCore.pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -150,6 +154,34 @@ class StructureProposalPanel(QtWidgets.QWidget):
         self.freeze_button.setMinimumHeight(38)
         self.freeze_button.clicked.connect(self.freezeRequested.emit)
         layout.addWidget(self.freeze_button)
+        self.coverage_group = QtWidgets.QGroupBox('可选：结构用于覆盖规划')
+        coverage_layout = QtWidgets.QVBoxLayout(self.coverage_group)
+        explanation = QtWidgets.QLabel('垄参考描述作物结构；行驶路线只取单独审查的行道。\n宽度、方向、边界和地头须人工确认。')
+        explanation.setWordWrap(True)
+        coverage_layout.addWidget(explanation)
+        row = QtWidgets.QHBoxLayout()
+        accept_row = QtWidgets.QPushButton('确认垄参考编号')
+        accept_row.clicked.connect(self._accept_rows)
+        row.addWidget(accept_row)
+        accept_aisle = QtWidgets.QPushButton('审查所选通行行道')
+        accept_aisle.clicked.connect(self._accept_aisle)
+        row.addWidget(accept_aisle)
+        coverage_layout.addLayout(row)
+        row = QtWidgets.QHBoxLayout()
+        boundary = QtWidgets.QPushButton('绘制温室边界')
+        boundary.clicked.connect(self.boundaryRequested.emit)
+        row.addWidget(boundary)
+        headland = QtWidgets.QPushButton('绘制地头')
+        headland.clicked.connect(self.headlandRequested.emit)
+        row.addWidget(headland)
+        coverage_layout.addLayout(row)
+        geometry = QtWidgets.QCheckBox('显示已有物理标注，编辑 / 删除地头')
+        geometry.toggled.connect(self.geometryReviewToggled.emit)
+        coverage_layout.addWidget(geometry)
+        self.coverage_export_button = QtWidgets.QPushButton('冻结并导出覆盖结构…')
+        self.coverage_export_button.clicked.connect(self.coverageExportRequested.emit)
+        coverage_layout.addWidget(self.coverage_export_button)
+        layout.addWidget(self.coverage_group)
         self.status = QtWidgets.QLabel('点击一键生成开始；编辑会自动保存草稿。')
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -169,7 +201,9 @@ class StructureProposalPanel(QtWidgets.QWidget):
         self.row_list.blockSignals(True)
         self.row_list.clear()
         for index, row in enumerate(self._rows):
-            label = f'垄 {index+1:02d} · {row.auto_id}'
+            label = f'作物垄参考 {index+1:02d} · {row.auto_id}'
+            if row.decision == 'accepted':
+                label += f' → {row.physical_row_id}'
             if row.decision == 'rejected':
                 label += '（已删除）'
             item = QtWidgets.QListWidgetItem(label)
@@ -188,7 +222,8 @@ class StructureProposalPanel(QtWidgets.QWidget):
         self.aisle_list.clear()
         new_index = -1
         for index, aisle in enumerate(self._aisles):
-            item = QtWidgets.QListWidgetItem(f'行道 {index+1:02d} · {aisle.auto_id}')
+            suffix = f' → {aisle.physical_aisle_id}（通行已审查）' if aisle.decision == 'accepted' and aisle.diagnostics.get('coverage_review') else ''
+            item = QtWidgets.QListWidgetItem(f'行道参考 {index+1:02d} · {aisle.auto_id}{suffix}')
             item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
             item.setCheckState(QtCore.Qt.Checked if aisle.diagnostics.get('reference_reviewed') else QtCore.Qt.Unchecked)
             self.aisle_list.addItem(item)

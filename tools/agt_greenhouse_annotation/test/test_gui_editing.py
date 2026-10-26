@@ -81,6 +81,68 @@ def test_gui_frozen_is_read_only(editor):
     assert editor.history == []
 
 
+def test_workbench_draws_reviewed_boundary_without_turning_it_into_headland(editor, monkeypatch):
+    class Dialog:
+        def __init__(self, *_args):
+            pass
+        def exec_(self):
+            return QtWidgets.QDialog.Accepted
+        def value(self):
+            return {'id': 'G1', 'confidence': 'confirmed',
+                    'polygon': [[-1., -1.], [8., -1.], [8., 4.], [-1., 4.]]}
+    monkeypatch.setattr(gui, 'GeometryDialog', Dialog)
+    editor.structure_panel.boundaryRequested.emit()
+    assert editor.mode == 'coverage_boundary'
+    editor.pending = [[-1., -1.], [8., -1.], [8., 4.], [-1., 4.]]
+    editor.finish_geometry()
+    assert editor.topology['coverage_boundary']['id'] == 'G1'
+    assert not editor.topology['headlands']
+    editor.undo()
+    assert 'coverage_boundary' not in editor.topology
+
+
+def test_workbench_reviews_corridor_exports_planning_input_then_edits_invalidate_review(editor, monkeypatch, tmp_path):
+    from PIL import Image
+    from agt_greenhouse_annotation.structure_artifacts import AisleProposal
+    from agt_coverage_authoring.io import load_structure
+    import yaml
+
+    editor.aisle_proposals = [AisleProposal('MANUAL-A1', '', '', 'REFERENCE',
+        ((0., 1.), (5., 1.)), (), 0., 0., {})]
+    editor._refresh_proposal_panel()
+    editor.structure_panel.aisle_list.setCurrentRow(0)
+
+    def review_dialog(dialog):
+        dialog.findChild(QtWidgets.QLineEdit, 'coverageAisleId').setText('A1')
+        dialog.findChild(QtWidgets.QDoubleSpinBox, 'coverageAisleWidth').setValue(.8)
+        dialog.findChild(QtWidgets.QCheckBox, 'coverageAisleReviewConfirmed').setChecked(True)
+        return QtWidgets.QDialog.Accepted
+    monkeypatch.setattr(QtWidgets.QDialog, 'exec_', review_dialog)
+    editor.structure_panel.acceptAisleRequested.emit(0)
+    assert editor.aisle_proposals[0].decision == 'accepted'
+    editor.topology['coverage_boundary'] = {'id': 'G1', 'confidence': 'confirmed',
+        'polygon': [[-1., -1.], [8., -1.], [8., 4.], [-1., 4.]]}
+    Image.fromarray(np.full((60, 100), 254, dtype=np.uint8)).save(tmp_path / 'map.pgm')
+    map_yaml = tmp_path / 'map.yaml'
+    map_yaml.write_text(yaml.safe_dump({'image': 'map.pgm', 'resolution': .1,
+        'origin': [-1., -1., 0.], 'negate': 0, 'occupied_thresh': .65, 'free_thresh': .196}))
+
+    def export_dialog(dialog):
+        dialog.findChild(QtWidgets.QLineEdit, 'coverageMapYaml').setText(str(map_yaml))
+        dialog.findChild(QtWidgets.QLineEdit, 'coverageOutputDirectory').setText(str(tmp_path / 'confirmed'))
+        dialog.findChild(QtWidgets.QCheckBox, 'coverageTransformConfirmed').setChecked(True)
+        dialog.findChild(QtWidgets.QCheckBox, 'coverageStructureReviewConfirmed').setChecked(True)
+        return QtWidgets.QDialog.Accepted
+    monkeypatch.setattr(QtWidgets.QDialog, 'exec_', export_dialog)
+    editor.structure_panel.coverageExportRequested.emit()
+    exported = tmp_path / 'confirmed' / 'coverage_structure.geojson'
+    assert exported.exists(), editor.structure_panel.status.text()
+    assert load_structure(exported)[1][0].id == 'A1'
+    editor._commit_reference_geometry('aisle', 0, np.asarray([[0., 1.1], [5., 1.1]]))
+    assert editor.aisle_proposals[0].decision == 'pending'
+    assert 'coverage_review' not in editor.aisle_proposals[0].diagnostics
+
+
 def test_auto_proposal_polyline_edit_keeps_auto_id_and_supports_undo(editor, monkeypatch):
     row = GlobalRowProposal('AUTO-G007', (1., 0.), 1., ((0., 1.), (5., 1.)), .2,
                             .7, .8, {'fixture': True})

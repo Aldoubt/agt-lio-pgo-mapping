@@ -7,12 +7,18 @@ from agt_mapping_bringup.session_launch import launch_session
 
 def generate_launch_description():
     arguments = [
+        DeclareLaunchArgument('fastlio_config', default_value='',
+                              description='Retired: use backend_profile for FAST-LIVO2'),
         DeclareLaunchArgument('bag_path', description='Read-only rosbag2 directory'),
         DeclareLaunchArgument('output_dir', description='New or empty run output directory'),
         DeclareLaunchArgument('lidar_topic', default_value='auto'),
         DeclareLaunchArgument('imu_topic', default_value='auto'),
         DeclareLaunchArgument('reference_mode', default_value='frontend',
                               description='verified frontend source package; legacy PGO/FAST-LIO2 modes are disabled'),
+        DeclareLaunchArgument('backend_profile_source_sha256', default_value='',
+                              description='Optional CLI-pinned hash of selected source profile; mismatch fails startup'),
+        DeclareLaunchArgument('backend_profile', default_value='',
+                              description='Optional mounted complete FAST-LIVO2 profile with native config hash and frames'),
         DeclareLaunchArgument('mapping_backend', default_value='',
                               description='backend profile; defaults to fast_livo2_lio'),
         DeclareLaunchArgument('playback_rate', default_value='1.0'),

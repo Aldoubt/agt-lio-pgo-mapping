@@ -42,7 +42,8 @@ bool OccupancyGridWriter::write_navigation_map(
       pgm.write(reinterpret_cast<const char *>(&pixel), 1);
     }
   }
-  if (!pgm.good()) {
+  pgm.close();
+  if (!pgm) {
     if (error) *error = "failed writing " + pgm_path.string();
     return false;
   }
@@ -124,7 +125,9 @@ bool OccupancyGridWriter::write_navigation_map(
     metadata << YAML::EndMap;
     std::ofstream metadata_stream(directory / "metadata.yaml");
     metadata_stream << metadata.c_str() << '\n';
-    if (!map_stream.good() || !metadata_stream.good()) {
+    map_stream.close();
+    metadata_stream.close();
+    if (!map_stream || !metadata_stream) {
       if (error) *error = "failed writing navigation map metadata";
       return false;
     }
