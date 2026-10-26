@@ -6,6 +6,7 @@
 
 多源输入 → 既有关键帧方法分块 → 离线重定位歧义诊断/可视化/环境改造评估 → 导航地图与离线路线编辑 → 既有合同发布给V4。
 A0 **PARTIAL**；A1–A7 未因需求更新自动启动。现有建图/编辑/离线分析能力与本轮升级是否完成分开记录。
+已授权的温室覆盖路线功能见 [coverage authoring](coverage_authoring.md)：独立离线 processor、二维净空分析、确认行道/选定区域覆盖及现有 Route 资产适配；其完成不代表 A0 全部闭合或导航执行验收。
 用户指定默认已落入bag/live操作员workflow：FAST-LIVO2 LIO-only（`fast_livo2_lio`），`img_en=0`，不使用FAST-LIO2、不启动PGO；green-house全量bag source package验收通过。session CLI当前只接受该验收backend，低层registry保留的profile不代表session/export均已支持。分块只需paired patch+pose。
 需求唯一入口：[alignment plan](map_task_asset_authoring_alignment_plan.md)；资产合同基线：[A0 acceptance](contracts/a0_authoring_contract_acceptance.md)。本文只导航，不复制字段/hash真值。
 
@@ -21,7 +22,7 @@ A0 **PARTIAL**；A1–A7 未因需求更新自动启动。现有建图/编辑/�
 | evidence浏览/改造 | REQ-VIEW、REQ-INTERVENTION；现有analysis plot、annotation、Studio geometry loader | 真实小fixture/coverage/UNKNOWN/方案与已安装区分 |
 | 编辑/派生一致性 | REQ-DERIVE；SelectionManager、RefinementModel；refinement/.../pipeline.py；pcd2grid入口/patch消费者 | A1适用回归：编辑重放/patch一致、unknown意图、undo一次一变更 |
 | HMI/Facade/job | REQ-HMI；Studio main.cpp、WorkflowSession、ExternalToolRunner；scripts/map_studio.sh | A0 DTO需先完整；GUI/headless/cancel/restart/stale，mock/real分开 |
-| Route | REQ-ROUTE；既有READY Route runtime reader/resolver只读；未来选定authoring adapter | 曲线/平滑/可行性、Map/Profile exact binding、CSV/manifest hashes |
+| Route / 温室覆盖 | docs/coverage_authoring.md；planning/agt_coverage_authoring；Studio Coverage authoring 入口；既有READY Route runtime reader/resolver只读 | 行道/面积分母、扫掠/阿克曼/换向、stale、取消、Map/Profile exact binding、CSV/manifest hashes；reference 与 ROS 后端分开验收 |
 | 正式发布 | REQ-PUBLISH；source writer/validator；legacy Site schema/publisher和V4 audit只读相关章节 | roundtrip、原子/不可覆盖、portable、hash负例、不activate |
 | 论文实验 | plan §2、REQ-ANALYSIS/INTERVENTION；paper/GREENHOUSE_PROBLEM_EXISTENCE_STUDY.md、paper/topk/RUN_REPORT.md、EXPERIMENT_VARIABLE_DEFINITION.md | 历史数字不当新实验；新协议/原始trace/独立session/参考等级 |
 
@@ -49,7 +50,7 @@ A0 **PARTIAL**；A1–A7 未因需求更新自动启动。现有建图/编辑/�
 - 论文中途global loss保留当前segment；断电cold start可能无row/segment身份，须V4独立验证。
 - 同bag可以做配对离线诊断；读REQ-ANALYSIS下SAME-BAG协议。已有centered query含future帧，不能直接当因果cold/loss回放；记录路径恢复条件与自行安全到达分开。
 - Site/Route/source/layer/Task digest来源分开；新Route不回写旧Map。
-- 当前外部HMI服务、通用block产品、改造建议产品、Route authoring均PROPOSED；CLI存在不等于API已实现。
+- 当前通用外部HMI服务、通用block产品与改造建议产品仍为PROPOSED。覆盖 authoring 的 CLI/Studio 入口与通用 AuthoringFacade 分开；CLI存在不等于该 Facade 或实车执行已实现。
 
 ## 状态/证据交付
 

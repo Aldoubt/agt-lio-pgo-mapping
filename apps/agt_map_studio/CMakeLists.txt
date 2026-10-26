@@ -55,6 +55,8 @@ add_executable(map_viewer
   src/tools/ExternalToolRunner.cpp
   src/workflow/WorkflowSession.cpp
   src/ui/WorkflowPanel.cpp
+  src/ui/CoverageAuthoringIO.cpp
+  src/ui/CoverageAuthoringDialog.cpp
   src/ui/MainWindow.cpp
 )
 
@@ -175,6 +177,27 @@ if(BUILD_TESTING)
   target_include_directories(test_research_annotation_model PRIVATE src ${PCL_INCLUDE_DIRS})
   target_compile_definitions(test_research_annotation_model PRIVATE ${PCL_DEFINITIONS})
   target_link_libraries(test_research_annotation_model ${QT_WIDGETS_TARGET} Eigen3::Eigen)
+
+  ament_add_gtest(test_coverage_authoring_io
+    test/test_coverage_authoring_io.cpp
+    src/ui/CoverageAuthoringIO.cpp)
+  target_include_directories(test_coverage_authoring_io PRIVATE src)
+  target_link_libraries(test_coverage_authoring_io ${QT_WIDGETS_TARGET} yaml-cpp)
+
+  ament_add_gtest(test_external_tool_runner
+    test/test_external_tool_runner.cpp src/tools/ExternalToolRunner.cpp)
+  target_include_directories(test_external_tool_runner PRIVATE src)
+  target_link_libraries(test_external_tool_runner ${QT_WIDGETS_TARGET})
+
+  # Explicit opt-in integration smoke; requires an installed coverage CLI and
+  # the synthetic reference-backend request, so it is not a ROS-less CTest.
+  add_executable(coverage_authoring_dialog_smoke
+    test/coverage_authoring_dialog_smoke.cpp
+    src/ui/CoverageAuthoringIO.cpp
+    src/ui/CoverageAuthoringDialog.cpp
+    src/tools/ExternalToolRunner.cpp)
+  target_include_directories(coverage_authoring_dialog_smoke PRIVATE src)
+  target_link_libraries(coverage_authoring_dialog_smoke ${QT_WIDGETS_TARGET} yaml-cpp)
 
   # Ported independent render-cap policy; does not modify the current viewer.
   ament_add_gtest(test_point_cloud_render_sampler

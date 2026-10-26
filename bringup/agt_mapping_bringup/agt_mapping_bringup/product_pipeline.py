@@ -72,8 +72,9 @@ PROCESSORS: dict[str, Processor] = {
         'dynamic_cleanup_3d', 'proposed', None,
         'No accepted provenance-preserving 3D static-map cleanup executor yet.'),
     'route_authoring': Processor(
-        'route_authoring', 'proposed', None,
-        'READY Route editor and publication adapter are not yet implemented.'),
+        'route_authoring', 'manual', 'agt_coverage_authoring',
+        'Offline reviewed-aisle/area coverage authoring and Route export; '
+        'backend, geometry, profile and publication checks remain explicit; no motion.'),
     'formal_publish': Processor(
         'formal_publish', 'research', None,
         'Use the existing reviewed Site publisher, not a new publishing schema.'),

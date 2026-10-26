@@ -100,7 +100,10 @@ void ExternalToolRunner::start(const ToolInvocation &invocation) {
 void ExternalToolRunner::cancel() {
   if (!process_) return;
   process_->terminate();
-  if (!process_->waitForFinished(3000)) process_->kill();
+  if (!process_->waitForFinished(qBound(1000, current_.cancellation_grace_ms, 15000)) && process_) {
+    process_->kill();
+    process_->waitForFinished(3000);
+  }
 }
 
 ToolResult ExternalToolRunner::run_blocking(const ToolInvocation &invocation, int timeout_ms) {

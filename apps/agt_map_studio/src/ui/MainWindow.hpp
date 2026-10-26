@@ -84,6 +84,7 @@ private slots:
   void open_research_project_dialog();
   void import_run008_candidate_dialog();
   void propose_aisles_from_cloud();
+  void open_coverage_authoring();
   void start_research_polygon();
   void finish_research_polygon();
   void toggle_research_edit(bool enabled);

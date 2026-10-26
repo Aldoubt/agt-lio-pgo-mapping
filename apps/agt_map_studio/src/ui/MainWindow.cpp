@@ -12,6 +12,7 @@
 #include "occupancy/commands/FillPolygonCommand.hpp"
 #include "occupancy/commands/ForbiddenPolygonCommand.hpp"
 #include "ui/WorkflowPanel.hpp"
+#include "ui/CoverageAuthoringDialog.hpp"
 
 #include <agt_pcd2grid_exporter/OccupancyGridWriter.hpp>
 #include <agt_pcd2grid_exporter/PCDProjector.hpp>
@@ -1051,6 +1052,9 @@ void MainWindow::create_actions() {
   auto *preview_action = new QAction(QStringLiteral("Quick Occupancy Preview (studio projector)..."), this);
   connect(preview_action, &QAction::triggered, this, &MainWindow::generate_occupancy_preview_dialog);
   tools_menu->addAction(preview_action);
+  auto *coverage_action = new QAction(QStringLiteral("Coverage authoring / 全覆盖路线生成..."), this);
+  connect(coverage_action, &QAction::triggered, this, &MainWindow::open_coverage_authoring);
+  tools_menu->addAction(coverage_action);
   tools_menu->addSeparator();
   auto *run_refine_action = new QAction(QStringLiteral("1. Apply 3D Refinement"), this);
   connect(run_refine_action, &QAction::triggered, this, &MainWindow::run_refine);
@@ -3556,6 +3560,20 @@ void MainWindow::import_run008_candidate_dialog() {
     return;
   }
   statusBar()->showMessage(QStringLiteral("Imported run008 candidate into persistent DRAFT annotations."), 6000);
+}
+
+void MainWindow::open_coverage_authoring() {
+  if (refinement_model_.has_active_operations()) {
+    QMessageBox::information(this, QStringLiteral("Export reviewed map first / 请先导出地图"),
+        QStringLiteral("The current raster has edits. Export a new navigation map and open that map before "
+                       "coverage authoring, so the planner sees the same geometry as MapStudio."));
+    return;
+  }
+  const QString map_yaml = occupancy_viewer_->has_map()
+      ? QString::fromStdString(occupancy_viewer_->map().yaml_path()) : QString();
+  CoverageAuthoringDialog dialog(map_yaml, research_annotation_model_.document(),
+                                 research_annotation_path_, this);
+  dialog.exec();
 }
 
 void MainWindow::propose_aisles_from_cloud() {

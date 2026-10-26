@@ -1,0 +1,27 @@
+# Preview-only v2 greenhouse dimensions; not measured or certified MK-mini data.
+# Source: Aldoubt/agt_navigation_v2@7ad0a6b profiles/platforms/greenhouse_ackermann.yaml
+platform:
+  name: greenhouse_ackermann
+  kinematics: ackermann
+  footprint_frame: base_footprint
+  base_frame: base_link
+  geometry:
+    dimensions_source: user_provided_v2_preview
+    dimensions_verified_on_vehicle: false
+    reference_point_verified: false
+    reference_point_assumption: geometric_center
+    length: 0.840
+    width: 0.600
+    wheelbase: 0.600
+    wheel_track: 0.517
+    min_turning_radius: 1.500
+    steering:
+      turning_radius_reference: rear_axle_center
+      max_equivalent_steering_angle: 0.380506377112
+    navigation_footprint: [[0.42, 0.30], [0.42, -0.30], [-0.42, -0.30], [-0.42, 0.30]]
+  limits:
+    limits_verified_on_vehicle: false
+    max_forward_velocity: 0.50
+    max_reverse_velocity: 0.25
+    max_linear_acceleration: 0.30
+    max_linear_deceleration: 0.60

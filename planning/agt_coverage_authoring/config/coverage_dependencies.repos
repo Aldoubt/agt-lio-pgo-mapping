@@ -1,0 +1,22 @@
+# Same OpenNav humble-v2 / Fields2Cover v2.0.0 baseline as AGT navigation v2.
+repositories:
+  opennav_coverage:
+    type: git
+    url: https://github.com/open-navigation/opennav_coverage.git
+    version: f413d0da7b4e52249b9abdb9d1fec7cef0238449
+  fields2cover:
+    type: git
+    url: https://github.com/Fields2Cover/Fields2Cover.git
+    version: 3613525c241538fa9fd9df3e1209ae8184627958
+  fields2cover_steering_functions:
+    type: git
+    url: https://github.com/Fields2Cover/steering_functions.git
+    version: 13e3f5658144b3832fb1eb31a0e2f5a3cbf57db9
+  fields2cover_matplotplusplus:
+    type: git
+    url: https://github.com/alandefreitas/matplotplusplus.git
+    version: 5d01eb3695b07634a2b6642fd423740dea9b026c
+  fields2cover_json:
+    type: git
+    url: https://github.com/nlohmann/json.git
+    version: 4424a0fcc1c7fa640b5c87d26776d99150dacd10

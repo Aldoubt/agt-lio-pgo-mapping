@@ -1,0 +1,246 @@
+{
+  "type": "FeatureCollection",
+  "frame_id": "map",
+  "review": {
+    "status": "CONFIRMED",
+    "note": "Synthetic test fixture; no physical survey"
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "greenhouse",
+        "feature_type": "field_boundary",
+        "review_status": "CONFIRMED"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              0.2,
+              0.2
+            ],
+            [
+              13.8,
+              0.2
+            ],
+            [
+              13.8,
+              9.8
+            ],
+            [
+              0.2,
+              9.8
+            ],
+            [
+              0.2,
+              0.2
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "aisle_a",
+        "feature_type": "aisle",
+        "review_status": "CONFIRMED",
+        "corridor": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                2.2,
+                2.4
+              ],
+              [
+                11.8,
+                2.4
+              ],
+              [
+                11.8,
+                3.6
+              ],
+              [
+                2.2,
+                3.6
+              ],
+              [
+                2.2,
+                2.4
+              ]
+            ]
+          ]
+        }
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            3,
+            3
+          ],
+          [
+            11,
+            3
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "aisle_b",
+        "feature_type": "aisle",
+        "review_status": "CONFIRMED",
+        "corridor": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                2.2,
+                6.4
+              ],
+              [
+                11.8,
+                6.4
+              ],
+              [
+                11.8,
+                7.6
+              ],
+              [
+                2.2,
+                7.6
+              ],
+              [
+                2.2,
+                6.4
+              ]
+            ]
+          ]
+        }
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            3,
+            7
+          ],
+          [
+            11,
+            7
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "crop_bed",
+        "feature_type": "keepout",
+        "review_status": "CONFIRMED"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              4,
+              4.5
+            ],
+            [
+              10,
+              4.5
+            ],
+            [
+              10,
+              5.5
+            ],
+            [
+              4,
+              5.5
+            ],
+            [
+              4,
+              4.5
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "work_a",
+        "feature_type": "work_area",
+        "review_status": "CONFIRMED"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              3,
+              2.6
+            ],
+            [
+              11,
+              2.6
+            ],
+            [
+              11,
+              3.4
+            ],
+            [
+              3,
+              3.4
+            ],
+            [
+              3,
+              2.6
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "work_b",
+        "feature_type": "work_area",
+        "review_status": "CONFIRMED"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              3,
+              6.6
+            ],
+            [
+              11,
+              6.6
+            ],
+            [
+              11,
+              7.4
+            ],
+            [
+              3,
+              7.4
+            ],
+            [
+              3,
+              6.6
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

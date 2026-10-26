@@ -20,6 +20,13 @@
 - source/草稿/profile/config改变，关联preview/review/派生结果按合同失效；旧发布revision不改。
 - PROPOSED接口和mock明确标注；规范测试载体不是第二个生产asset validator。
 
+## 离线覆盖路线
+- `planning/agt_coverage_authoring` 是独立离线 processor；地图、行道结构与 Profile 变更使旧结果失效。先读 `docs/coverage_authoring.md`，不将其并入建图采集或在线导航链。
+- 行道必须人工确认；行道遍历与面积覆盖分开统计，未覆盖目标保留在分母内。距离场只辅助筛选，整车扫掠与阿克曼运动学验证仍必需。
+- 后轴中心轨迹与 `base_link` 显式转换；前进/倒车、作业/连接、换向停车保留语义。缺标定或动态约束保持 UNKNOWN，不由预览成功推导执行可行。
+- `reference` 后端是显式有限解析候选搜索，不能冒充 OpenNav/Smac 或自动 fallback。ROS 后端使用独立离线 domain，不启动控制器、TF、底盘或 active-map 修改。
+- READY 发布复用既有 V4 Site/Profile/Route 权威读取器；Profile content-closure digest 不等于源 YAML 文件 hash。当前运行端不支持的倒车/变速路线保留完整草稿，不删段伪装全覆盖。
+
 ## 跨仓库边界与验证
 - 外部历史仓库仅只读；发现dirty标 `DIRTY — DO NOT TOUCH`。本次授权mapping工作不自动授权外部源码修改。
 - mapping生产资产；V4拥有在线定位/中心线跟踪、Motion Guard、任务执行、TF与active map。无授权不启动机器人动作或修改runtime active state。

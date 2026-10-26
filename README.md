@@ -23,11 +23,22 @@ ROS 2 Humble 的三维 LiDAR 建图框架：用户指定默认 FAST-LIVO2 LIO-on
 
 ## 当前需求与 AI 工作入口
 
-目标流程是多源输入 → 复用关键帧方法分块 → 离线重定位歧义分析/可视化/环境改造评估 → 导航地图与离线路线编辑 → 既有合同发布。MapStudio 与外部 HMI 是 authoring client；通用 HMI API、分块资产化和 Route authoring 仍为待实现需求。
+目标流程是多源输入 → 复用关键帧方法分块 → 离线重定位歧义分析/可视化/环境改造评估 → 导航地图与离线路线编辑 → 既有合同发布。MapStudio 与外部 HMI 是 authoring client；通用 HMI API 与分块资产化仍为待实现需求。温室覆盖路线的独立 authoring 入口见下文，不代表通用 AuthoringFacade 或导航执行已经实现。
 
 总体对照与阶段验收见 [需求计划](docs/map_task_asset_authoring_alignment_plan.md)，后续 AI 从 [最小任务阅读集](docs/ai_task_entrypoint.md) 进入；仓库规则见 [AGENTS.md](AGENTS.md)。[A0 验收](docs/contracts/a0_authoring_contract_acceptance.md) 当前为 PARTIAL，需求更新不自动启动 A1–A7。下文保留既有运行说明，历史测试数字不能替代当前验收。
 
 MapStudio Annotation 和 Map Edit 的当前 GUI 操作、Before/After 截图与控件清点见 [UX Cleanup V1](docs/research/mapstudio_ux_cleanup_v1.md)。
+
+## 温室覆盖路线 authoring
+
+`agt_coverage_authoring` 将已审查栅格地图、确认后的行道/地头和单一 Robot Profile 转成离线路线草稿。支持逐条行道遍历与选定作业区的幅宽覆盖，提供二维净空、整车扫掠、阿克曼约束、漏作/重叠与执行接口兼容性报告。前进优先，必要时保留明确的倒车和换向停车段；运行端不支持时保留草稿及原因。
+
+```bash
+agt_coverage_authoring analyze --request /path/to/request.yaml --output /path/to/new-analysis
+agt_coverage_authoring plan --request /path/to/request.yaml --output /path/to/new-plan
+```
+
+默认 ROS 后端使用独立离线 OpenNav/Smac 服务；显式 `reference` 后端用于无需 ROS 的有限解析候选比较，不能代替该后端或实车验收。`route_authoring` 在产品配置中仍默认禁用；设为 `manual` 只声明独立工具，不随建图 session 自动启动。输入、安装、MapStudio 操作与既有 READY Route 的发布边界见 [覆盖路线指南](docs/coverage_authoring.md)。
 
 > MID-360 是 Livox 雷达。当前 **0.2.0 编排升级**已在共享目录对应的 Ubuntu 22.04 / ROS 2 Humble 宿主机完成 82 项自动化测试、完整基准录包回放及操作场景验证。MCP 的 Ubuntu 24.04 容器不是 ROS 执行环境。具体版本覆盖、测试安装层及剩余验收边界见 [宿主机测试报告](docs/mcp-host-validation.md)。
 

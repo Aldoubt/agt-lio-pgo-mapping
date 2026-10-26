@@ -55,10 +55,21 @@ def test_unknown_sensor_fails_closed(tmp_path, bad_sensor):
         load_product_pipeline(_write(tmp_path, sensor={'id': bad_sensor}))
 
 
-@pytest.mark.parametrize('stage', ['dynamic_cleanup_3d', 'terrain_traversability', 'route_authoring'])
+@pytest.mark.parametrize('stage', ['dynamic_cleanup_3d', 'terrain_traversability', 'formal_publish'])
 def test_no_fake_auto_processing_or_fake_ready(tmp_path, stage):
     with pytest.raises(ProductPipelineError, match='no accepted manual'):
         load_product_pipeline(_write(tmp_path, processors={stage: 'manual'}))
+
+
+def test_route_authoring_is_an_independent_manual_processor(tmp_path):
+    plan = load_product_pipeline(_write(tmp_path, processors={'route_authoring': 'manual'}))
+    assert plan.processors == ('route_authoring',)
+    processor, = plan.as_dict()['optional_processors']
+    assert processor['entrypoint'] == 'agt_coverage_authoring'
+    assert processor['status'] == processor['execution'] == 'manual'
+    assert 'NOT launched' in plan.as_dict()['note']
+    with pytest.raises(ProductPipelineError, match='only disabled/manual'):
+        load_product_pipeline(_write(tmp_path, processors={'route_authoring': 'auto'}))
 
 
 def test_unknown_stage_or_mode_rejected(tmp_path):

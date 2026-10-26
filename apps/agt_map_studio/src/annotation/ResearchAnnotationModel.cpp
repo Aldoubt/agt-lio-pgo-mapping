@@ -397,6 +397,14 @@ bool ResearchAnnotationModel::add_aisle_proposals(
         {"candidate_status", "PROVISIONAL"},
         {"source_candidate_id", proposal.proposal_id},
         {"source_session_ids", QJsonArray{source_session_id}},
+        // Explicit, additive structure for coverage authoring. Geometry is
+        // always read from the reviewed polygon and referenced endpoint
+        // annotations, never from the human-facing notes below.
+        {"coverage", QJsonObject{
+            {"role", "aisle"}, {"id", proposal.proposal_id},
+            {"endpoint_ids", QJsonArray{start_id, end_id}},
+            {"nominal_width_m", proposal.width_m},
+            {"allowed_direction", "bidirectional"}}},
         {"notes", QStringLiteral("MapStudio UI type: Aisle\n%1").arg(common)},
     };
     const auto endpoint = [&](const QString &id, const QString &suffix,
@@ -409,6 +417,9 @@ bool ResearchAnnotationModel::add_aisle_proposals(
           {"candidate_status", "PROVISIONAL"},
           {"source_candidate_id", proposal.proposal_id + suffix},
           {"source_session_ids", QJsonArray{source_session_id}},
+          {"coverage", QJsonObject{
+              {"role", "aisle_endpoint"}, {"aisle_id", proposal.proposal_id},
+              {"endpoint", side.toLower()}}},
           {"notes", QStringLiteral("MapStudio UI type: Aisle End\nproposal_id: %1\nend: %2\n%3")
               .arg(proposal.proposal_id, side, generation_notes)},
       };
