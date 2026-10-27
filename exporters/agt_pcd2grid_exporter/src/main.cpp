@@ -15,7 +15,8 @@ namespace {
 void usage(const char *program) {
   std::cerr << "Usage: " << program
             << " (--pcd input.pcd | --package mapping_package)"
-               " --output navigation_map [--config projection.yaml]\n";
+               " --output navigation_map [--config projection.yaml]"
+               " [--cloud-output new_directory (traversability only)]\n";
 }
 
 }  // namespace
@@ -25,15 +26,17 @@ int main(int argc, char **argv) {
   std::string package_path;
   std::string output_dir;
   std::string config_path;
+  std::string cloud_output;
   for (int i = 1; i < argc; ++i) {
     const std::string argument(argv[i]);
     if ((argument == "--pcd" || argument == "--package" || argument == "--output" ||
-         argument == "--config") &&
+         argument == "--config" || argument == "--cloud-output") &&
         i + 1 < argc) {
       const std::string value(argv[++i]);
       if (argument == "--pcd") pcd_path = value;
       else if (argument == "--package") package_path = value;
       else if (argument == "--output") output_dir = value;
+      else if (argument == "--cloud-output") cloud_output = value;
       else config_path = value;
     } else if (argument == "--help" || argument == "-h") {
       usage(argv[0]);
@@ -55,6 +58,12 @@ int main(int argc, char **argv) {
     std::cerr << "Parameter error: " << error << '\n';
     return 1;
   }
+  if (!cloud_output.empty() &&
+      (parameters.projection_mode != agt_pcd2grid_exporter::ProjectionMode::Traversability ||
+       std::filesystem::exists(cloud_output))) {
+    std::cerr << "--cloud-output requires traversability mode and a new directory\n";
+    return 2;
+  }
   if (parameters.projection_mode == agt_pcd2grid_exporter::ProjectionMode::Traversability) {
     if (package_path.empty()) {
       std::cerr << "projection_mode 'traversability' needs --package (keyframes + poses)\n";
@@ -65,7 +74,8 @@ int main(int argc, char **argv) {
     agt_pcd2grid_exporter::TraversabilityStats traversability;
     const std::string debug_dir = (std::filesystem::path(output_dir) / "debug").string();
     if (!agt_pcd2grid_exporter::TraversabilityGridBuilder::build(
-            package_path, parameters, &grid, &stats, &traversability, &error, debug_dir)) {
+            package_path, parameters, &grid, &stats, &traversability, &error, debug_dir,
+            cloud_output)) {
       std::cerr << "Traversability error: " << error << '\n';
       return 1;
     }

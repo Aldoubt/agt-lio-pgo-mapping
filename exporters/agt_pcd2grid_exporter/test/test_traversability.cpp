@@ -306,17 +306,36 @@ TEST(TraversabilityGridBuilderTest, FollowerSeenOnlyUpCloseIsNotAnObstacle) {
   ProjectionStats stats;
   TraversabilityStats traversability;
   std::string error;
+  const auto clouds = root / "cleaned";
   ASSERT_TRUE(TraversabilityGridBuilder::build(root.string(), parameters, &grid, &stats,
-                                               &traversability, &error))
+                                               &traversability, &error, "", clouds.string()))
       << error;
   EXPECT_EQ(value_at(grid, 2.05F, 1.05F), 100) << "static post must stay";
   EXPECT_NE(value_at(grid, -0.95F, 0.35F), 100) << "follower trail must not become an obstacle";
   EXPECT_GT(traversability.near_field_only_points, 0U);
+  pcl::PointCloud<pcl::PointXYZ> kept, removed;
+  ASSERT_EQ(pcl::io::loadPCDFile((clouds / "static_map.pcd").string(), kept), 0);
+  ASSERT_EQ(pcl::io::loadPCDFile((clouds / "removed_candidates.pcd").string(), removed), 0);
+  EXPECT_EQ(removed.size(), 2U * poses.size());
+  EXPECT_EQ(kept.size() + removed.size(), stats.input_points - traversability.self_filtered_points);
+  bool have_post = false, have_ground = false;
+  for (const auto &p : kept) {
+    have_post |= std::abs(p.x - 2.05F) < 0.01F && p.z > 0.4F;
+    have_ground |= std::abs(p.z) < 0.01F;
+    EXPECT_FALSE(std::abs(p.y - 0.35F) < 0.01F && p.z > 1.1F);
+  }
+  EXPECT_TRUE(have_post);
+  EXPECT_TRUE(have_ground);
   parameters.traversability.obstacle_min_observation_range = 0.0F;
+  const auto all_kept = root / "all_kept";
   ASSERT_TRUE(TraversabilityGridBuilder::build(root.string(), parameters, &grid, &stats,
-                                               &traversability, &error))
+                                               &traversability, &error, "", all_kept.string()))
       << error;
   EXPECT_EQ(value_at(grid, -0.95F, 0.35F), 100) << "without the rule the trail is baked in";
+  std::ifstream cleanup_report(all_kept / "cloud_cleanup.yaml");
+  const std::string report((std::istreambuf_iterator<char>(cleanup_report)),
+                          std::istreambuf_iterator<char>());
+  EXPECT_NE(report.find("removed_candidate_points: 0\n"), std::string::npos);
   std::filesystem::remove_all(root);
 }
 
